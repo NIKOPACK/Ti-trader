@@ -1,0 +1,52 @@
+{
+	"name": "ti-monorepo",
+	"private": true,
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/NIKOPACK/Ti.git"
+	},
+	"type": "module",
+	"workspaces": [
+		"packages/*"
+	],
+	"scripts": {
+		"clean": "npm run clean --workspaces",
+		"build": "cd packages/tui && npm run build && cd ../telemetry && npm run build && cd ../ai && npm run build && cd ../agent && npm run build && cd ../protocol && npm run build && cd ../client && npm run build && cd ../coding-agent && npm run build && cd ../trading-agent && npm run build",
+		"build:trading": "cd packages/trading-agent && npm run build",
+		"build:offline": "cd packages/tui && npm run build && cd ../telemetry && npm run build && cd ../ai && npm run build:offline && cd ../agent && npm run build && cd ../protocol && npm run build && cd ../client && npm run build && cd ../coding-agent && npm run build",
+		"check": "biome check --write --error-on-warnings . && npm run check:pinned-deps && npm run check:ts-imports && tsgo --noEmit && npm run check:browser-smoke",
+		"check:browser-smoke": "node scripts/check-browser-smoke.mjs",
+		"check:pinned-deps": "node scripts/check-pinned-deps.mjs",
+		"check:ts-imports": "node scripts/check-ts-relative-imports.mjs",
+		"generate:models": "npm --prefix packages/ai run generate-models && npm --prefix packages/ai run generate-image-models",
+		"hydrate:model-data": "npm --prefix packages/ai run hydrate-model-data",
+		"check:model-data": "npm --prefix packages/ai run check:model-data",
+		"profile:tui": "node scripts/profile-coding-agent-node.mjs --mode tui",
+		"profile:rpc": "node scripts/profile-coding-agent-node.mjs --mode rpc",
+		"test": "npm run test:scripts && npm run test --workspaces --if-present",
+		"test:scripts": "node --test scripts/*.test.mjs",
+		"prepare": "husky"
+	},
+	"devDependencies": {
+		"@anthropic-ai/sandbox-runtime": "0.0.26",
+		"@biomejs/biome": "2.3.5",
+		"@types/node": "22.19.19",
+		"@typescript/native-preview": "7.0.0-dev.20260120.1",
+		"esbuild": "0.28.1",
+		"husky": "9.1.7",
+		"shx": "0.4.0",
+		"tsx": "4.22.1",
+		"typescript": "5.9.3"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	},
+	"version": "0.0.3",
+	"overrides": {
+		"protobufjs": "7.6.5",
+		"rimraf": "6.1.2",
+		"gaxios": {
+			"rimraf": "6.1.2"
+		}
+	}
+}

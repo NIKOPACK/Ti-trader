@@ -1,0 +1,59 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [22]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Use Node.js ${{ matrix.node-version }}
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: npm
+      - run: npm ci --ignore-scripts
+      # Model metadata is generated locally and intentionally ignored by git.
+      - run: npm run hydrate:model-data
+      # This standalone example has its own dependency manifest.
+      - run: npm ci --ignore-scripts
+        working-directory: packages/coding-agent/examples/extensions/with-deps
+      - name: Build upstream runtime and trading agent
+        run: |
+          npm --prefix packages/tui run build
+          npm --prefix packages/telemetry run build
+          npm --prefix packages/ai run build:offline
+          npm --prefix packages/agent run build
+          npm --prefix packages/protocol run build
+          npm --prefix packages/client run build
+          npm --prefix packages/coding-agent run build:unbundled
+          npm run build:trading
+      - run: npm run check
+      - name: Install native search tools for coding-agent tests
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes fd-find ripgrep
+          sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
+      - run: ./test.sh
+      - name: Verify npm package contents
+        working-directory: packages/trading-agent
+        run: npm pack --dry-run
+
+  secret-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

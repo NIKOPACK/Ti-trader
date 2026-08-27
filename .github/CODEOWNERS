@@ -1,0 +1,6 @@
+# Trading, risk, credential, and release changes require maintainer review.
+* @NIKOPACK
+packages/trading-agent/src/exchange/ @NIKOPACK
+packages/trading-agent/src/context.ts @NIKOPACK
+packages/trading-agent/src/tools/ @NIKOPACK
+.github/workflows/ @NIKOPACK

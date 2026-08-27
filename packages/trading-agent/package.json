@@ -1,0 +1,63 @@
+{
+	"name": "ti-trader",
+	"version": "0.1.2",
+	"description": "Ti — AI trading agent CLI built on the pi agent harness: native buy/sell tools, trading commands, paper & live crypto trading",
+	"type": "module",
+	"piConfig": {
+		"configDir": ".ti-trader"
+	},
+	"bin": {
+		"ti": "dist/cli.js"
+	},
+	"main": "./dist/index.js",
+	"types": "./dist/index.d.ts",
+	"exports": {
+		".": {
+			"types": "./dist/index.d.ts",
+			"import": "./dist/index.js"
+		}
+	},
+	"files": [
+		"dist",
+		"CHANGELOG.md"
+	],
+	"scripts": {
+		"clean": "shx rm -rf dist",
+		"build": "npm run clean && tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js",
+		"test": "vitest --run src --passWithNoTests",
+		"smoke": "node scripts/runtime-check.mjs && node scripts/paper-smoke.mjs",
+		"prepublishOnly": "npm run build"
+	},
+	"dependencies": {
+		"@earendil-works/pi-coding-agent": "0.84.3",
+		"@earendil-works/pi-tui": "0.84.3",
+		"ccxt": "4.5.58",
+		"typebox": "1.3.7"
+	},
+	"devDependencies": {
+		"@types/node": "22.19.19",
+		"shx": "0.4.0",
+		"typescript": "5.9.3",
+		"vitest": "4.1.9"
+	},
+	"keywords": [
+		"trading-agent",
+		"ai",
+		"llm",
+		"cli",
+		"crypto",
+		"trading"
+	],
+	"author": "NIKOPACK",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/NIKOPACK/Ti.git",
+		"directory": "packages/trading-agent"
+	},
+	"homepage": "https://github.com/NIKOPACK/Ti#readme",
+	"bugs": "https://github.com/NIKOPACK/Ti/issues",
+	"license": "MIT",
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

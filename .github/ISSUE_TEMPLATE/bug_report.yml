@@ -1,0 +1,44 @@
+name: Bug report
+description: Report a reproducible problem
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include API keys, tokens, account IDs, or private trading data. Report security issues through SECURITY.md.
+  - type: input
+    id: version
+    attributes:
+      label: Ti version
+      placeholder: 0.1.0
+    validations:
+      required: true
+  - type: input
+    id: environment
+    attributes:
+      label: OS and Node.js version
+    validations:
+      required: true
+  - type: dropdown
+    id: mode
+    attributes:
+      label: Trading mode
+      options:
+        - paper
+        - live
+        - not applicable
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+      description: Include sanitized logs and the smallest reproducible example.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected and actual behavior
+    validations:
+      required: true
