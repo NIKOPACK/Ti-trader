@@ -75,9 +75,11 @@ export class TradingRuntime {
 		const symbolParts = symbol.split("/");
 		const validSymbol =
 			symbolParts.length === 2 &&
-			symbolParts[1] === (marketType === "usdm-futures" ? `${quoteCurrency}:${quoteCurrency}` : quoteCurrency);
+			(marketType === "both"
+				? symbolParts[1] === quoteCurrency || symbolParts[1] === `${quoteCurrency}:${quoteCurrency}`
+				: symbolParts[1] === (marketType === "usdm-futures" ? `${quoteCurrency}:${quoteCurrency}` : quoteCurrency));
 		if (!validSymbol) {
-			return `Symbol ${symbol} must use ${marketType === "usdm-futures" ? `futures quote ${quoteCurrency} (for example BTC/${quoteCurrency}:${quoteCurrency})` : `quote currency ${quoteCurrency}`}`;
+			return `Symbol ${symbol} must use ${marketType === "both" ? `spot /${quoteCurrency} or futures /${quoteCurrency}:${quoteCurrency}` : marketType === "usdm-futures" ? `futures quote ${quoteCurrency} (for example BTC/${quoteCurrency}:${quoteCurrency})` : `quote currency ${quoteCurrency}`}`;
 		}
 		if (!Number.isFinite(notional) || notional <= 0) return "Order notional must be a positive finite number";
 		if (risk.allowedSymbols.length > 0 && !risk.allowedSymbols.includes(symbol)) {
@@ -171,11 +173,18 @@ export class TradingRuntime {
 	private async createClient(config = this.config): Promise<ExchangeClient> {
 		const { exchange, mode, quoteCurrency, paper } = config;
 		if (mode === "paper") {
-			if (config.marketType === "usdm-futures") {
-				throw new Error("Paper USDⓈ-M futures are not supported; use spot paper mode or Binance live futures");
-			}
-			return new PaperExchangeClient(exchange, quoteCurrency, paper.startQuote, paper.feeRate);
+			return new PaperExchangeClient(
+				exchange,
+				quoteCurrency,
+				paper.startQuote,
+				paper.feeRate,
+				undefined,
+				config.marketType,
+				config.leverage,
+				config.marginType,
+			);
 		}
+		if (config.marketType === "both") throw new Error('marketType "both" is supported only in Paper mode');
 		const keys = loadExchangeKeys()[exchange];
 		if (!keys) {
 			throw new Error(

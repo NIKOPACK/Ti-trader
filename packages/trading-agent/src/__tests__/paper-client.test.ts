@@ -71,6 +71,21 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
+describe("paper both-market mode", () => {
+	it("routes futures orders to an isolated paper account", async () => {
+		const both = new PaperExchangeClient("okx", "USDT", 10_000, 0.001, dir, "both");
+		(both as unknown as { futuresExchange: StubExchange }).futuresExchange = stub;
+		await both.setLeverage("BTC/USDT:USDT", 5);
+		const order = await both.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 0.01 });
+		expect(order.order.symbol).toBe("BTC/USDT:USDT");
+		expect((await both.getPositions())[0]?.positionSide).toBe("LONG");
+		await expect(both.placeOrder({ symbol: "BTC/USDT", side: "sell", type: "market", amount: 1 })).rejects.toThrow(
+			/Insufficient/,
+		);
+		await both.close();
+	});
+});
+
 describe("paper market data", () => {
 	it("returns order book depth and market rules", async () => {
 		const book = await client.getOrderBook("BTC/USDT");

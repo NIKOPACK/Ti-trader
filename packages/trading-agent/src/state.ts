@@ -2,7 +2,7 @@ import { KEYS_PATH, readJsonFile, TRADING_CONFIG_PATH, TRADING_STATE_PATH, write
 
 export type TradingMode = "paper" | "live";
 export type TradingLanguage = "zh-CN" | "en-US";
-export type MarketType = "spot" | "usdm-futures";
+export type MarketType = "spot" | "usdm-futures" | "both";
 export type FuturesMarginType = "isolated" | "cross";
 export type FuturesPositionMode = "one-way" | "hedge";
 
@@ -19,7 +19,7 @@ export interface TradingConfig {
 	/** Language used by Ti's trading TUI and prompt. */
 	language: TradingLanguage;
 	mode: TradingMode;
-	/** Market family. USDⓈ-M futures are currently supported on Binance live only. */
+	/** Market family. USDⓈ-M futures are supported on Binance; "both" is Paper-only. */
 	marketType: MarketType;
 	/** Initial leverage for USDⓈ-M futures. */
 	leverage: number;
@@ -102,9 +102,9 @@ export function validateTradingConfig(config: TradingConfig): void {
 		throw new Error(`Invalid language: ${String(config.language)}`);
 	if (config.mode !== "paper" && config.mode !== "live")
 		throw new Error(`Invalid trading mode: ${String(config.mode)}`);
-	if (!(["spot", "usdm-futures"] as const).includes(config.marketType))
-		throw new Error("marketType must be spot or usdm-futures");
-	if (config.marketType === "usdm-futures" && config.exchange !== "binance")
+	if (!(["spot", "usdm-futures", "both"] as const).includes(config.marketType))
+		throw new Error("marketType must be spot, usdm-futures, or both");
+	if ((config.marketType === "usdm-futures" || config.marketType === "both") && config.exchange !== "binance")
 		throw new Error("usdm-futures is supported only on Binance");
 	if (!Number.isInteger(config.leverage) || config.leverage < 1 || config.leverage > 125)
 		throw new Error("leverage must be an integer from 1 to 125");

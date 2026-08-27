@@ -378,13 +378,12 @@ async function executeOrder(
 	} else if (params.trailingPercent !== undefined) {
 		throw new Error("trailingPercent is only valid for trailing_stop_market orders");
 	}
-	if (params.closePosition && !stopType)
-		throw new Error("closePosition is supported only for stop or take-profit market orders");
+	if (params.closePosition && params.type !== "market" && !stopType)
+		throw new Error("closePosition is supported only for market or stop/take-profit orders");
 	if (params.closePosition && (params.amount !== undefined || params.quoteAmount !== undefined)) {
 		throw new Error("closePosition orders must omit amount and quoteAmount");
 	}
-	if (params.closePosition && params.reduceOnly !== undefined)
-		throw new Error("closePosition cannot be combined with reduceOnly");
+	if (params.closePosition && params.reduceOnly === false) throw new Error("closePosition is always reduceOnly");
 	if (config.marketType === "usdm-futures") {
 		if (config.positionMode === "hedge" && (!params.positionSide || params.positionSide === "BOTH")) {
 			throw new Error("Hedge mode futures orders require positionSide LONG or SHORT");
