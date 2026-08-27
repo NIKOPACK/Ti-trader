@@ -65,6 +65,8 @@ interface PaperAccount {
 		timestamp: number;
 	}>;
 	realizedPnl: number;
+	leverage?: number;
+	marginType?: "isolated" | "cross";
 	createdAt: number;
 }
 
@@ -129,20 +131,40 @@ export class PaperExchangeClient implements ExchangeClient {
 	readonly feeRate: number;
 
 	private readonly exchange: Exchange;
+	private readonly futuresExchange: Exchange;
+	private readonly marketType: "spot" | "usdm-futures" | "both";
 	private readonly accountPath: string;
+	private readonly futuresAccountPath: string;
 	private account: PaperAccount;
+	private futuresAccount: PaperAccount;
 	private nextOrderId: number;
+	private futuresLeverage = 1;
+	private futuresMarginType: "isolated" | "cross" = "isolated";
 
-	constructor(id: string, quoteCurrency: string, startQuote: number, feeRate: number, accountDir: string = PAPER_DIR) {
+	constructor(
+		id: string,
+		quoteCurrency: string,
+		startQuote: number,
+		feeRate: number,
+		accountDir: string = PAPER_DIR,
+		marketType: "spot" | "usdm-futures" | "both" = "spot",
+		leverage = 1,
+		marginType: "isolated" | "cross" = "isolated",
+	) {
 		this.id = id;
 		this.quoteCurrency = quoteCurrency;
 		this.feeRate = feeRate;
+		this.marketType = marketType;
+		this.futuresLeverage = leverage;
+		this.futuresMarginType = marginType;
 		const ExchangeClass = (ccxt as unknown as Record<string, new (cfg: object) => Exchange>)[id];
 		if (!ExchangeClass) {
 			throw new Error(`Unknown exchange "${id}". Check https://docs.ccxt.com for supported ids.`);
 		}
 		this.exchange = new ExchangeClass({ enableRateLimit: true });
+		this.futuresExchange = new ExchangeClass({ enableRateLimit: true, options: { defaultType: "swap" } });
 		this.accountPath = join(accountDir, `${id}-${quoteCurrency}.json`);
+		this.futuresAccountPath = join(accountDir, `${id}-${quoteCurrency}-futures.json`);
 		const stored = readJsonFile<PaperAccount>(this.accountPath);
 		if (stored && stored.quote === quoteCurrency) {
 			this.account = stored;
@@ -158,18 +180,53 @@ export class PaperExchangeClient implements ExchangeClient {
 			};
 			this.persist();
 		}
+		this.futuresAccount = readJsonFile<PaperAccount>(this.futuresAccountPath) ?? {
+			quote: quoteCurrency,
+			balances: { [quoteCurrency]: startQuote },
+			entries: {},
+			orders: [],
+			trades: [],
+			realizedPnl: 0,
+			leverage,
+			marginType,
+			createdAt: Date.now(),
+		};
+		this.futuresLeverage = this.futuresAccount.leverage ?? leverage;
+		this.futuresMarginType = this.futuresAccount.marginType ?? marginType;
+		this.futuresAccount.leverage = this.futuresLeverage;
+		this.futuresAccount.marginType = this.futuresMarginType;
 		this.nextOrderId =
-			this.account.orders.reduce((max, o) => Math.max(max, Number.parseInt(o.id, 10) || 0), 0) +
-			this.account.trades.length +
-			1;
+			Math.max(
+				this.account.orders.length + this.account.trades.length,
+				this.futuresAccount.orders.length + this.futuresAccount.trades.length,
+			) + 1;
+	}
+
+	private isFuturesSymbol(symbol: string): boolean {
+		return symbol.endsWith(`/${this.quoteCurrency}:${this.quoteCurrency}`);
+	}
+	private exchangeFor(symbol: string): Exchange {
+		const futures = this.isFuturesSymbol(symbol);
+		if ((this.marketType === "spot" && futures) || (this.marketType === "usdm-futures" && !futures)) {
+			throw new Error(`${futures ? "Futures" : "Spot"} markets are disabled in ${this.marketType} mode`);
+		}
+		return futures ? this.futuresExchange : this.exchange;
+	}
+	private persistAll(): void {
+		this.persist();
+		writeJsonFile(this.futuresAccountPath, this.futuresAccount);
 	}
 
 	async getTicker(symbol: string): Promise<Ticker> {
-		return toTicker(await this.exchange.fetchTicker(symbol));
+		if (this.marketType === "spot" && this.isFuturesSymbol(symbol))
+			throw new Error("Futures markets are disabled in spot mode");
+		if (this.marketType === "usdm-futures" && !this.isFuturesSymbol(symbol))
+			throw new Error("Spot markets are disabled in futures mode");
+		return toTicker(await this.exchangeFor(symbol).fetchTicker(symbol));
 	}
 
 	async getOrderBook(symbol: string, limit = 20): Promise<OrderBook> {
-		const book = await this.exchange.fetchOrderBook(symbol, limit);
+		const book = await this.exchangeFor(symbol).fetchOrderBook(symbol, limit);
 		const bids = book.bids.flatMap(([price, amount]) =>
 			price !== undefined && amount !== undefined ? [{ price, amount }] : [],
 		);
@@ -192,9 +249,18 @@ export class PaperExchangeClient implements ExchangeClient {
 	}
 
 	async getMarketInfo(symbol: string): Promise<MarketInfo> {
-		await this.exchange.loadMarkets();
-		const market = this.exchange.markets[symbol];
-		if (!market || market.quote !== this.quoteCurrency) throw new Error(`Unsupported market: ${symbol}`);
+		const exchange = this.exchangeFor(symbol);
+		await exchange.loadMarkets();
+		const market = exchange.markets[symbol];
+		const futures = this.isFuturesSymbol(symbol);
+		if (
+			(this.marketType === "spot" && futures) ||
+			(this.marketType === "usdm-futures" && !futures) ||
+			!market ||
+			market.quote !== this.quoteCurrency ||
+			(futures ? market.swap !== true : market.swap === true)
+		)
+			throw new Error(`Unsupported market: ${symbol}`);
 		return {
 			symbol: market.symbol,
 			base: market.base,
@@ -214,12 +280,22 @@ export class PaperExchangeClient implements ExchangeClient {
 		};
 	}
 
-	async getContractStats(_symbol: string): Promise<ContractStats> {
-		throw new Error("Contract stats are not available in paper mode");
+	async getContractStats(symbol: string): Promise<ContractStats> {
+		if (!this.isFuturesSymbol(symbol)) throw new Error("Contract stats require a futures symbol");
+		const ticker = await this.futuresExchange.fetchTicker(symbol);
+		const info = ticker.info as Record<string, unknown> | undefined;
+		const markPrice = Number(info?.markPrice ?? NaN);
+		const indexPrice = Number(info?.indexPrice ?? NaN);
+		return {
+			symbol,
+			lastPrice: ticker.last ?? undefined,
+			markPrice: Number.isFinite(markPrice) ? markPrice : undefined,
+			indexPrice: Number.isFinite(indexPrice) ? indexPrice : undefined,
+		};
 	}
 
 	async getKlines(symbol: string, timeframe: string, limit: number): Promise<Kline[]> {
-		const ohlcv = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
+		const ohlcv = await this.exchangeFor(symbol).fetchOHLCV(symbol, timeframe, undefined, limit);
 		return ohlcv.map((k) => ({
 			timestamp: k[0] ?? 0,
 			open: k[1] ?? 0,
@@ -232,6 +308,7 @@ export class PaperExchangeClient implements ExchangeClient {
 
 	async getBalances(): Promise<Balance[]> {
 		await this.settleOpenOrders();
+		if (this.marketType === "usdm-futures") return this.futuresBalances();
 		const result: Balance[] = [];
 		for (const [asset, free] of Object.entries(this.account.balances)) {
 			const used = this.reservedAmount(asset);
@@ -244,11 +321,17 @@ export class PaperExchangeClient implements ExchangeClient {
 				quoteValue: await this.estimateQuoteValue(asset, free + used),
 			});
 		}
+		if (this.marketType === "both") {
+			for (const balance of await this.futuresBalances()) {
+				result.push({ ...balance, asset: `futures:${balance.asset}` });
+			}
+		}
 		return result;
 	}
 
 	async getPositions(): Promise<Position[]> {
 		await this.settleOpenOrders();
+		if (this.marketType === "usdm-futures") return this.futuresPositions();
 		const result: Position[] = [];
 		for (const [asset, entry] of Object.entries(this.account.entries)) {
 			const held = (this.account.balances[asset] ?? 0) + this.reservedAmount(asset);
@@ -270,21 +353,29 @@ export class PaperExchangeClient implements ExchangeClient {
 					avgEntryPrice !== undefined && avgEntryPrice > 0 ? (price / avgEntryPrice - 1) * 100 : undefined,
 			});
 		}
+		if (this.marketType === "both") result.push(...(await this.futuresPositions()));
 		return result;
 	}
 
 	async getOpenOrders(symbol?: string): Promise<Order[]> {
 		await this.settleOpenOrders();
-		return this.account.orders.filter((o) => o.status === "open" && (!symbol || o.symbol === symbol)).map(toOrder);
+		const account = symbol && this.isFuturesSymbol(symbol) ? this.futuresAccount : this.account;
+		return account.orders.filter((o) => o.status === "open" && (!symbol || o.symbol === symbol)).map(toOrder);
 	}
 
 	async getOrderHistory(symbol?: string, limit = 50): Promise<Order[]> {
 		await this.settleOpenOrders();
-		const closed = this.account.orders.filter((o) => o.status !== "open" && (!symbol || o.symbol === symbol));
+		const account = symbol && this.isFuturesSymbol(symbol) ? this.futuresAccount : this.account;
+		const closed = account.orders.filter((o) => o.status !== "open" && (!symbol || o.symbol === symbol));
 		return closed.slice(-limit).map(toOrder);
 	}
 
 	async placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResult> {
+		if (this.isFuturesSymbol(input.symbol)) {
+			if (this.marketType === "spot") throw new Error("Futures markets are disabled in spot mode");
+			return this.placeFuturesMarketOrder(input);
+		}
+		if (this.marketType === "usdm-futures") throw new Error("Spot markets are disabled in futures mode");
 		await this.settleOpenOrders();
 		baseAsset(input.symbol, this.quoteCurrency); // validates market
 		if (input.amount <= 0) throw new Error("Amount must be positive");
@@ -371,6 +462,8 @@ export class PaperExchangeClient implements ExchangeClient {
 	}
 
 	async placeOcoOrder(input: PlaceOcoOrderInput): Promise<PlaceOcoOrderResult> {
+		if (this.isFuturesSymbol(input.symbol))
+			throw new Error("Paper futures OCO orders are not supported; use market orders");
 		await this.settleOpenOrders();
 		baseAsset(input.symbol, this.quoteCurrency); // validates market
 		if (input.amount <= 0) throw new Error("Amount must be positive");
@@ -420,32 +513,110 @@ export class PaperExchangeClient implements ExchangeClient {
 		return { orders: [toOrder(stopLeg), toOrder(profitLeg)] };
 	}
 
+	private async placeFuturesMarketOrder(input: PlaceOrderInput): Promise<PlaceOrderResult> {
+		if (input.type !== "market") throw new Error("Paper futures currently support market orders only");
+		if (!input.closePosition && input.amount <= 0) throw new Error("Amount must be positive");
+		if (input.closePosition && input.reduceOnly === false) throw new Error("closePosition is always reduceOnly");
+		const ticker = await this.futuresExchange.fetchTicker(input.symbol);
+		const price = ticker.last;
+		if (price === undefined || price <= 0) throw new Error(`No price available for ${input.symbol}`);
+		const account = this.futuresAccount;
+		const asset = baseAsset(input.symbol, `${this.quoteCurrency}:${this.quoteCurrency}`);
+		const current = account.entries[asset] ?? { amount: 0, cost: 0 };
+		const currentQty = Math.abs(current.amount);
+		const currentAvg = currentQty > 0 ? current.cost / currentQty : 0;
+		const requested = input.closePosition ? currentQty : input.amount;
+		if (input.closePosition && currentQty === 0) throw new Error("closePosition requires an open futures position");
+		const signed = input.side === "buy" ? requested : -requested;
+		if (input.reduceOnly && current.amount !== 0 && Math.sign(signed) === Math.sign(current.amount))
+			throw new Error("reduceOnly order cannot increase the position");
+		const closing =
+			current.amount !== 0 && Math.sign(signed) !== Math.sign(current.amount)
+				? Math.min(Math.abs(current.amount), Math.abs(signed))
+				: 0;
+		const pnl = closing * (price - currentAvg) * Math.sign(current.amount);
+		const notional = requested * price;
+		const fee = notional * this.feeRate;
+		const releasedMargin = (closing * currentAvg) / this.futuresLeverage;
+		const remaining = current.amount + signed;
+		const opening = Math.max(0, Math.abs(remaining) - Math.max(0, currentQty - closing));
+		const openingMargin = (opening * price) / this.futuresLeverage;
+		const available = account.balances[this.quoteCurrency] ?? 0;
+		if (available + releasedMargin + pnl < fee + openingMargin) throw new Error("Insufficient futures margin");
+		account.balances[this.quoteCurrency] = available + releasedMargin + pnl - fee - openingMargin;
+		if (remaining === 0) delete account.entries[asset];
+		else
+			account.entries[asset] = {
+				amount: remaining,
+				cost:
+					Math.sign(remaining) === Math.sign(current.amount)
+						? current.cost + (Math.abs(signed) - closing) * price
+						: Math.abs(remaining) * price,
+			};
+		account.realizedPnl += pnl;
+		const order: PaperOrder = {
+			id: String(this.nextOrderId++),
+			symbol: input.symbol,
+			side: input.side,
+			type: "market",
+			amount: requested,
+			filled: requested,
+			average: price,
+			cost: notional,
+			status: "closed",
+			timestamp: Date.now(),
+		};
+		account.orders.push(order);
+		account.trades.push({
+			id: order.id,
+			symbol: input.symbol,
+			side: input.side,
+			price,
+			amount: requested,
+			cost: notional,
+			fee,
+			realizedPnl: pnl,
+			timestamp: order.timestamp,
+		});
+		this.persistAll();
+		return { order: toOrder(order), fee };
+	}
+
 	async cancelOrder(id: string, symbol: string): Promise<void> {
-		const order = this.account.orders.find((o) => o.id === id && o.symbol === symbol && o.status === "open");
+		const account = this.isFuturesSymbol(symbol) ? this.futuresAccount : this.account;
+		const order = account.orders.find((o) => o.id === id && o.symbol === symbol && o.status === "open");
 		if (!order) throw new Error(`Open order ${id} on ${symbol} not found`);
 		order.status = "canceled";
 		this.releaseReservation(order);
 		// Cancelling one OCO leg cancels the whole group; the shared
 		// reservation was already released above.
 		if (order.ocoGroup) {
-			for (const sibling of this.account.orders) {
+			for (const sibling of account.orders) {
 				if (sibling.ocoGroup === order.ocoGroup && sibling.status === "open") sibling.status = "canceled";
 			}
 		}
-		this.persist();
+		this.persistAll();
 	}
 
 	async getFundingRate(symbol: string): Promise<{ symbol: string; rate: number; nextFundingTime?: number }> {
-		if (!symbol.includes(":")) throw new Error("Paper futures funding requires a futures symbol");
+		if (!this.isFuturesSymbol(symbol) || this.marketType === "spot")
+			throw new Error("Paper futures funding requires a futures symbol");
 		return { symbol, rate: 0, nextFundingTime: undefined };
 	}
 
-	async setLeverage(_symbol: string, _leverage: number): Promise<void> {
-		throw new Error("Paper futures trading is not implemented; use Binance live USDⓈ-M futures");
+	async setLeverage(symbol: string, leverage: number): Promise<void> {
+		if (!this.isFuturesSymbol(symbol)) throw new Error("Leverage requires a futures symbol");
+		if (!Number.isInteger(leverage) || leverage < 1 || leverage > 125) throw new Error("Invalid leverage");
+		this.futuresLeverage = leverage;
+		this.futuresAccount.leverage = leverage;
+		this.persistAll();
 	}
 
-	async setMarginMode(_symbol: string, _marginType: "isolated" | "cross"): Promise<void> {
-		throw new Error("Paper futures trading is not implemented; use Binance live USDⓈ-M futures");
+	async setMarginMode(symbol: string, marginType: "isolated" | "cross"): Promise<void> {
+		if (!this.isFuturesSymbol(symbol)) throw new Error("Margin mode requires a futures symbol");
+		this.futuresMarginType = marginType;
+		this.futuresAccount.marginType = marginType;
+		this.persistAll();
 	}
 
 	async getTopMarkets(limit: number): Promise<Ticker[]> {
@@ -460,6 +631,7 @@ export class PaperExchangeClient implements ExchangeClient {
 
 	async close(): Promise<void> {
 		await this.exchange.close();
+		if (this.futuresExchange !== this.exchange) await this.futuresExchange.close();
 	}
 
 	/** Wipe the simulated account and start over with the given quote balance. */
@@ -476,11 +648,56 @@ export class PaperExchangeClient implements ExchangeClient {
 			realizedPnl: 0,
 			createdAt: Date.now(),
 		};
+		this.futuresAccount = {
+			quote: this.quoteCurrency,
+			balances: { [this.quoteCurrency]: startQuote },
+			entries: {},
+			orders: [],
+			trades: [],
+			realizedPnl: 0,
+			leverage: this.futuresLeverage,
+			marginType: this.futuresMarginType,
+			createdAt: Date.now(),
+		};
 		this.nextOrderId = 1;
-		this.persist();
+		this.persistAll();
 	}
 
 	// --- internals -----------------------------------------------------------
+
+	private futuresBalances(): Promise<Balance[]> {
+		const free = this.futuresAccount.balances[this.quoteCurrency] ?? 0;
+		return Promise.resolve([{ asset: this.quoteCurrency, free, used: 0, total: free, quoteValue: free }]);
+	}
+
+	private async futuresPositions(): Promise<Position[]> {
+		const result: Position[] = [];
+		for (const [asset, entry] of Object.entries(this.futuresAccount.entries)) {
+			if (entry.amount === 0) continue;
+			const symbol = `${asset}/${this.quoteCurrency}:${this.quoteCurrency}`;
+			const ticker = await this.futuresExchange.fetchTicker(symbol);
+			const mark = ticker.last;
+			if (mark === undefined) continue;
+			const avg = entry.cost / Math.abs(entry.amount);
+			const pnl = (mark - avg) * entry.amount;
+			result.push({
+				symbol,
+				asset,
+				amount: Math.abs(entry.amount),
+				quoteValue: Math.abs(entry.amount) * mark,
+				positionSide: entry.amount > 0 ? "LONG" : "SHORT",
+				leverage: this.futuresLeverage,
+				marginType: this.futuresMarginType,
+				markPrice: mark,
+				margin: (Math.abs(entry.amount) * avg) / this.futuresLeverage,
+				avgEntryPrice: avg,
+				unrealizedPnl: pnl,
+				unrealizedPnlPct:
+					Math.abs(entry.amount) * avg > 0 ? (pnl / (Math.abs(entry.amount) * avg)) * 100 : undefined,
+			});
+		}
+		return result;
+	}
 
 	private reservedAmount(asset: string): number {
 		let used = 0;

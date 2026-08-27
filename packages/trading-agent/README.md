@@ -43,7 +43,7 @@ Ti 与 pi 使用完全独立的配置目录。Ti 首次启动会创建 `~/.ti-tr
 - **止盈止损**：`stop`/`stop_market`（止损触发）、`take_profit`/`take_profit_market`（止盈触发）、`trailing_stop_market`（按百分比回撤的移动止损），paper 与 live 均支持
 - **OCO 括号单**：`place_oco` 一次挂上止损+止盈，任一成交自动撤销另一腿
 - **后台监控与仓位守护**：轮询挂单成交并唤醒 agent 跟进；持仓无止损保护或浮亏超阈值时告警并唤醒 agent 处理或汇报
-- **Binance USDⓈ-M 合约**：Binance 专用 swap 模式，支持杠杆、逐仓/全仓、单向/双向持仓、reduceOnly、止损触发参数及资金费率查询
+- **Binance USDⓈ-M 合约**：Binance 专用 swap 模式；Paper 支持独立合约账户、杠杆、逐仓/全仓、单向/双向持仓、reduceOnly、平仓、盈亏和保证金模拟，实盘支持交易所提供的合约订单参数及资金费率查询
 - **市场数据完整性**：`get_order_book`、`get_market_info`、`get_contract_stats` 分别读取订单簿、Binance `exchangeInfo` 市场规则、`premiumIndex`/资金费率及未平仓量；缺失数据返回 `null` 和 `warnings`，不会伪装为 0
 
 ## 构建
@@ -67,6 +67,8 @@ node packages/trading-agent/dist/cli.js -p "分析 BTC 1h 走势并说明是否�
 node packages/trading-agent/dist/cli.js --mode live --exchange okx
 # Binance USDⓈ-M futures（使用 BTC/USDT:USDT 等 ccxt 合约 symbol）
 node packages/trading-agent/dist/cli.js --mode live --exchange binance
+# Paper 同时启用现货和 USDⓈ-M 合约
+node packages/trading-agent/dist/cli.js --mode paper --exchange binance
 ```
 
 首次运行用 `/login` 配置模型 Provider；使用 `/exchange-login` 配置交易所 API。交易所支持 Binance（币安）、OKX、Bybit。使用 `/language` 可在中文和 English 之间切换，设置保存于 `~/.ti-trader/agent/trading.json`。模型认证存于 `~/.ti-trader/agent/auth.json`，交易所 API key 存于 `~/.ti-trader/agent/keys.json`，与 pi coding agent 隔离。
@@ -135,9 +137,15 @@ Paper 模式的触发在每次账户读取时懒惰撮合：所有挂单（限�
 
 ## 合约说明
 
-Binance USDⓈ-M 合约使用 ccxt unified symbol，例如 `BTC/USDT:USDT`，不是现货的 `BTC/USDT`。将 `marketType` 设为 `usdm-futures` 时，运行时强制要求 `exchange` 为 `binance`，并启用 ccxt `defaultType: swap`。
+Binance USDⓈ-M 合约使用 ccxt unified symbol，例如 `BTC/USDT:USDT`，不是现货的 `BTC/USDT`。市场类型行为如下：
 
-可用工具包括 `get_funding_rate`、`set_leverage`、`set_margin_mode`、`get_futures_positions`；买卖工具额外支持 `reduceOnly`、`positionSide`、`stopPrice`、`closePosition`。Paper futures 当前明确拒绝，不会模拟保证金或强平，避免把现货模拟误认为合约风控。
+- `spot`：只允许 `BTC/USDT` 等现货交易对。
+- `usdm-futures`：只允许 `BTC/USDT:USDT` 等 Binance USDⓈ-M 合约交易对。
+- `both`：仅 Paper 模式可用，同时启用两个独立账户；现货和合约必须使用对应格式的交易对。
+
+启用合约市场时运行时强制要求 `exchange` 为 `binance`，并使用 ccxt `defaultType: swap`。Paper 合约账户独立持有报价币保证金，不会使用现货余额；杠杆和保证金模式会持久化到独立的 Paper 状态文件。余额查询中的 `futures:USDT` 表示合约账户的 USDT，普通 `USDT` 表示现货账户的 USDT。
+
+可用工具包括 `get_funding_rate`、`set_leverage`、`set_margin_mode`、`get_futures_positions`；买卖工具额外支持 `reduceOnly`、`positionSide`、`stopPrice`、`closePosition`。Paper futures 当前只支持市价单，支持开仓、加仓、部分平仓、全平、反向开仓、加权均价、已实现/未实现盈亏、手续费和保证金校验；尚未模拟合约条件单、资金费率扣款或完整强平流程。实盘合约订单能力以 Binance 和 ccxt 当前支持为准。
 
 ## 市场数据限制
 
@@ -161,8 +169,8 @@ src/
   context.ts            交易运行时单例：exchange client、风控计数、模式切换
   exchange/
     types.ts            ExchangeClient 统一接口
-    ccxt-client.ts      实盘客户端（ccxt，100+ 交易所）
-    paper-client.ts     模拟盘引擎（真实行情 + 本地账户 + 懒撮合，含止盈止损/移动止损/OCO/K线回填）
+    ccxt-client.ts      实盘客户端（ccxt，100+ 交易所；含现货与 Binance 合约路由）
+    paper-client.ts     模拟盘引擎（真实行情 + 独立现货/合约账户 + 懒撮合，现货含止盈止损/移动止损/OCO/K线回填，合约含市价成交与保证金模拟）
   tools/index.ts        15 个原生交易工具（含 place_oco 与 Binance 合约工具）
   monitor.ts            后台成交监控 + 仓位守护（裸仓/浮亏告警，唤醒 agent）
   commands.ts           交易 slash 命令（inline extension factory）

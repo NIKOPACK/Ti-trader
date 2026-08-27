@@ -4,22 +4,30 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
-### Fixed
-
-- Declared `@earendil-works/pi-tui` as a runtime dependency so globally installed packages work outside the monorepo.
+## [0.1.3] - 2026-08-27
 
 ### Added
 
+- Added Paper support for simultaneous spot and Binance USDⓈ-M futures markets with independent accounts.
+- Added Paper futures position accounting for leverage, margin mode, weighted average entry, realized/unrealized PnL, fees, partial closes, full closes, and reversals.
+- Added market-family routing and validation for spot and futures market data.
 - Added GitHub CI, dependency update configuration, contribution templates, and secret scanning.
 - Documented live-trading loss risks and minimum API-key permissions.
 
+### Changed
+
+- Improved trading transcript cards (`/balance`, `/positions`, `/orders`, `/trades`, `/markets`) with adaptive borders, visible-width-aware Chinese alignment, and status colors.
+
 ### Fixed
 
+- Declared `@earendil-works/pi-tui` as a runtime dependency so globally installed packages work outside the monorepo.
 - Pinned the `@earendil-works/pi-coding-agent` runtime dependency to the tested version.
-- Fixed trading transcript cards (`/balance`, `/positions`, `/orders`, `/trades`, `/markets`) rendering with misaligned top, side, and bottom borders; the box width now adapts to content and terminal width.
-- Fixed Chinese column headers (可用余额/冻结余额/估值) misaligning with numeric columns due to byte-length padding; alignment is now visible-width aware.
+- Fixed Paper futures balance persistence, reset behavior, order identifiers, and strict futures symbol validation.
+- Fixed `closePosition` handling for futures orders.
+- Fixed trading transcript cards rendering with misaligned top, side, and bottom borders.
+- Fixed Chinese column headers misaligning with numeric columns due to byte-length padding.
 - Fixed the published package missing its direct `@earendil-works/pi-tui` dependency.
-- Colored negative PnL, market change percentages, and buy/sell sides (green/red) instead of only positive PnL; LIVE mode switches show a warning tone.
+- Colored negative PnL, market change percentages, and buy/sell sides instead of only positive PnL; LIVE mode switches show a warning tone.
 
 ## [0.1.1] - 2026-08-27
 
@@ -54,6 +62,7 @@ Initial public release.
 - Coding tools disabled; system prompt fully replaced with a trading-domain prompt
 - Configuration and state under `~/.ti/agent/`, isolated from the pi coding agent's `~/.pi`
 
-[Unreleased]: https://github.com/NIKOPACK/Ti/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/NIKOPACK/Ti/compare/v0.1.3...HEAD
+[0.1.3]: https://github.com/NIKOPACK/Ti/compare/v0.1.2...v0.1.3
 [0.1.1]: https://github.com/NIKOPACK/Ti/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/NIKOPACK/Ti/releases/tag/v0.1.0

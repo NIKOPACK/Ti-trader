@@ -14,6 +14,7 @@ describe("trading configuration", () => {
 	});
 	it("rejects futures on non-Binance", () => {
 		expect(() => validateTradingConfig({ ...DEFAULT_CONFIG, marketType: "usdm-futures" })).toThrow(/Binance/);
+		expect(() => validateTradingConfig({ ...DEFAULT_CONFIG, exchange: "binance", marketType: "both" })).not.toThrow();
 	});
 	it("rejects an invalid risk configuration", () => {
 		expect(() =>
