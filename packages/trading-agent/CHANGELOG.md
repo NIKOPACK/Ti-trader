@@ -4,6 +4,10 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Added Binance Spot native trailing-stop orders using `trailingDelta` and clarified Spot OCO/trailing-stop support.
+
 ## [0.1.4] - 2026-08-28
 
 ### Added

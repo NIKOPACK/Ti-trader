@@ -343,6 +343,20 @@ export class CcxtExchangeClient implements ExchangeClient {
 		) {
 			throw new Error(`Order cost is below minimum ${minCost} for ${input.symbol}`);
 		}
+		// Binance Spot exposes trailing stops through its native `trailingDelta`
+		// parameter (integer BIPS), not the futures TRAILING_STOP_MARKET type.
+		// Use the native endpoint because ccxt does not reliably map the unified
+		// trailingPercent parameter to Spot orders.
+		if (this.id === "binance" && this.marketType === "spot" && input.type === "trailing_stop_market") {
+			const raw = await this.createBinanceSpotTrailingOrder(
+				input.symbol,
+				input.side,
+				numericAmount,
+				input.trailingPercent as number,
+				stopPrice,
+			);
+			return { order: this.binanceRawOrderToOrder(raw, input.symbol, input.side, numericAmount) };
+		}
 		// Map order types onto ccxt's exchange-agnostic createOrder contract:
 		// execution type market/limit plus unified trigger/trailing params.
 		const execType = isLimitExec ? "limit" : "market";
@@ -465,6 +479,51 @@ export class CcxtExchangeClient implements ExchangeClient {
 			this.exchange,
 			params,
 		)) as Record<string, unknown>;
+	}
+
+	private async createBinanceSpotTrailingOrder(
+		symbol: string,
+		side: "buy" | "sell",
+		amount: number,
+		trailingPercent: number,
+		stopPrice?: number,
+	): Promise<Record<string, unknown>> {
+		const endpoint = (this.exchange as unknown as Record<string, unknown>).privatePostOrder;
+		if (typeof endpoint !== "function")
+			throw new Error("Binance ccxt adapter does not expose the spot order endpoint");
+		const market = this.exchange.markets[symbol];
+		const trailingDelta = Math.round(trailingPercent * 100);
+		if (trailingDelta < 1 || trailingDelta > 10_000)
+			throw new Error("Binance Spot trailingPercent must convert to trailingDelta between 1 and 10000 BIPS");
+		const params: Record<string, string> = {
+			symbol: market.id,
+			side: side.toUpperCase(),
+			type: side === "sell" ? "STOP_LOSS" : "TAKE_PROFIT",
+			quantity: this.exchange.amountToPrecision(symbol, amount),
+			trailingDelta: String(trailingDelta),
+		};
+		if (stopPrice !== undefined) params.stopPrice = this.exchange.priceToPrecision(symbol, stopPrice);
+		return (await (endpoint as (params: Record<string, string>) => Promise<unknown>).call(
+			this.exchange,
+			params,
+		)) as Record<string, unknown>;
+	}
+
+	private binanceRawOrderToOrder(raw: unknown, symbol: string, side: "buy" | "sell", amount: number): Order {
+		const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
+		return {
+			id: String(r.orderId ?? r.clientOrderId ?? "unknown"),
+			symbol,
+			side,
+			type: "trailing_stop_market",
+			stopPrice: Number(r.stopPrice) || undefined,
+			amount,
+			filled: Number(r.executedQty) || 0,
+			remaining: amount - (Number(r.executedQty) || 0),
+			cost: Number(r.cummulativeQuoteQty) || 0,
+			status: r.status === "FILLED" ? "closed" : r.status === "CANCELED" ? "canceled" : "open",
+			timestamp: validTimestamp(Number(r.transactTime ?? Date.now())),
+		};
 	}
 
 	private binanceReportToOrder(report: unknown, symbol: string, side: "buy" | "sell", amount: number): Order {

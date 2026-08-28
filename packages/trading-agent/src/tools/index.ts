@@ -67,7 +67,7 @@ const orderSchema = Type.Object({
 				"(sell: falls to stopPrice — a stop-loss; buy: rises to stopPrice). take_profit/take_profit_market " +
 				"trigger when the price moves in your favor (sell: rises to stopPrice; buy: falls to stopPrice). " +
 				"stop/take_profit rest as limit orders at `price` after triggering; the _market variants fill immediately. " +
-				"trailing_stop_market trails the best price by trailingPercent and fires on the pullback.",
+				"trailing_stop_market trails the best price by trailingPercent and fires on the pullback. On Binance Spot this uses native trailingDelta (BIPS); it is not limited to USDⓈ-M futures.",
 		},
 	),
 	amount: Type.Optional(Type.Number({ description: "Amount in base currency, e.g. 0.01 BTC" })),
@@ -89,7 +89,7 @@ const orderSchema = Type.Object({
 			maximum: 99,
 			description:
 				"Trailing distance in percent for trailing_stop_market, e.g. 2 = trigger after a 2% pullback " +
-				"from the best price since placement.",
+				"from the best price since placement. Binance Spot converts this to native trailingDelta BIPS.",
 		}),
 	),
 	closePosition: Type.Optional(Type.Boolean()),
