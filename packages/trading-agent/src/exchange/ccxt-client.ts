@@ -458,6 +458,8 @@ export class CcxtExchangeClient implements ExchangeClient {
 			belowType: "STOP_LOSS_LIMIT",
 			belowPrice: this.exchange.priceToPrecision(symbol, stopLossPrice),
 			belowStopPrice: this.exchange.priceToPrecision(symbol, stopLossPrice),
+			// Binance requires a time-in-force for the STOP_LOSS_LIMIT leg.
+			belowTimeInForce: "GTC",
 		};
 		return (await (endpoint as (params: Record<string, string>) => Promise<unknown>).call(
 			this.exchange,
