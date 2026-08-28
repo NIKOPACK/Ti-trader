@@ -27,6 +27,12 @@ export interface AgentSessionRuntimeDiagnostic {
 	message: string;
 }
 
+/** Public resource-loader options accepted by createAgentSessionServices(). */
+export type AgentSessionResourceLoaderOptions = Omit<
+	DefaultResourceLoaderOptions,
+	"cwd" | "agentDir" | "settingsManager"
+>;
+
 /**
  * Inputs for creating cwd-bound runtime services.
  *
@@ -41,7 +47,7 @@ export interface CreateAgentSessionServicesOptions {
 	modelRuntime?: ModelRuntime;
 	modelRuntimeSignal?: AbortSignal;
 	extensionFlagValues?: Map<string, boolean | string>;
-	resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
+	resourceLoaderOptions?: AgentSessionResourceLoaderOptions;
 	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
 }
 

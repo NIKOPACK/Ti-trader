@@ -23,23 +23,14 @@ export function readPiManifest(packageJsonPath: string, flavor: ManifestFlavor =
 	try {
 		const pkg: unknown = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8")));
 		if (!isObject(pkg)) return null;
-		// A caller selects its manifest namespace explicitly. The fallback keeps Ti
-		// compatible with existing Pi packages without changing Pi precedence.
-		const resourceManifest =
-			flavor === "ti"
-				? isObject(pkg.ti)
-					? pkg.ti
-					: isObject(pkg.pi)
-						? pkg.pi
-						: null
-				: isObject(pkg.pi)
-					? pkg.pi
-					: null;
-		if (!resourceManifest) return null;
+		const piManifest = isObject(pkg.pi) ? pkg.pi : null;
+		const primaryManifest = flavor === "ti" && isObject(pkg.ti) ? pkg.ti : piManifest;
+		if (!primaryManifest && !piManifest) return null;
 
 		const manifest: TiManifest = {};
 		for (const field of RESOURCE_FIELDS) {
-			const entries = resourceManifest[field];
+			const primaryEntries = primaryManifest?.[field];
+			const entries = Array.isArray(primaryEntries) ? primaryEntries : piManifest?.[field];
 			if (Array.isArray(entries) && entries.every((entry) => typeof entry === "string")) {
 				manifest[field] = entries;
 			}

@@ -43,7 +43,7 @@ import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
 import { stripBom } from "../utils/text.ts";
 import { isStdoutTakenOver } from "./output-guard.ts";
-import { type PiManifest, readPiManifest } from "./pi-manifest.ts";
+import { type ManifestFlavor, type PiManifest, readPiManifest } from "./pi-manifest.ts";
 import type { PackageSource, SettingsManager } from "./settings-manager.ts";
 
 const NETWORK_TIMEOUT_MS = 10000;
@@ -131,6 +131,7 @@ interface PackageManagerOptions {
 	cwd: string;
 	agentDir: string;
 	settingsManager: SettingsManager;
+	manifestFlavor?: ManifestFlavor;
 }
 
 type SourceScope = "user" | "project" | "temporary";
@@ -554,10 +555,10 @@ function collectAutoThemeEntries(dir: string): string[] {
 	return entries;
 }
 
-function resolveExtensionEntries(dir: string): string[] | null {
+function resolveExtensionEntries(dir: string, manifestFlavor: ManifestFlavor = "pi"): string[] | null {
 	const packageJsonPath = join(dir, "package.json");
 	if (existsSync(packageJsonPath)) {
-		const manifest = readPiManifest(packageJsonPath);
+		const manifest = readPiManifest(packageJsonPath, manifestFlavor);
 		if (manifest?.extensions?.length) {
 			const entries: string[] = [];
 			for (const extPath of manifest.extensions) {
@@ -584,12 +585,12 @@ function resolveExtensionEntries(dir: string): string[] | null {
 	return null;
 }
 
-function collectAutoExtensionEntries(dir: string): string[] {
+function collectAutoExtensionEntries(dir: string, manifestFlavor: ManifestFlavor = "pi"): string[] {
 	const entries: string[] = [];
 	if (!existsSync(dir)) return entries;
 
 	// First check if this directory itself has explicit extension entries (package.json or index)
-	const rootEntries = resolveExtensionEntries(dir);
+	const rootEntries = resolveExtensionEntries(dir, manifestFlavor);
 	if (rootEntries) {
 		return rootEntries;
 	}
@@ -625,7 +626,7 @@ function collectAutoExtensionEntries(dir: string): string[] {
 			if (isFile && (entry.name.endsWith(".ts") || entry.name.endsWith(".js"))) {
 				entries.push(fullPath);
 			} else if (isDir) {
-				const resolvedEntries = resolveExtensionEntries(fullPath);
+				const resolvedEntries = resolveExtensionEntries(fullPath, manifestFlavor);
 				if (resolvedEntries) {
 					entries.push(...resolvedEntries);
 				}
@@ -642,12 +643,16 @@ function collectAutoExtensionEntries(dir: string): string[] {
  * Collect resource files from a directory based on resource type.
  * Extensions use smart discovery (index.ts in subdirs), others use recursive collection.
  */
-function collectResourceFiles(dir: string, resourceType: ResourceType): string[] {
+function collectResourceFiles(
+	dir: string,
+	resourceType: ResourceType,
+	manifestFlavor: ManifestFlavor = "pi",
+): string[] {
 	if (resourceType === "skills") {
 		return collectSkillEntries(dir, "pi");
 	}
 	if (resourceType === "extensions") {
-		return collectAutoExtensionEntries(dir);
+		return collectAutoExtensionEntries(dir, manifestFlavor);
 	}
 	return collectFiles(dir, FILE_PATTERNS[resourceType]);
 }
@@ -807,6 +812,7 @@ export class DefaultPackageManager implements PackageManager {
 	private cwd: string;
 	private agentDir: string;
 	private settingsManager: SettingsManager;
+	private readonly manifestFlavor: ManifestFlavor;
 	private globalNpmRoot: string | undefined;
 	private globalNpmRootCommandKey: string | undefined;
 	private progressCallback: ProgressCallback | undefined;
@@ -815,6 +821,7 @@ export class DefaultPackageManager implements PackageManager {
 		this.cwd = resolvePath(options.cwd);
 		this.agentDir = resolvePath(options.agentDir);
 		this.settingsManager = options.settingsManager;
+		this.manifestFlavor = options.manifestFlavor ?? "pi";
 	}
 
 	setProgressCallback(callback: ProgressCallback | undefined): void {
@@ -2171,7 +2178,7 @@ export class DefaultPackageManager implements PackageManager {
 			return true;
 		}
 
-		const manifest = readPiManifest(join(packageRoot, "package.json"));
+		const manifest = readPiManifest(join(packageRoot, "package.json"), this.manifestFlavor);
 		if (manifest) {
 			for (const resourceType of RESOURCE_TYPES) {
 				const entries = manifest[resourceType as keyof PiManifest];
@@ -2191,7 +2198,7 @@ export class DefaultPackageManager implements PackageManager {
 			const dir = join(packageRoot, resourceType);
 			if (existsSync(dir)) {
 				// Collect all files from the directory (all enabled by default)
-				const files = collectResourceFiles(dir, resourceType);
+				const files = collectResourceFiles(dir, resourceType, this.manifestFlavor);
 				for (const f of files) {
 					this.addResource(this.getTargetMap(accumulator, resourceType), f, metadata, true);
 				}
@@ -2207,7 +2214,7 @@ export class DefaultPackageManager implements PackageManager {
 		target: Map<string, { metadata: PathMetadata; enabled: boolean }>,
 		metadata: PathMetadata,
 	): void {
-		const manifest = readPiManifest(join(packageRoot, "package.json"));
+		const manifest = readPiManifest(join(packageRoot, "package.json"), this.manifestFlavor);
 		const entries = manifest?.[resourceType as keyof PiManifest];
 		if (entries) {
 			this.addManifestEntries(entries, packageRoot, resourceType, target, metadata);
@@ -2216,7 +2223,7 @@ export class DefaultPackageManager implements PackageManager {
 		const dir = join(packageRoot, resourceType);
 		if (existsSync(dir)) {
 			// Collect all files from the directory (all enabled by default)
-			const files = collectResourceFiles(dir, resourceType);
+			const files = collectResourceFiles(dir, resourceType, this.manifestFlavor);
 			for (const f of files) {
 				this.addResource(target, f, metadata, true);
 			}
@@ -2276,7 +2283,7 @@ export class DefaultPackageManager implements PackageManager {
 		packageRoot: string,
 		resourceType: ResourceType,
 	): { allFiles: string[]; enabledByManifest: Set<string> } {
-		const manifest = readPiManifest(join(packageRoot, "package.json"));
+		const manifest = readPiManifest(join(packageRoot, "package.json"), this.manifestFlavor);
 		const entries = manifest?.[resourceType as keyof PiManifest];
 		if (entries && entries.length > 0) {
 			const allFiles = this.collectFilesFromManifestEntries(entries, packageRoot, resourceType);
@@ -2290,7 +2297,7 @@ export class DefaultPackageManager implements PackageManager {
 		if (!existsSync(conventionDir)) {
 			return { allFiles: [], enabledByManifest: new Set() };
 		}
-		const allFiles = collectResourceFiles(conventionDir, resourceType);
+		const allFiles = collectResourceFiles(conventionDir, resourceType, this.manifestFlavor);
 		return { allFiles, enabledByManifest: new Set(allFiles) };
 	}
 
@@ -2418,7 +2425,7 @@ export class DefaultPackageManager implements PackageManager {
 			// Project extensions from .pi/
 			addResources(
 				"extensions",
-				collectAutoExtensionEntries(projectDirs.extensions),
+				collectAutoExtensionEntries(projectDirs.extensions, this.manifestFlavor),
 				projectMetadata,
 				projectOverrides.extensions,
 				projectBaseDir,
@@ -2470,7 +2477,7 @@ export class DefaultPackageManager implements PackageManager {
 		// User extensions from ~/.pi/agent/
 		addResources(
 			"extensions",
-			collectAutoExtensionEntries(userDirs.extensions),
+			collectAutoExtensionEntries(userDirs.extensions, this.manifestFlavor),
 			userMetadata,
 			userOverrides.extensions,
 			globalBaseDir,
@@ -2525,7 +2532,7 @@ export class DefaultPackageManager implements PackageManager {
 				if (stats.isFile()) {
 					files.push(p);
 				} else if (stats.isDirectory()) {
-					files.push(...collectResourceFiles(p, resourceType));
+					files.push(...collectResourceFiles(p, resourceType, this.manifestFlavor));
 				}
 			} catch {
 				// Ignore errors

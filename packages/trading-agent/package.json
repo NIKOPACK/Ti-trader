@@ -1,6 +1,6 @@
 {
 	"name": "ti-trader",
-	"version": "0.1.4",
+	"version": "0.1.5",
 	"description": "Ti — AI trading agent CLI built on the pi agent harness: native buy/sell tools, trading commands, paper & live crypto trading",
 	"type": "module",
 	"piConfig": {
@@ -17,17 +17,36 @@
 			"import": "./dist/index.js"
 		}
 	},
+	"pi": {
+		"extensions": [
+			"./dist/market-lab/index.js",
+			"./dist/market-research/index.js",
+			"./dist/web-search/index.js",
+			"./dist/zhihu-research/index.js"
+		],
+		"skills": ["./dist/market-research/SKILL.md"]
+	},
+	"ti": {
+		"extensions": [
+			"./dist/market-lab/index.js",
+			"./dist/market-research/index.js",
+			"./dist/web-search/index.js",
+			"./dist/zhihu-research/index.js"
+		],
+		"skills": ["./dist/market-research/SKILL.md"]
+	},
 	"files": [
 		"dist",
 		"CHANGELOG.md"
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",
-		"build": "npm run clean && tsgo -p tsconfig.build.json && npm run build:web-search-extension && npm run build:market-lab-extension && npm run build:market-research-extension && shx chmod +x dist/cli.js",
-		"build:web-search-extension": "tsgo -p ../../extensions/web-search/tsconfig.json && shx mkdir -p dist/web-search && shx cp ../../extensions/web-search/dist/index.js ../../extensions/web-search/package.json ../../extensions/web-search/README.md dist/web-search/",
-		"build:market-lab-extension": "tsgo -p ../../extensions/market-lab/tsconfig.json && shx mkdir -p dist/market-lab && shx cp ../../extensions/market-lab/dist/index.js ../../extensions/market-lab/dist/indicators.js ../../extensions/market-lab/package.json ../../extensions/market-lab/README.md dist/market-lab/",
-		"build:market-research-extension": "tsgo -p ../../extensions/market-research/tsconfig.json && shx mkdir -p dist/market-research && shx cp ../../extensions/market-research/dist/index.js ../../extensions/market-research/package.json ../../extensions/market-research/README.md ../../extensions/market-research/SKILL.md dist/market-research/",
-		"test": "vitest --run src --passWithNoTests",
+		"build": "npm run clean && tsgo -p tsconfig.build.json && npm run build:web-search-extension && npm run build:market-lab-extension && npm run build:market-research-extension && npm run build:zhihu-research-extension && shx chmod +x dist/cli.js",
+		"build:web-search-extension": "tsgo -p ../../extensions/web-search/tsconfig.json && node ../../scripts/package-trading-extension.mjs web-search",
+		"build:market-lab-extension": "tsgo -p ../../extensions/market-lab/tsconfig.json && node ../../scripts/package-trading-extension.mjs market-lab",
+		"build:market-research-extension": "tsgo -p ../../extensions/market-research/tsconfig.json && node ../../scripts/package-trading-extension.mjs market-research",
+		"build:zhihu-research-extension": "tsgo -p ../../extensions/zhihu-research/tsconfig.json && node ../../scripts/package-trading-extension.mjs zhihu-research",
+		"test": "vitest --run src test --passWithNoTests",
 		"smoke": "node scripts/runtime-check.mjs && node scripts/paper-smoke.mjs",
 		"prepublishOnly": "npm run build"
 	},
@@ -44,6 +63,7 @@
 		"vitest": "4.1.9"
 	},
 	"keywords": [
+		"pi-package",
 		"trading-agent",
 		"ai",
 		"llm",

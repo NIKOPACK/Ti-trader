@@ -159,6 +159,33 @@ describe("extensions discovery", () => {
 		expect(result.extensions[0].path).toContain("main.ts");
 	});
 
+	it("selects the requested manifest flavor while defaulting to pi", async () => {
+		const subdir = path.join(extensionsDir, "flavored-package");
+		const piExtension = path.join(subdir, "pi.ts");
+		const tiExtension = path.join(subdir, "ti.ts");
+		fs.mkdirSync(subdir);
+		fs.writeFileSync(piExtension, extensionCodeWithTool("from-pi-manifest"));
+		fs.writeFileSync(tiExtension, extensionCodeWithTool("from-ti-manifest"));
+		fs.writeFileSync(
+			path.join(subdir, "package.json"),
+			JSON.stringify({
+				name: "flavored-package",
+				pi: { extensions: ["./pi.ts"] },
+				ti: { extensions: ["./ti.ts"] },
+			}),
+		);
+
+		const defaultResult = await discoverAndLoadExtensions([], tempDir, tempDir);
+		const tiResult = await discoverAndLoadExtensions([], tempDir, tempDir, undefined, "ti");
+
+		expect(defaultResult.errors).toEqual([]);
+		expect(defaultResult.extensions.map((extension) => extension.path)).toEqual([piExtension]);
+		expect(defaultResult.extensions[0]?.tools.has("from-pi-manifest")).toBe(true);
+		expect(tiResult.errors).toEqual([]);
+		expect(tiResult.extensions.map((extension) => extension.path)).toEqual([tiExtension]);
+		expect(tiResult.extensions[0]?.tools.has("from-ti-manifest")).toBe(true);
+	});
+
 	it("keeps package.json pi extension entries with leading tilde package-relative", async () => {
 		const subdir = path.join(extensionsDir, "tilde-package");
 		const directExtensionPath = path.join(subdir, "~entry.ts");

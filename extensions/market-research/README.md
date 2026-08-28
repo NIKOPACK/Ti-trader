@@ -1,6 +1,6 @@
 # Ti Market Research
 
-`ti-market-research` 是独立的只读市场研究扩展。它启动隔离的 Pi 子进程，仅加载 `ti-market-lab` 的技术分析工具，生成带来源、时间和风险说明的研究报告。
+`ti-market-research` 是与 `ti-market-lab` 配套发布的只读市场研究扩展。它启动隔离的 Pi 子进程，仅加载相邻目录中的 `ti-market-lab` 技术分析工具，生成带来源、时间和风险说明的研究报告。`ti-trader` 发布包始终同时包含这两个目录。
 
 ## 使用
 

@@ -1252,9 +1252,12 @@ Prompt the user for free-form text.
   "id": "uuid-3",
   "method": "input",
   "title": "Enter a value",
-  "placeholder": "type something..."
+  "placeholder": "type something...",
+  "secret": false
 }
 ```
+
+When `secret` is `true`, clients must mask the entered value and must not log or persist it.
 
 Expected response: `extension_ui_response` with `value` (the entered text) or `cancelled: true`.
 

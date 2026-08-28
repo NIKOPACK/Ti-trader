@@ -58,6 +58,14 @@ describe("formatResumeCommand", () => {
 		expect(formatResumeCommand(sessionManager)).toBe(`${APP_NAME} --session test-session`);
 	});
 
+	it("allows callers to override the resume command app name", () => {
+		setStdoutIsTTY(true);
+		const sessionFile = createTempFile();
+		const sessionManager = createSessionManager({ sessionFile, sessionId: "test-session" });
+
+		expect(formatResumeCommand(sessionManager, "ti")).toBe("ti --session test-session");
+	});
+
 	it("includes unquoted safe session dirs for non-default session dirs", () => {
 		setStdoutIsTTY(true);
 		const sessionFile = createTempFile();

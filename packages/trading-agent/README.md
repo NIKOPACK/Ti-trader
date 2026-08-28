@@ -9,10 +9,10 @@
 
 ## 安装
 
-当前发布版本为 `0.1.2`，使用 npm 全局安装：
+当前发布版本为 `0.1.4`，使用 npm 全局安装：
 
 ```bash
-npm install -g ti-trader@0.1.2
+npm install -g ti-trader@0.1.4
 ti --version
 ti            # 交互模式（默认 paper 模拟盘）
 ti -p "..."   # 一次性无头模式
@@ -35,13 +35,13 @@ Ti 与 pi 使用完全独立的配置目录。Ti 首次启动会创建 `~/.ti-tr
 ## 特性
 
 - **原生买卖工具**：`buy` / `sell` 是 agent 的一等工具（不是扩展），支持市价/限价、base/quote 双向下单
-- **交易向 slash 命令**：`/balance` `/positions` `/orders` `/trades` `/markets` `/mode` `/exchange` `/risk` `/login` `/paper` `/monitor`
+- **交易向 slash 命令**：`/balance` `/positions` `/orders` `/trades` `/markets` `/mode` `/exchange` `/market` `/risk` `/paper` `/monitor` `/exchange-login`（模型 Provider 仍使用 `/login`）
 - **编码功能已移除**：`read`/`bash`/`edit`/`write`/`grep`/`find`/`ls` 工具全部禁用（`noTools: "builtin"`）
 - **模拟盘优先**：默认 paper 模式，用真实行情撮合的本地模拟账户（含手续费、均价成本、PnL）
 - **实盘安全门**：live 模式需要 API key + 启动/切换确认 + 每笔订单交互确认（可关）
-- **风控层**：单笔/总名义金额上限、币种白名单，运行时强制，重启不重置。paper 额度为累计制,仅 `/risk reset` 或 `/paper reset` 手动重置;live 额度按日自动恢复
+- **风控层**：单笔/总名义金额上限、币种白名单，运行时强制，重启不重置。paper 额度为累计制，仅 `/risk reset` 或 `/paper reset` 手动重置；live 额度按日自动恢复
 - **止盈止损**：`stop`/`stop_market`（止损触发）、`take_profit`/`take_profit_market`（止盈触发）、`trailing_stop_market`（按百分比回撤的移动止损），paper 与 live 均支持
-- **OCO 括号单**：`place_oco` 一次挂上止损+止盈，任一成交自动撤销另一腿
+- **现货 OCO 括号单**：`place_oco` 一次挂上止损+止盈，任一成交自动撤销另一腿；合约不支持 OCO
 - **后台监控与仓位守护**：轮询挂单成交并唤醒 agent 跟进；持仓无止损保护或浮亏超阈值时告警并唤醒 agent 处理或汇报
 - **Binance USDⓈ-M 合约**：Binance 专用 swap 模式；Paper 支持独立合约账户、杠杆、逐仓/全仓、单向/双向持仓、reduceOnly、平仓、盈亏和保证金模拟，实盘支持交易所提供的合约订单参数及资金费率查询
 - **市场数据完整性**：`get_order_book`、`get_market_info`、`get_contract_stats` 分别读取订单簿、Binance `exchangeInfo` 市场规则、`premiumIndex`/资金费率及未平仓量；缺失数据返回 `null` 和 `warnings`，不会伪装为 0
@@ -73,7 +73,7 @@ node packages/trading-agent/dist/cli.js --mode paper --exchange binance
 
 首次运行用 `/login` 配置模型 Provider；使用 `/exchange-login` 配置交易所 API。交易所支持 Binance（币安）、OKX、Bybit。使用 `/language` 可在中文和 English 之间切换，设置保存于 `~/.ti-trader/agent/trading.json`。模型认证存于 `~/.ti-trader/agent/auth.json`，交易所 API key 存于 `~/.ti-trader/agent/keys.json`，与 pi coding agent 隔离。
 
-可选扩展位于仓库根目录 `extensions/`。使用 `--extension <path>` 加载用户扩展，可重复指定；使用 `--no-extensions` 禁用自动发现的用户扩展。公开互联网研究扩展位于 `extensions/web-search/`，当前提供受限的 `fetch_source` 来源读取工具；交易所 ccxt 连接仍属于 Ti 交易核心。
+可选扩展位于仓库根目录 `extensions/`。使用 `--extension <path>` 加载用户扩展，可重复指定；使用 `--no-extensions` 禁用自动发现的用户扩展。公开互联网研究扩展位于 `extensions/web-search/`；知乎全网搜索扩展位于 `extensions/zhihu-research/`，需要通过 `ZHIHU_ACCESS_SECRET` 配置官方 OpenAPI 凭据。交易所 ccxt 连接仍属于 Ti 交易核心。
 
 ## 配置
 
@@ -116,12 +116,12 @@ node packages/trading-agent/dist/cli.js --mode paper --exchange binance
 
 ## 止盈止损与移动止损
 
-买卖工具支持五种条件单类型（paper 与 live 均可用）：
+现货买卖工具支持五种条件单类型；live 的具体支持取决于交易所，Paper futures 当前仅支持市价单：
 
 - `stop` / `stop_market`：价格向不利方向触及 `stopPrice` 时触发（卖单跌到触发价 = 止损；买单涨到触发价 = 突破追入）。`stop` 触发后以 `price` 挂限价单，`stop_market` 触发即成交。
 - `take_profit` / `take_profit_market`：价格向有利方向触及 `stopPrice` 时触发（卖单涨到触发价 = 止盈）。
 - `trailing_stop_market`：`trailingPercent` 移动止损。卖单跟踪下单以来的最高价，回撤给定百分比即触发；买单跟踪最低价，反弹给定百分比触发。
-- `place_oco`：OCO 括号单，一次同时挂止损（`stopLossPrice`）与止盈（`takeProfitPrice`），任一腿成交自动撤销另一腿；撤销任一腿等于撤销整组。入场成交后的首选保护方式。
+- `place_oco`：仅用于现货的 OCO 括号单，一次同时挂止损（`stopLossPrice`）与止盈（`takeProfitPrice`），任一腿成交自动撤销另一腿；撤销任一腿等于撤销整组。合约仓位应改用一个 `reduceOnly` 保护单。
 
 下单时触发条件已满足会被直接拒绝（与交易所行为一致）。
 
@@ -173,10 +173,11 @@ src/
     types.ts            ExchangeClient 统一接口
     ccxt-client.ts      实盘客户端（ccxt，100+ 交易所；含现货与 Binance 合约路由）
     paper-client.ts     模拟盘引擎（真实行情 + 独立现货/合约账户 + 懒撮合，现货含止盈止损/移动止损/OCO/K线回填，合约含市价成交与保证金模拟）
-  tools/index.ts        15 个原生交易工具（含 place_oco 与 Binance 合约工具）
+  tools/index.ts        19 个原生交易工具（含 place_oco 与 Binance 合约工具）
   monitor.ts            后台成交监控 + 仓位守护（裸仓/浮亏告警，唤醒 agent）
   commands.ts           交易 slash 命令（inline extension factory）
   prompt.ts             交易系统提示词（整体替换编码提示词）
 extensions/
   web-search/           可选只读公开互联网研究扩展（独立安全策略）
+  zhihu-research/       可选只读知乎全网搜索扩展（官方 OpenAPI）
 ```

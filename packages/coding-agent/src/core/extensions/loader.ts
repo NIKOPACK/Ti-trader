@@ -29,7 +29,7 @@ import { resolvePath } from "../../utils/paths.ts";
 import { createEventBus, type EventBus } from "../event-bus.ts";
 import type { ExecOptions } from "../exec.ts";
 import { execCommand } from "../exec.ts";
-import { readPiManifest } from "../pi-manifest.ts";
+import { type ManifestFlavor, readPiManifest } from "../pi-manifest.ts";
 import { createSyntheticSourceInfo } from "../source-info.ts";
 import { time } from "../timings.ts";
 import type {
@@ -671,16 +671,16 @@ function isExtensionFile(name: string): boolean {
  * Resolve extension entry points from a directory.
  *
  * Checks for:
- * 1. package.json with "pi.extensions" field -> returns declared paths
+ * 1. package.json with the selected manifest flavor -> returns declared paths
  * 2. index.ts or index.js -> returns the index file
  *
  * Returns resolved paths or null if no entry points found.
  */
-function resolveExtensionEntries(dir: string): string[] | null {
-	// Check for package.json with "pi" field first
+function resolveExtensionEntries(dir: string, manifestFlavor: ManifestFlavor = "pi"): string[] | null {
+	// Check the selected package manifest before convention-based entry points.
 	const packageJsonPath = path.join(dir, "package.json");
 	if (fs.existsSync(packageJsonPath)) {
-		const manifest = readPiManifest(packageJsonPath);
+		const manifest = readPiManifest(packageJsonPath, manifestFlavor);
 		if (manifest?.extensions?.length) {
 			const entries: string[] = [];
 			for (const extPath of manifest.extensions) {
@@ -714,11 +714,11 @@ function resolveExtensionEntries(dir: string): string[] | null {
  * Discovery rules:
  * 1. Direct files: `extensions/*.ts` or `*.js` → load
  * 2. Subdirectory with index: `extensions/* /index.ts` or `index.js` → load
- * 3. Subdirectory with package.json: `extensions/* /package.json` with "pi" field → load what it declares
+ * 3. Subdirectory with package.json: load entries from the selected manifest flavor
  *
  * No recursion beyond one level. Complex packages must use package.json manifest.
  */
-function discoverExtensionsInDir(dir: string): string[] {
+function discoverExtensionsInDir(dir: string, manifestFlavor: ManifestFlavor = "pi"): string[] {
 	if (!fs.existsSync(dir)) {
 		return [];
 	}
@@ -739,7 +739,7 @@ function discoverExtensionsInDir(dir: string): string[] {
 
 			// 2 & 3. Subdirectories
 			if (entry.isDirectory() || entry.isSymbolicLink()) {
-				const entries = resolveExtensionEntries(entryPath);
+				const entries = resolveExtensionEntries(entryPath, manifestFlavor);
 				if (entries) {
 					discovered.push(...entries);
 				}
@@ -760,6 +760,7 @@ export async function discoverAndLoadExtensions(
 	cwd: string,
 	agentDir: string = getAgentDir(),
 	eventBus?: EventBus,
+	manifestFlavor: ManifestFlavor = "pi",
 ): Promise<LoadExtensionsResult> {
 	const resolvedCwd = resolvePath(cwd);
 	const resolvedAgentDir = resolvePath(agentDir);
@@ -778,24 +779,24 @@ export async function discoverAndLoadExtensions(
 
 	// 1. Project-local extensions: cwd/${CONFIG_DIR_NAME}/extensions/
 	const localExtDir = path.join(resolvedCwd, CONFIG_DIR_NAME, "extensions");
-	addPaths(discoverExtensionsInDir(localExtDir));
+	addPaths(discoverExtensionsInDir(localExtDir, manifestFlavor));
 
 	// 2. Global extensions: agentDir/extensions/
 	const globalExtDir = path.join(resolvedAgentDir, "extensions");
-	addPaths(discoverExtensionsInDir(globalExtDir));
+	addPaths(discoverExtensionsInDir(globalExtDir, manifestFlavor));
 
 	// 3. Explicitly configured paths
 	for (const p of configuredPaths) {
 		const resolved = resolvePath(p, resolvedCwd, { normalizeUnicodeSpaces: true });
 		if (fs.existsSync(resolved) && fs.statSync(resolved).isDirectory()) {
-			// Check for package.json with pi manifest or index.ts
-			const entries = resolveExtensionEntries(resolved);
+			// Check for a package manifest or convention-based index first.
+			const entries = resolveExtensionEntries(resolved, manifestFlavor);
 			if (entries) {
 				addPaths(entries);
 				continue;
 			}
 			// No explicit entries - discover individual files in directory
-			addPaths(discoverExtensionsInDir(resolved));
+			addPaths(discoverExtensionsInDir(resolved, manifestFlavor));
 			continue;
 		}
 

@@ -18,6 +18,7 @@ export {
 	createAgentSessionRuntime,
 } from "./agent-session-runtime.ts";
 export {
+	type AgentSessionResourceLoaderOptions,
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
 	type CreateAgentSessionFromServicesOptions,
@@ -77,4 +78,5 @@ export {
 	type TurnStartEvent,
 	type WorkingIndicatorOptions,
 } from "./extensions/index.ts";
+export type { ManifestFlavor, PiManifest, TiManifest } from "./pi-manifest.ts";
 export { createSyntheticSourceInfo } from "./source-info.ts";

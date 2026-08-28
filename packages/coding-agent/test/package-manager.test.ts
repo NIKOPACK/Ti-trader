@@ -606,6 +606,48 @@ Content`,
 			);
 		});
 
+		it("should select ti manifests when configured while defaulting and falling back to pi", async () => {
+			const pkgDir = join(tempDir, "flavored-package");
+			const fallbackDir = join(tempDir, "pi-fallback-package");
+			const piExtension = join(pkgDir, "pi.ts");
+			const tiExtension = join(pkgDir, "ti.ts");
+			const fallbackExtension = join(fallbackDir, "fallback.ts");
+			mkdirSync(pkgDir, { recursive: true });
+			mkdirSync(fallbackDir, { recursive: true });
+			writeFileSync(piExtension, "export default function() {}");
+			writeFileSync(tiExtension, "export default function() {}");
+			writeFileSync(fallbackExtension, "export default function() {}");
+			writeFileSync(
+				join(pkgDir, "package.json"),
+				JSON.stringify({
+					name: "flavored-package",
+					pi: { extensions: ["./pi.ts"] },
+					ti: { extensions: ["./ti.ts"] },
+				}),
+			);
+			writeFileSync(
+				join(fallbackDir, "package.json"),
+				JSON.stringify({ name: "pi-fallback-package", pi: { extensions: ["./fallback.ts"] } }),
+			);
+
+			const defaultResult = await packageManager.resolveExtensionSources([pkgDir]);
+			const tiPackageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+				manifestFlavor: "ti",
+			});
+			const tiResult = await tiPackageManager.resolveExtensionSources([pkgDir, fallbackDir]);
+
+			expect(
+				defaultResult.extensions.filter((resource) => resource.enabled).map((resource) => resource.path),
+			).toEqual([piExtension]);
+			expect(tiResult.extensions.filter((resource) => resource.enabled).map((resource) => resource.path)).toEqual([
+				tiExtension,
+				fallbackExtension,
+			]);
+		});
+
 		it("should keep pi manifest entries with leading tilde package-relative", async () => {
 			const pkgDir = join(tempDir, "tilde-manifest-package");
 			const directExtensionPath = join(pkgDir, "~extensions", "main.ts");

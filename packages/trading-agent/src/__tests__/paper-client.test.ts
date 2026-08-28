@@ -7,6 +7,12 @@ import { PaperExchangeClient } from "../exchange/paper-client.ts";
 /** Controllable stand-in for the ccxt exchange used by PaperExchangeClient. */
 class StubExchange {
 	last = 100;
+	amountDigits = 4;
+	priceDigits = 2;
+	amountMin: number | undefined = 0.0001;
+	amountMax: number | undefined;
+	costMin: number | undefined = 5;
+	costMax: number | undefined;
 	/** OHLCV rows returned by fetchOHLCV: [timestamp, open, high, low, close, volume]. */
 	ohlcv: number[][] = [];
 
@@ -25,6 +31,10 @@ class StubExchange {
 	markets: Record<string, unknown> = {};
 
 	async loadMarkets() {
+		const limits = {
+			amount: { min: this.amountMin, max: this.amountMax },
+			cost: { min: this.costMin, max: this.costMax },
+		};
 		this.markets = {
 			"BTC/USDT": {
 				symbol: "BTC/USDT",
@@ -34,9 +44,29 @@ class StubExchange {
 				contract: false,
 				active: true,
 				precision: { price: 0.01, amount: 0.0001 },
-				limits: { amount: { min: 0.0001 }, cost: { min: 5 } },
+				limits,
+			},
+			"BTC/USDT:USDT": {
+				symbol: "BTC/USDT:USDT",
+				base: "BTC",
+				quote: "USDT",
+				settle: "USDT",
+				spot: false,
+				swap: true,
+				contract: true,
+				active: true,
+				precision: { price: 0.01, amount: 0.0001 },
+				limits,
 			},
 		};
+	}
+
+	amountToPrecision(_symbol: string, amount: number): string {
+		return amount.toFixed(this.amountDigits);
+	}
+
+	priceToPrecision(_symbol: string, price: number): string {
+		return price.toFixed(this.priceDigits);
 	}
 
 	async close() {}
@@ -49,6 +79,13 @@ let client: PaperExchangeClient;
 function newClient(): PaperExchangeClient {
 	const c = new PaperExchangeClient("okx", "USDT", 10_000, 0.001, dir);
 	(c as unknown as { exchange: StubExchange }).exchange = stub;
+	return c;
+}
+
+function newFuturesClient(positionMode: "one-way" | "hedge" = "hedge"): PaperExchangeClient {
+	const c = new PaperExchangeClient("okx", "USDT", 10_000, 0.001, dir, "usdm-futures", 5, "isolated", positionMode);
+	(c as unknown as { exchange: StubExchange }).exchange = stub;
+	(c as unknown as { futuresExchange: StubExchange }).futuresExchange = stub;
 	return c;
 }
 
@@ -74,15 +111,91 @@ afterEach(() => {
 describe("paper both-market mode", () => {
 	it("routes futures orders to an isolated paper account", async () => {
 		const both = new PaperExchangeClient("okx", "USDT", 10_000, 0.001, dir, "both");
+		(both as unknown as { exchange: StubExchange }).exchange = stub;
 		(both as unknown as { futuresExchange: StubExchange }).futuresExchange = stub;
 		await both.setLeverage("BTC/USDT:USDT", 5);
-		const order = await both.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 0.01 });
+		const order = await both.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 0.1 });
 		expect(order.order.symbol).toBe("BTC/USDT:USDT");
 		expect((await both.getPositions())[0]?.positionSide).toBe("LONG");
 		await expect(both.placeOrder({ symbol: "BTC/USDT", side: "sell", type: "market", amount: 1 })).rejects.toThrow(
 			/Insufficient/,
 		);
 		await both.close();
+	});
+});
+
+describe("paper futures hedge ledger", () => {
+	const symbol = "BTC/USDT:USDT";
+
+	it("tracks LONG and SHORT positions independently", async () => {
+		const futures = newFuturesClient();
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 2, positionSide: "LONG" });
+		await futures.placeOrder({ symbol, side: "sell", type: "market", amount: 3, positionSide: "SHORT" });
+
+		const positions = await futures.getPositions();
+		expect(positions).toHaveLength(2);
+		expect(positions.find((position) => position.positionSide === "LONG")).toMatchObject({
+			amount: 2,
+			avgEntryPrice: 100,
+		});
+		expect(positions.find((position) => position.positionSide === "SHORT")).toMatchObject({
+			amount: 3,
+			avgEntryPrice: 100,
+		});
+	});
+
+	it("rejects flat, increasing, and oversized reduce-only orders", async () => {
+		const futures = newFuturesClient();
+		await expect(
+			futures.placeOrder({
+				symbol,
+				side: "sell",
+				type: "market",
+				amount: 1,
+				positionSide: "LONG",
+				reduceOnly: true,
+			}),
+		).rejects.toThrow(/requires an open futures position/);
+
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1, positionSide: "LONG" });
+		await expect(
+			futures.placeOrder({
+				symbol,
+				side: "buy",
+				type: "market",
+				amount: 0.5,
+				positionSide: "LONG",
+				reduceOnly: true,
+			}),
+		).rejects.toThrow(/cannot increase the position/);
+		await expect(
+			futures.placeOrder({
+				symbol,
+				side: "sell",
+				type: "market",
+				amount: 2,
+				positionSide: "LONG",
+				reduceOnly: true,
+			}),
+		).rejects.toThrow(/exceeds the open position/);
+	});
+
+	it("reduces entry cost proportionally on a partial close", async () => {
+		const futures = newFuturesClient();
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 2, positionSide: "LONG" });
+
+		stub.last = 120;
+		await futures.placeOrder({
+			symbol,
+			side: "sell",
+			type: "market",
+			amount: 0.5,
+			positionSide: "LONG",
+			reduceOnly: true,
+		});
+
+		const position = (await futures.getPositions()).find((candidate) => candidate.positionSide === "LONG");
+		expect(position).toMatchObject({ amount: 1.5, avgEntryPrice: 100, margin: 30, unrealizedPnl: 30 });
 	});
 });
 
@@ -94,6 +207,72 @@ describe("paper market data", () => {
 		const info = await client.getMarketInfo("BTC/USDT");
 		expect(info.marketType).toBe("spot");
 		expect(info.minNotional).toBe(5);
+	});
+
+	it("marks only completed candles as closed", async () => {
+		const now = Date.now();
+		stub.ohlcv = [
+			[now - 120_000, 90, 105, 85, 100, 10],
+			[now - 30_000, 100, 110, 95, 105, 8],
+		];
+
+		const candles = await client.getKlines("BTC/USDT", "1m", 2);
+		expect(candles.map((candle) => candle.closed)).toEqual([true, false]);
+	});
+
+	it("leaves candle completion unknown for unsupported timeframes", async () => {
+		stub.ohlcv = [[1, 90, 105, 85, 100, 10]];
+
+		const candles = await client.getKlines("BTC/USDT", "custom", 1);
+
+		expect(candles[0]?.closed).toBeUndefined();
+	});
+});
+
+describe("paper order normalization", () => {
+	it("uses exchange amount and price precision before reserving an order", async () => {
+		stub.amountDigits = 3;
+		stub.priceDigits = 1;
+
+		const { order } = await client.placeOrder({
+			symbol: "BTC/USDT",
+			side: "buy",
+			type: "limit",
+			amount: 1.23456,
+			price: 90.04,
+		});
+
+		expect(order).toMatchObject({ amount: 1.235, price: 90 });
+	});
+
+	it("enforces rounded amount and notional limits", async () => {
+		stub.amountDigits = 3;
+		await expect(
+			client.placeOrder({ symbol: "BTC/USDT", side: "buy", type: "market", amount: 0.0004 }),
+		).rejects.toThrow(/rounds to zero/);
+
+		stub.amountMin = 0.01;
+		await expect(
+			client.placeOrder({ symbol: "BTC/USDT", side: "buy", type: "market", amount: 0.005 }),
+		).rejects.toThrow(/below minimum/);
+
+		stub.amountMin = 0.0001;
+		stub.amountMax = 1;
+		await expect(client.placeOrder({ symbol: "BTC/USDT", side: "buy", type: "market", amount: 2 })).rejects.toThrow(
+			/exceeds maximum/,
+		);
+
+		stub.amountMax = undefined;
+		stub.costMin = 5;
+		await expect(
+			client.placeOrder({ symbol: "BTC/USDT", side: "buy", type: "market", amount: 0.01 }),
+		).rejects.toThrow(/cost .* below minimum/);
+
+		stub.costMin = 0;
+		stub.costMax = 150;
+		await expect(client.placeOrder({ symbol: "BTC/USDT", side: "buy", type: "market", amount: 2 })).rejects.toThrow(
+			/cost .* exceeds maximum/,
+		);
 	});
 });
 

@@ -251,14 +251,14 @@ function quoteIfNeeded(value: string): string {
 	return `'${value.replace(/'/g, `'\\''`)}'`;
 }
 
-export function formatResumeCommand(sessionManager: SessionManager): string | undefined {
+export function formatResumeCommand(sessionManager: SessionManager, appName = APP_NAME): string | undefined {
 	if (!process.stdout.isTTY) return undefined;
 	if (!sessionManager.isPersisted()) return undefined;
 
 	const sessionFile = sessionManager.getSessionFile();
 	if (!sessionFile || !fs.existsSync(sessionFile)) return undefined;
 
-	const args = [APP_NAME];
+	const args = [appName];
 	if (!sessionManager.usesDefaultSessionDir()) {
 		args.push("--session-dir", quoteIfNeeded(sessionManager.getSessionDir()));
 	}
@@ -332,7 +332,23 @@ function formatLoginProviderCompletionDescription(provider: LoginProviderComplet
 /**
  * Options for InteractiveMode initialization.
  */
+export interface InteractiveModeBranding {
+	/** Name shown in the header, terminal title, commands, and status messages. */
+	appName?: string;
+	/** Title shown in the terminal title bar. Defaults to the package title. */
+	appTitle?: string;
+	/** Version shown in the header and used for version-related notices. */
+	version?: string;
+	/** Assistant-oriented startup help shown below the keybinding hints. */
+	startupAssistantText?: string;
+}
+
+const DEFAULT_STARTUP_ASSISTANT_TEXT =
+	"Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.";
+
 export interface InteractiveModeOptions {
+	/** Optional application branding. Omitted values retain Pi's defaults. */
+	branding?: InteractiveModeBranding;
 	/** Providers that were migrated to auth.json (shows warning) */
 	migratedProviders?: string[];
 	/** Diagnostics collected before the interactive TUI was initialized. */
@@ -444,6 +460,9 @@ export class InteractiveMode {
 	// Stored so the same manager can be injected into custom editors, selectors, and extension UI.
 	private keybindings: KeybindingsManager;
 	private version: string;
+	private readonly appName: string;
+	private readonly appTitle: string;
+	private readonly startupAssistantText: string;
 	private isInitialized = false;
 	private onInputCallback?: (text: string) => void;
 	private pendingUserInputs: string[] = [];
@@ -565,6 +584,9 @@ export class InteractiveMode {
 		this.runtimeHost = runtimeHost;
 		const tuiMode = options.tuiMode ?? this.settingsManager.getTuiMode();
 		this.options = { ...options, tuiMode };
+		this.appName = options.branding?.appName ?? APP_NAME;
+		this.appTitle = options.branding?.appTitle ?? APP_TITLE;
+		this.startupAssistantText = options.branding?.startupAssistantText ?? DEFAULT_STARTUP_ASSISTANT_TEXT;
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
@@ -573,7 +595,7 @@ export class InteractiveMode {
 			await this.rebindCurrentSession({ renderBeforeBind: true });
 			await this.themeController.applyFromSettings();
 		});
-		this.version = VERSION;
+		this.version = options.branding?.version ?? VERSION;
 		this.renderer = createInteractiveTui({
 			tuiMode,
 			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
@@ -955,7 +977,7 @@ export class InteractiveMode {
 
 		// Add header with keybindings from config (unless silenced)
 		if (this.options.verbose || !this.settingsManager.getQuietStartup()) {
-			const logo = theme.bold(theme.fg("accent", APP_NAME)) + theme.fg("dim", ` v${this.version}`);
+			const logo = theme.bold(theme.fg("accent", this.appName)) + theme.fg("dim", ` v${this.version}`);
 
 			// Build startup instructions using keybinding hint helpers
 			const hint = (keybinding: AppKeybinding, description: string) => keyHint(keybinding, description);
@@ -992,10 +1014,7 @@ export class InteractiveMode {
 				"dim",
 				`Press ${keyText("app.tools.expand")} to show full startup help and loaded resources.`,
 			);
-			const onboarding = theme.fg(
-				"dim",
-				`Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.`,
-			);
+			const onboarding = theme.fg("dim", this.startupAssistantText);
 			this.builtInHeader = new ExpandableText(
 				() => `${logo}\n${compactInstructions}\n${compactOnboarding}\n\n${onboarding}`,
 				() => `${logo}\n${expandedInstructions}\n\n${onboarding}`,
@@ -1066,9 +1085,9 @@ export class InteractiveMode {
 		const cwdBasename = path.basename(this.sessionManager.getCwd());
 		const sessionName = this.sessionManager.getSessionName();
 		if (sessionName) {
-			this.ui.terminal.setTitle(`${APP_TITLE} - ${sessionName} - ${cwdBasename}`);
+			this.ui.terminal.setTitle(`${this.appTitle} - ${sessionName} - ${cwdBasename}`);
 		} else {
-			this.ui.terminal.setTitle(`${APP_TITLE} - ${cwdBasename}`);
+			this.ui.terminal.setTitle(`${this.appTitle} - ${cwdBasename}`);
 		}
 	}
 
@@ -1244,7 +1263,7 @@ export class InteractiveMode {
 		}
 
 		if (extendedKeysFormat === "xterm") {
-			return "tmux extended-keys-format is xterm. Pi works best with csi-u. Add `set -g extended-keys-format csi-u` to ~/.tmux.conf and restart tmux.";
+			return `tmux extended-keys-format is xterm. ${this.appName} works best with csi-u. Add \`set -g extended-keys-format csi-u\` to ~/.tmux.conf and restart tmux.`;
 		}
 
 		return undefined;
@@ -1266,15 +1285,15 @@ export class InteractiveMode {
 
 		if (!lastVersion) {
 			// Fresh install - record the version, send telemetry, don't show changelog
-			this.settingsManager.setLastChangelogVersion(VERSION);
-			this.reportInstallTelemetry(VERSION);
+			this.settingsManager.setLastChangelogVersion(this.version);
+			this.reportInstallTelemetry(this.version);
 			return undefined;
 		}
 
 		const newEntries = getNewEntries(entries, lastVersion);
 		if (newEntries.length > 0) {
-			this.settingsManager.setLastChangelogVersion(VERSION);
-			this.reportInstallTelemetry(VERSION);
+			this.settingsManager.setLastChangelogVersion(this.version);
+			this.reportInstallTelemetry(this.version);
 			return newEntries.map((e) => normalizeChangelogLinks(e.content, e)).join("\n\n");
 		}
 
@@ -2590,7 +2609,7 @@ export class InteractiveMode {
 					this.hideExtensionInput();
 					resolve(undefined);
 				},
-				{ tui: this.ui, timeout: opts?.timeout },
+				{ tui: this.ui, timeout: opts?.timeout, secret: opts?.secret },
 			);
 
 			this.disposeActiveSelector();
@@ -3953,7 +3972,7 @@ export class InteractiveMode {
 		this.stop();
 		await this.runtimeHost.dispose();
 
-		const resumeCommand = formatResumeCommand(this.sessionManager);
+		const resumeCommand = formatResumeCommand(this.sessionManager, this.appName);
 		if (resumeCommand) {
 			process.stdout.write(`${chalk.dim("To resume this session:")} ${resumeCommand}\n`);
 		}
@@ -3995,7 +4014,7 @@ export class InteractiveMode {
 		try {
 			this.ui.stop();
 		} catch {}
-		console.error(`${APP_NAME} exiting due to uncaughtException:`);
+		console.error(`${this.appName} exiting due to uncaughtException:`);
 		console.error(error);
 		process.exit(1);
 	}
@@ -4221,6 +4240,7 @@ export class InteractiveMode {
 			const result = await editInExternalEditor({
 				command: editorCmd,
 				content,
+				appName: this.appName,
 			});
 			if (result.status === "complete") {
 				this.editor.setText(result.content);
@@ -4253,7 +4273,7 @@ export class InteractiveMode {
 	}
 
 	showNewVersionNotification(release: LatestPiRelease): void {
-		const action = theme.fg("accent", `${APP_NAME} update`);
+		const action = theme.fg("accent", `${this.appName} update`);
 		const updateInstruction = theme.fg("muted", `New version ${release.version} is available. Run `) + action;
 		const changelogUrl = "https://pi.dev/changelog";
 		const changelogLink = getCapabilities().hyperlinks
@@ -4282,7 +4302,7 @@ export class InteractiveMode {
 	}
 
 	showPackageUpdateNotification(packages: string[]): void {
-		const action = theme.fg("accent", `${APP_NAME} update --extensions`);
+		const action = theme.fg("accent", `${this.appName} update --extensions`);
 		const updateInstruction = theme.fg("muted", "Package updates are available. Run ") + action;
 		const packageLines = packages.map((pkg) => `- ${pkg}`).join("\n");
 
@@ -4943,7 +4963,7 @@ export class InteractiveMode {
 					trustStore.setMany(selection.updates);
 					done();
 					this.showStatus(
-						`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${APP_NAME} for this to take effect.`,
+						`Saved trust decision: ${selection.trusted ? "trusted" : "untrusted"}. Restart ${this.appName} for this to take effect.`,
 					);
 				},
 				onCancel: () => {
@@ -5758,7 +5778,7 @@ export class InteractiveMode {
 			`${providerOption.name} setup`,
 		);
 		dialog.showInfo(
-			`${providerOption.method?.name ?? "Authentication"} is configured outside ${APP_NAME}.`,
+			`${providerOption.method?.name ?? "Authentication"} is configured outside ${this.appName}.`,
 			[],
 			true,
 		);

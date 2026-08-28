@@ -4,9 +4,24 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.5] - 2026-08-28
+
+### Added
+
+- Added Pi Package metadata for installing the published market analysis, research, web search, and Zhihu extensions with the market research skill.
+- Added a read-only Zhihu global web search extension using the official OpenAPI, with URL-encoded filters, index selection, source metadata, and secret-safe error handling.
+- Added `/zhihu-login` with masked TUI input and private local Access Secret storage.
+
+### Changed
+
+- Ti package discovery now prefers `ti` manifests with a Pi-compatible fallback, and refreshes the trading prompt from the active runtime configuration before each agent turn.
+
 ### Fixed
 
 - Added Binance Spot native trailing-stop orders using `trailingDelta` and clarified Spot OCO/trailing-stop support.
+- Fixed atomic risk accounting, paper/live quota isolation, futures position semantics, order status/history handling, and position-monitor retries.
+- Fixed bundled extension entry paths, candle/indicator edge cases, and research/search cancellation and endpoint isolation.
+- Fixed Ti TUI branding so the interactive header, terminal title, and runtime messages use Ti instead of Pi.
 
 ## [0.1.4] - 2026-08-28
 

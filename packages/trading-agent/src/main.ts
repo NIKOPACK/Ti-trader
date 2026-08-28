@@ -13,13 +13,13 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { parseTradingArgs, printHelp } from "./args.ts";
 import { createTradingExtension } from "./commands.ts";
-import { AGENT_DIR, ensureAgentDir } from "./config.ts";
+import { AGENT_DIR, APP_NAME, ensureAgentDir } from "./config.ts";
 import { getTrading, initTrading } from "./context.ts";
 import { createOrderMonitorExtension } from "./monitor.ts";
 import { buildTradingPrompt } from "./prompt.ts";
 import { createTradingTools } from "./tools/index.ts";
 
-const VERSION = "0.1.4";
+const VERSION = "0.1.5";
 
 /** Mirror pi's session-dir encoding, rooted at our own agent dir. */
 function getTradingSessionDir(cwd: string, agentDir: string): string {
@@ -64,12 +64,21 @@ export async function main(argv: string[]): Promise<void> {
 			agentDir: runtimeAgentDir,
 			settingsManager,
 			resourceLoaderOptions: {
+				manifestFlavor: "ti",
 				noContextFiles: true,
 				noSkills: true,
 				noExtensions: parsed.noExtensions,
 				additionalExtensionPaths: parsed.extensions,
 				systemPrompt: buildTradingPrompt(trading.config),
-				extensionFactories: [createTradingExtension(), createOrderMonitorExtension()],
+				extensionFactories: [
+					(pi) => {
+						pi.on("before_agent_start", async () => ({
+							systemPrompt: buildTradingPrompt(getTrading().config),
+						}));
+					},
+					createTradingExtension(),
+					createOrderMonitorExtension(),
+				],
 			},
 		});
 		const created = await createAgentSessionFromServices({
@@ -110,6 +119,13 @@ export async function main(argv: string[]): Promise<void> {
 	const interactiveMode = new InteractiveMode(runtime, {
 		initialMessage: parsed.message,
 		verbose: parsed.verbose,
+		branding: {
+			appName: APP_NAME,
+			appTitle: APP_NAME,
+			version: VERSION,
+			startupAssistantText:
+				"Ti can explain its trading features and look up its docs. Ask it how to use or extend Ti.",
+		},
 	});
 	await interactiveMode.run();
 	await getTrading().close();

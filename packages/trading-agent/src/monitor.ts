@@ -2,12 +2,16 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { getTrading } from "./context.ts";
 import type { Order, Position } from "./exchange/types.ts";
 
+const MAX_MISSING_HISTORY_CHECKS = 3;
+
 function describeFill(order: Order): string {
 	const price = order.average ?? order.price ?? order.stopPrice;
+	const filledAmount = order.filled > 0 ? order.filled : order.amount;
 	return (
-		`${order.side.toUpperCase()} ${order.amount} ${order.symbol} (${order.type})` +
+		`${order.side.toUpperCase()} ${filledAmount} ${order.symbol} (${order.type})` +
 		(price !== undefined ? ` filled @ ${price}` : " filled") +
 		(order.cost ? `, cost ${order.cost.toFixed(2)}` : "") +
+		(order.status !== "closed" ? `, final status ${order.status}` : "") +
 		(order.ocoGroup ? ` [OCO ${order.ocoGroup}, sibling cancelled]` : "")
 	);
 }
@@ -19,7 +23,15 @@ function describePosition(p: Position): string {
 				(p.unrealizedPnl !== undefined ? ` (${p.unrealizedPnl.toFixed(2)})` : "")
 			: "";
 	const entry = p.avgEntryPrice !== undefined ? ` entry ${p.avgEntryPrice}` : "";
-	return `${p.symbol} ${p.amount} (~${p.quoteValue.toFixed(2)} quote)${entry}${pnl}`;
+	return `${p.symbol}${p.positionSide ? ` ${p.positionSide}` : ""} ${p.amount} (~${p.quoteValue.toFixed(2)} quote)${entry}${pnl}`;
+}
+
+function positionIdentity(position: Position): string {
+	return `${position.symbol}:${position.positionSide ?? (position.amount < 0 ? "SHORT" : "LONG")}`;
+}
+
+function orderIdentity(order: Order): string {
+	return `${order.symbol}:${order.id}`;
 }
 
 /** Reduce direction for a position: the side that closes it. */
@@ -27,17 +39,38 @@ export function reduceSide(p: Position): "buy" | "sell" {
 	return p.positionSide === "SHORT" || p.amount < 0 ? "buy" : "sell";
 }
 
-/** Stop-loss style protection: a reduce-direction resting order with a stop component. */
-export function isProtection(order: Order, p: Position, coveragePct = 95): boolean {
-	if (order.symbol !== p.symbol || order.side !== reduceSide(p) || !order.type.includes("stop")) return false;
-	const positionAmount = Math.abs(p.amount);
-	return positionAmount > 0 && Math.abs(order.amount) >= positionAmount * (coveragePct / 100);
+function hasStopComponent(order: Order): boolean {
+	return order.type === "oco" || order.type.includes("stop");
 }
 
-export function protectionCoverage(order: Order, p: Position, coveragePct = 95): "protected" | "partial" | "none" {
-	if (order.symbol !== p.symbol || order.side !== reduceSide(p) || !order.type.includes("stop")) return "none";
+/** Stop-loss style protection: a reduce-direction resting order with a stop component. */
+export function isProtection(
+	order: Order,
+	p: Position,
+	coveragePct = 95,
+	positionMode: "one-way" | "hedge" = "one-way",
+): boolean {
+	if (positionMode === "hedge" && order.positionSide !== p.positionSide) return false;
+	if (order.symbol !== p.symbol || order.side !== reduceSide(p) || !hasStopComponent(order)) return false;
 	const positionAmount = Math.abs(p.amount);
-	if (positionAmount <= 0 || Math.abs(order.amount) <= 0) return "none";
+	return (
+		positionAmount > 0 &&
+		(order.closePosition === true || Math.abs(order.amount) >= positionAmount * (coveragePct / 100))
+	);
+}
+
+export function protectionCoverage(
+	order: Order,
+	p: Position,
+	coveragePct = 95,
+	positionMode: "one-way" | "hedge" = "one-way",
+): "protected" | "partial" | "none" {
+	if (positionMode === "hedge" && order.positionSide !== p.positionSide) return "none";
+	if (order.symbol !== p.symbol || order.side !== reduceSide(p) || !hasStopComponent(order)) return "none";
+	const positionAmount = Math.abs(p.amount);
+	if (positionAmount <= 0) return "none";
+	if (order.closePosition === true) return "protected";
+	if (Math.abs(order.amount) <= 0) return "none";
 	return Math.abs(order.amount) >= positionAmount * (coveragePct / 100) ? "protected" : "partial";
 }
 
@@ -58,37 +91,87 @@ export function createOrderMonitorExtension() {
 		let seeded = false;
 		let polling = false;
 		let enabled = true;
+		let lastError: { message: string; reportedAt: number } | undefined;
+		const missingHistoryChecks = new Map<string, number>();
 		/** Guard alert state per `${symbol}:{unprotected|drawdown}` key. */
 		const guardState = new Map<string, { firstSeenAt?: number; lastAlertAt?: number }>();
 
 		type Trading = ReturnType<typeof getTrading>;
 
+		const reportError = (ctx: ExtensionContext, scope: string, error: unknown): void => {
+			const message = `${scope}: ${error instanceof Error ? error.message : String(error)}`;
+			const now = Date.now();
+			if (lastError?.message === message && now - lastError.reportedAt < 60_000) return;
+			lastError = { message, reportedAt: now };
+			console.error(`[order monitor] ${message}`);
+			if (ctx.hasUI) ctx.ui.notify(`Order monitor error: ${message}`, "warning");
+		};
+
 		const reportFills = async (trading: Trading, open: Order[], ctx: ExtensionContext): Promise<void> => {
-			const openIds = new Set(open.map((o) => o.id));
+			const openIds = new Set(open.map(orderIdentity));
+			for (const id of openIds) missingHistoryChecks.delete(id);
 			if (!seeded) {
 				seeded = true;
-				known = new Map(open.map((o) => [o.id, o]));
+				known = new Map(open.map((o) => [orderIdentity(o), o]));
 				return;
 			}
-			const disappeared = [...known.values()].filter((o) => !openIds.has(o.id));
-			known = new Map(open.map((o) => [o.id, o]));
-			if (disappeared.length === 0) return;
+			const disappeared = [...known.values()].filter((o) => !openIds.has(orderIdentity(o)));
+			const nextKnown = new Map(open.map((o) => [orderIdentity(o), o]));
+			if (disappeared.length === 0) {
+				known = nextKnown;
+				return;
+			}
 
 			// Classify disappeared orders via order history, per symbol.
 			const fills: Order[] = [];
 			const symbols = [...new Set(disappeared.map((o) => o.symbol))];
 			for (const symbol of symbols) {
-				let history: Order[] = [];
+				let history: Order[];
 				try {
 					history = await trading.exchange.getOrderHistory(symbol, 50);
-				} catch {
-					// History unavailable: skip classification for this symbol.
+				} catch (error) {
+					reportError(ctx, `history query failed for ${symbol}`, error);
+					for (const gone of disappeared.filter((order) => order.symbol === symbol)) {
+						nextKnown.set(orderIdentity(gone), gone);
+					}
+					continue;
 				}
 				for (const gone of disappeared.filter((o) => o.symbol === symbol)) {
+					const id = orderIdentity(gone);
 					const final = history.find((h) => h.id === gone.id);
-					if (final?.status === "closed") fills.push(final);
+					if (
+						final &&
+						final.status !== "open" &&
+						final.status !== "unknown" &&
+						(final.status === "closed" || final.filled > 0)
+					) {
+						missingHistoryChecks.delete(id);
+						fills.push(final);
+					} else if (!final) {
+						const checks = (missingHistoryChecks.get(id) ?? 0) + 1;
+						if (checks >= MAX_MISSING_HISTORY_CHECKS) {
+							missingHistoryChecks.delete(id);
+							reportError(
+								ctx,
+								`order ${gone.id} status unresolved after ${MAX_MISSING_HISTORY_CHECKS} history checks`,
+								`not present in ${symbol} order history`,
+							);
+						} else {
+							missingHistoryChecks.set(id, checks);
+							nextKnown.set(id, gone);
+						}
+					} else if (final.status === "open" || final.status === "unknown") {
+						missingHistoryChecks.delete(id);
+						nextKnown.set(id, gone);
+						if (final?.status === "unknown") {
+							reportError(ctx, `unknown final status for order ${gone.id}`, final.status);
+						}
+					} else {
+						missingHistoryChecks.delete(id);
+					}
 				}
 			}
+			known = nextKnown;
 			if (fills.length === 0) return;
 
 			const lines = fills.map(describeFill);
@@ -117,15 +200,17 @@ export function createOrderMonitorExtension() {
 			const unprotectedKeys = new Set<string>();
 
 			for (const p of positions) {
-				const protections = open.filter((o) => isProtection(o, p, cfg.protectionCoveragePct));
+				const protections = open.filter((o) =>
+					isProtection(o, p, cfg.protectionCoveragePct, trading.config.positionMode),
+				);
 				const partialProtections = open.filter(
-					(o) => protectionCoverage(o, p, cfg.protectionCoveragePct) === "partial",
+					(o) => protectionCoverage(o, p, cfg.protectionCoveragePct, trading.config.positionMode) === "partial",
 				);
 				const cooldownMs = cfg.alertCooldownSec * 1000;
 
 				if (protections.length === 0) {
 					// Grace of one poll interval so the agent can place a bracket right after entry.
-					const key = `${p.symbol}:unprotected`;
+					const key = `${positionIdentity(p)}:unprotected`;
 					unprotectedKeys.add(key);
 					const st = guardState.get(key) ?? {};
 					st.firstSeenAt ??= now;
@@ -146,7 +231,7 @@ export function createOrderMonitorExtension() {
 				}
 
 				if (p.unrealizedPnlPct !== undefined && p.unrealizedPnlPct <= -cfg.alertLossPct) {
-					const key = `${p.symbol}:drawdown`;
+					const key = `${positionIdentity(p)}:drawdown`;
 					const st = guardState.get(key) ?? {};
 					const cooled = st.lastAlertAt === undefined || now - st.lastAlertAt >= cooldownMs;
 					if (cooled) {
@@ -193,8 +278,8 @@ export function createOrderMonitorExtension() {
 				const open = await trading.exchange.getOpenOrders();
 				await reportFills(trading, open, ctx);
 				if (trading.config.monitor.guardPositions) await guardPositions(trading, open, ctx);
-			} catch {
-				// Transient feed/exchange error: retry on the next tick.
+			} catch (error) {
+				reportError(ctx, "poll failed", error);
 			} finally {
 				polling = false;
 			}

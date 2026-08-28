@@ -12,7 +12,13 @@ import {
 	type TradingLanguage,
 	type TradingMode,
 	type TradingState,
+	validateTradingConfig,
 } from "./state.ts";
+
+export interface RiskReservation {
+	commit(): void;
+	release(): void;
+}
 
 /**
  * Process-wide trading runtime: the active exchange client, trading config and
@@ -23,6 +29,7 @@ export class TradingRuntime {
 	config: TradingConfig;
 	private state: TradingState;
 	private client: ExchangeClient | undefined;
+	private readonly pendingNotional: Record<TradingMode, number> = { paper: 0, live: 0 };
 
 	private constructor(config: TradingConfig) {
 		this.config = config;
@@ -33,6 +40,7 @@ export class TradingRuntime {
 		const config = loadTradingConfig();
 		if (overrides.mode) config.mode = overrides.mode;
 		if (overrides.exchange) config.exchange = overrides.exchange;
+		validateTradingConfig(config);
 		const runtime = new TradingRuntime(config);
 		runtime.client = await runtime.createClient();
 		return runtime;
@@ -80,7 +88,7 @@ export class TradingRuntime {
 	 * when the order is within limits.
 	 */
 	checkRisk(symbol: string, notional: number, options: { countTowardsDailyLimit?: boolean } = {}): string | null {
-		const { risk, quoteCurrency, marketType } = this.config;
+		const { mode, risk, quoteCurrency, marketType } = this.config;
 		const countTowardsDailyLimit = options.countTowardsDailyLimit ?? true;
 		const symbolParts = symbol.split("/");
 		const validSymbol =
@@ -103,38 +111,73 @@ export class TradingRuntime {
 		// entry-notional quota. Otherwise adding protection can reject the very
 		// position it is meant to protect.
 		if (!countTowardsDailyLimit) return null;
-		this.refreshDailyCounter();
-		if (this.state.usedDailyNotional + notional > risk.maxDailyNotional) {
-			const used = this.state.usedDailyNotional.toFixed(2);
+		this.refreshDailyCounter(mode);
+		const state = this.state[mode];
+		const reserved = this.pendingNotional[mode];
+		if (state.usedDailyNotional + reserved + notional > risk.maxDailyNotional) {
+			const used = state.usedDailyNotional.toFixed(2);
+			const pending = reserved > 0 ? ` plus ${reserved.toFixed(2)} reserved by in-flight orders` : "";
 			return (
 				`Order would exceed maxDailyNotional ${risk.maxDailyNotional} ${quoteCurrency} ` +
 				(this.config.mode === "paper"
-					? `(already used ${used} cumulatively; the quota only resets when the user runs /risk reset or /paper reset)`
-					: `(already used ${used} today)`)
+					? `(already used ${used} cumulatively${pending}; the quota only resets when the user runs /risk reset or /paper reset)`
+					: `(already used ${used} today${pending})`)
 			);
 		}
 		return null;
 	}
 
+	/** Atomically reserve quota before an asynchronous order submission. */
+	reserveRisk(symbol: string, notional: number, options: { countTowardsDailyLimit?: boolean } = {}): RiskReservation {
+		const countTowardsDailyLimit = options.countTowardsDailyLimit ?? true;
+		const error = this.checkRisk(symbol, notional, { countTowardsDailyLimit });
+		if (error) throw new Error(`Risk limit: ${error}`);
+		const mode = this.config.mode;
+		if (countTowardsDailyLimit) this.pendingNotional[mode] += notional;
+		let finalized = false;
+		const finalize = (): boolean => {
+			if (finalized) return false;
+			finalized = true;
+			if (countTowardsDailyLimit) this.pendingNotional[mode] -= notional;
+			return true;
+		};
+		return {
+			commit: () => {
+				if (!finalize() || !countTowardsDailyLimit) return;
+				this.refreshDailyCounter(mode);
+				this.state[mode].usedDailyNotional += notional;
+				saveTradingState(this.state);
+			},
+			release: () => {
+				finalize();
+			},
+		};
+	}
+
 	/** Record entry/order notional against the daily limit. Protective exits are excluded. */
 	recordFill(notional: number, options: { countTowardsDailyLimit?: boolean } = {}): void {
 		if (options.countTowardsDailyLimit === false) return;
-		this.refreshDailyCounter();
-		this.state.usedDailyNotional += notional;
+		const mode = this.config.mode;
+		this.refreshDailyCounter(mode);
+		this.state[mode].usedDailyNotional += notional;
 		saveTradingState(this.state);
 	}
 
 	/** Manually reset the used-notional counter (paper quota is cumulative). */
 	resetRiskUsage(): void {
-		this.state = { date: new Date().toISOString().slice(0, 10), usedDailyNotional: 0 };
+		const mode = this.config.mode;
+		this.state[mode] = { date: new Date().toISOString().slice(0, 10), usedDailyNotional: 0 };
 		saveTradingState(this.state);
 	}
 
-	dailyUsage(): { date: string; used: number; limit: number; resetPolicy: "daily-auto" | "manual" } {
-		this.refreshDailyCounter();
+	dailyUsage(): { date: string; used: number; reserved: number; limit: number; resetPolicy: "daily-auto" | "manual" } {
+		const mode = this.config.mode;
+		this.refreshDailyCounter(mode);
+		const state = this.state[mode];
 		return {
-			date: this.state.date,
-			used: this.state.usedDailyNotional,
+			date: state.date,
+			used: state.usedDailyNotional,
+			reserved: this.pendingNotional[mode],
 			limit: this.config.risk.maxDailyNotional,
 			resetPolicy: this.config.mode === "paper" ? "manual" : "daily-auto",
 		};
@@ -168,16 +211,17 @@ export class TradingRuntime {
 	 * Paper mode: the quota is cumulative and only resets manually
 	 * (resetRiskUsage / resetPaperAccount), so the counter is kept as-is.
 	 */
-	private refreshDailyCounter(): void {
-		if (this.config.mode !== "live") return;
+	private refreshDailyCounter(mode: TradingMode): void {
+		if (mode !== "live") return;
 		const today = new Date().toISOString().slice(0, 10);
-		if (this.state.date !== today) {
-			this.state = { date: today, usedDailyNotional: 0 };
+		if (this.state.live.date !== today) {
+			this.state.live = { date: today, usedDailyNotional: 0 };
 			saveTradingState(this.state);
 		}
 	}
 
 	private async replaceClient(nextConfig: TradingConfig): Promise<void> {
+		validateTradingConfig(nextConfig);
 		const nextClient = await this.createClient(nextConfig);
 		const old = this.client;
 		this.config = nextConfig;
@@ -198,6 +242,7 @@ export class TradingRuntime {
 				config.marketType,
 				config.leverage,
 				config.marginType,
+				config.positionMode,
 			);
 		}
 		if (config.marketType === "both") throw new Error('marketType "both" is supported only in Paper mode');
@@ -209,7 +254,15 @@ export class TradingRuntime {
 					`{ "${exchange}": { "apiKey": "...", "secret": "..." } }`,
 			);
 		}
-		return new CcxtExchangeClient(exchange, quoteCurrency, keys, config.marketType);
+		return new CcxtExchangeClient(
+			exchange,
+			quoteCurrency,
+			keys,
+			config.marketType,
+			config.leverage,
+			config.marginType,
+			config.positionMode,
+		);
 	}
 }
 

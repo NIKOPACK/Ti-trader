@@ -131,11 +131,14 @@ export function validateTradingConfig(config: TradingConfig): void {
 		allowedSymbols.some(
 			(symbol) =>
 				typeof symbol !== "string" ||
-				!symbol.endsWith(
-					config.marketType === "usdm-futures"
-						? `/${config.quoteCurrency}:${config.quoteCurrency}`
-						: `/${config.quoteCurrency}`,
-				),
+				(!(
+					(config.marketType === "spot" || config.marketType === "both") &&
+					symbol.endsWith(`/${config.quoteCurrency}`)
+				) &&
+					!(
+						(config.marketType === "usdm-futures" || config.marketType === "both") &&
+						symbol.endsWith(`/${config.quoteCurrency}:${config.quoteCurrency}`)
+					)),
 		)
 	) {
 		throw new Error(`risk.allowedSymbols must contain ${config.quoteCurrency} symbols`);
@@ -202,11 +205,16 @@ export function saveExchangeKeys(keys: Record<string, ExchangeCredentials>): voi
 	writeJsonFile(KEYS_PATH, keys, 0o600);
 }
 
-/** Mutable daily counters, persisted so restarts do not reset risk accounting. */
-export interface TradingState {
+export interface RiskUsageState {
 	/** UTC date (YYYY-MM-DD) the counters belong to. */
 	date: string;
 	usedDailyNotional: number;
+}
+
+/** Paper and live counters are isolated so mode switches cannot transfer quota. */
+export interface TradingState {
+	paper: RiskUsageState;
+	live: RiskUsageState;
 }
 
 /**
@@ -217,7 +225,19 @@ export interface TradingState {
 export function loadTradingState(): TradingState {
 	const today = new Date().toISOString().slice(0, 10);
 	const stored = readJsonFile<unknown>(TRADING_STATE_PATH);
-	if (stored === undefined) return { date: today, usedDailyNotional: 0 };
+	if (stored === undefined) {
+		return {
+			paper: { date: today, usedDailyNotional: 0 },
+			live: { date: today, usedDailyNotional: 0 },
+		};
+	}
+	if (isRiskUsageState(stored)) {
+		// Legacy releases shared one counter. Preserve it in both modes during
+		// migration so an upgrade cannot silently restore trading capacity.
+		const migrated = { paper: { ...stored }, live: { ...stored } };
+		saveTradingState(migrated);
+		return migrated;
+	}
 	if (!isTradingState(stored)) {
 		throw new Error(
 			`Invalid trading risk state in ${TRADING_STATE_PATH}; refusing to start with an untrusted daily counter`,
@@ -232,6 +252,12 @@ export function saveTradingState(state: TradingState): void {
 }
 
 function isTradingState(value: unknown): value is TradingState {
+	if (typeof value !== "object" || value === null) return false;
+	const candidate = value as Record<string, unknown>;
+	return isRiskUsageState(candidate.paper) && isRiskUsageState(candidate.live);
+}
+
+function isRiskUsageState(value: unknown): value is RiskUsageState {
 	if (typeof value !== "object" || value === null) return false;
 	const candidate = value as Record<string, unknown>;
 	return (

@@ -73,7 +73,7 @@ async function fetchCandles(params: MarketParams, signal?: AbortSignal): Promise
 			if (!Array.isArray(row) || row.length < 6) throw new Error("Market data candle was invalid");
 			const values = row.slice(0, 6).map(Number);
 			if (values.some((value) => !Number.isFinite(value))) throw new Error("Market data contained a non-finite value");
-			if (values[0] <= 0 || values[1] <= 0 || values[2] < values[1] || values[3] > values[1] || values[3] <= 0 || values[2] < values[3] || values[4] <= 0 || values[5] < 0) throw new Error("Market data candle had invalid OHLCV values");
+			if (values[0] <= 0 || values[1] <= 0 || values[2] < values[1] || values[3] > values[1] || values[3] <= 0 || values[2] < values[3] || values[4] < values[3] || values[4] > values[2] || values[5] < 0) throw new Error("Market data candle had invalid OHLCV values");
 			return { timestamp: values[0], open: values[1], high: values[2], low: values[3], close: values[4], volume: values[5] };
 		});
 		for (let index = 1; index < candles.length; index++) if (candles[index].timestamp <= candles[index - 1].timestamp) throw new Error("Market data candles were not ordered");
@@ -94,6 +94,13 @@ function rounded(point: IndicatorPoint | undefined): Record<string, number | nul
 	return output;
 }
 
+export function classifyBias(ema20: number | undefined, ema50: number | undefined): "bullish" | "bearish" | "neutral" | "insufficient-data" {
+	if (ema20 === undefined || ema50 === undefined) return "insufficient-data";
+	if (ema20 > ema50) return "bullish";
+	if (ema20 < ema50) return "bearish";
+	return "neutral";
+}
+
 async function analyze(params: MarketParams, signal?: AbortSignal) {
 	const data = await fetchCandles(params, signal);
 	const latest = latestIndicators(data.candles);
@@ -103,9 +110,9 @@ async function analyze(params: MarketParams, signal?: AbortSignal) {
 	const low = Math.min(...data.candles.slice(-20).map((candle) => candle.low));
 	const warnings = ["Data source is Binance public spot market data, not account data.", "This is analysis only; no order was created.", "The last currently forming candle was excluded."];
 	if (data.candles.length < 50) warnings.push("Fewer than 50 candles were available; EMA50 is unavailable.");
-	const bias = latest.ema20 !== undefined && latest.ema50 !== undefined ? latest.ema20 > latest.ema50 ? "bullish" : "bearish" : "insufficient-data";
+	const bias = classifyBias(latest.ema20, latest.ema50);
 	const reasons: string[] = [];
-	if (latest.ema20 !== undefined && latest.ema50 !== undefined) reasons.push(latest.ema20 > latest.ema50 ? "EMA20 is above EMA50" : "EMA20 is below EMA50");
+	if (latest.ema20 !== undefined && latest.ema50 !== undefined) reasons.push(latest.ema20 > latest.ema50 ? "EMA20 is above EMA50" : latest.ema20 < latest.ema50 ? "EMA20 is below EMA50" : "EMA20 equals EMA50");
 	if (latest.rsi14 !== undefined) reasons.push(`RSI14 is ${latest.rsi14.toFixed(2)}`);
 	if (latest.volumeRatio !== undefined) reasons.push(`Latest volume is ${latest.volumeRatio.toFixed(2)}x its 20-candle average`);
 	const confidence = bias === "insufficient-data" ? "low" : reasons.length >= 3 ? "medium" : "low";

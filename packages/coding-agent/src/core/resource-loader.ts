@@ -19,6 +19,7 @@ import {
 import type { Extension, ExtensionRuntime, InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import { findGitPaths } from "./footer-data-provider.ts";
 import { DefaultPackageManager, type PathMetadata, type ResolvedResource } from "./package-manager.ts";
+import type { ManifestFlavor } from "./pi-manifest.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { loadPromptTemplates } from "./prompt-templates.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -161,6 +162,7 @@ export interface DefaultResourceLoaderOptions {
 	agentDir: string;
 	settingsManager?: SettingsManager;
 	eventBus?: EventBus;
+	manifestFlavor?: ManifestFlavor;
 	additionalExtensionPaths?: string[];
 	additionalSkillPaths?: string[];
 	additionalPromptTemplatePaths?: string[];
@@ -260,6 +262,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			cwd: this.cwd,
 			agentDir: this.agentDir,
 			settingsManager: this.settingsManager,
+			manifestFlavor: options.manifestFlavor,
 		});
 		this.additionalExtensionPaths = options.additionalExtensionPaths ?? [];
 		this.additionalSkillPaths = options.additionalSkillPaths ?? [];

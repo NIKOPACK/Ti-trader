@@ -1,22 +1,25 @@
 import { join } from "node:path";
 import ccxt, { type Ticker as CcxtTicker, type Exchange } from "ccxt";
 import { PAPER_DIR, readJsonFile, writeJsonFile } from "../config.ts";
-import type {
-	Balance,
-	ContractStats,
-	ExchangeClient,
-	FundingRateRecord,
-	Kline,
-	MarketInfo,
-	Order,
-	OrderBook,
-	OrderType,
-	PlaceOcoOrderInput,
-	PlaceOcoOrderResult,
-	PlaceOrderInput,
-	PlaceOrderResult,
-	Position,
-	Ticker,
+import type { FuturesPositionMode } from "../state.ts";
+import {
+	type Balance,
+	type ContractStats,
+	type ExchangeClient,
+	type FundingRateRecord,
+	type Kline,
+	type MarketInfo,
+	type Order,
+	type OrderBook,
+	type OrderList,
+	type OrderType,
+	type PlaceOcoOrderInput,
+	type PlaceOcoOrderResult,
+	type PlaceOrderInput,
+	type PlaceOrderResult,
+	type Position,
+	type Ticker,
+	timeframeDurationMs,
 } from "./types.ts";
 
 interface PaperOrder {
@@ -39,6 +42,11 @@ interface PaperOrder {
 	lastCheckedAt?: number;
 	/** Orders sharing an ocoGroup form a one-cancels-the-other pair with a single shared reservation. */
 	ocoGroup?: string;
+	clientOrderId?: string;
+	listClientOrderId?: string;
+	positionSide?: "BOTH" | "LONG" | "SHORT";
+	reduceOnly?: boolean;
+	closePosition?: boolean;
 	amount: number;
 	filled: number;
 	average?: number;
@@ -63,11 +71,13 @@ interface PaperAccount {
 		cost: number;
 		fee: number;
 		realizedPnl?: number;
+		positionSide?: "BOTH" | "LONG" | "SHORT";
 		timestamp: number;
 	}>;
 	realizedPnl: number;
 	leverage?: number;
 	marginType?: "isolated" | "cross";
+	positionMode?: FuturesPositionMode;
 	createdAt: number;
 }
 
@@ -141,6 +151,7 @@ export class PaperExchangeClient implements ExchangeClient {
 	private nextOrderId: number;
 	private futuresLeverage = 1;
 	private futuresMarginType: "isolated" | "cross" = "isolated";
+	private readonly positionMode: FuturesPositionMode;
 
 	constructor(
 		id: string,
@@ -151,11 +162,13 @@ export class PaperExchangeClient implements ExchangeClient {
 		marketType: "spot" | "usdm-futures" | "both" = "spot",
 		leverage = 1,
 		marginType: "isolated" | "cross" = "isolated",
+		positionMode: FuturesPositionMode = "one-way",
 	) {
 		this.id = id;
 		this.quoteCurrency = quoteCurrency;
 		this.feeRate = feeRate;
 		this.marketType = marketType;
+		this.positionMode = positionMode;
 		this.futuresLeverage = leverage;
 		this.futuresMarginType = marginType;
 		const ExchangeClass = (ccxt as unknown as Record<string, new (cfg: object) => Exchange>)[id];
@@ -190,12 +203,23 @@ export class PaperExchangeClient implements ExchangeClient {
 			realizedPnl: 0,
 			leverage,
 			marginType,
+			positionMode,
 			createdAt: Date.now(),
 		};
+		const storedPositionMode = this.futuresAccount.positionMode ?? "one-way";
+		if (
+			storedPositionMode !== positionMode &&
+			Object.values(this.futuresAccount.entries).some((entry) => entry.amount !== 0)
+		) {
+			throw new Error(
+				`Paper futures account contains ${storedPositionMode} positions; reset it before switching to ${positionMode} mode`,
+			);
+		}
 		this.futuresLeverage = this.futuresAccount.leverage ?? leverage;
 		this.futuresMarginType = this.futuresAccount.marginType ?? marginType;
 		this.futuresAccount.leverage = this.futuresLeverage;
 		this.futuresAccount.marginType = this.futuresMarginType;
+		this.futuresAccount.positionMode = positionMode;
 		this.nextOrderId =
 			Math.max(
 				this.account.orders.length + this.account.trades.length,
@@ -216,6 +240,47 @@ export class PaperExchangeClient implements ExchangeClient {
 	private persistAll(): void {
 		this.persist();
 		writeJsonFile(this.futuresAccountPath, this.futuresAccount);
+	}
+
+	private async normalizeOrderInput(input: PlaceOrderInput): Promise<PlaceOrderInput> {
+		const exchange = this.exchangeFor(input.symbol);
+		await exchange.loadMarkets();
+		const market = exchange.markets[input.symbol];
+		const futures = this.isFuturesSymbol(input.symbol);
+		if (!market || market.quote !== this.quoteCurrency || (futures ? market.swap !== true : market.spot !== true)) {
+			throw new Error(`Unsupported ${futures ? "futures" : "spot"} market: ${input.symbol}`);
+		}
+		const amount = Number(exchange.amountToPrecision(input.symbol, input.amount));
+		if (!Number.isFinite(amount) || amount <= 0) {
+			throw new Error(`Amount ${input.amount} rounds to zero for ${input.symbol}`);
+		}
+		const price =
+			input.price === undefined ? undefined : Number(exchange.priceToPrecision(input.symbol, input.price));
+		const stopPrice =
+			input.stopPrice === undefined ? undefined : Number(exchange.priceToPrecision(input.symbol, input.stopPrice));
+		const minAmount = market.limits?.amount?.min;
+		const maxAmount = market.limits?.amount?.max;
+		if (minAmount !== undefined && amount < minAmount) {
+			throw new Error(`Amount ${amount} is below minimum ${minAmount} for ${input.symbol}`);
+		}
+		if (maxAmount !== undefined && amount > maxAmount) {
+			throw new Error(`Amount ${amount} exceeds maximum ${maxAmount} for ${input.symbol}`);
+		}
+		const tickerPrice = (await exchange.fetchTicker(input.symbol)).last;
+		const referencePrice = price ?? stopPrice ?? tickerPrice;
+		if (referencePrice === undefined || !Number.isFinite(referencePrice) || referencePrice <= 0) {
+			throw new Error(`No price available for ${input.symbol}`);
+		}
+		const cost = amount * referencePrice;
+		const minCost = market.limits?.cost?.min;
+		const maxCost = market.limits?.cost?.max;
+		if (minCost !== undefined && cost < minCost) {
+			throw new Error(`Order cost ${cost} is below minimum ${minCost} for ${input.symbol}`);
+		}
+		if (maxCost !== undefined && cost > maxCost) {
+			throw new Error(`Order cost ${cost} exceeds maximum ${maxCost} for ${input.symbol}`);
+		}
+		return { ...input, amount, price, stopPrice };
 	}
 
 	async getTicker(symbol: string): Promise<Ticker> {
@@ -297,9 +362,10 @@ export class PaperExchangeClient implements ExchangeClient {
 
 	async getKlines(symbol: string, timeframe: string, limit: number): Promise<Kline[]> {
 		const ohlcv = await this.exchangeFor(symbol).fetchOHLCV(symbol, timeframe, undefined, limit);
+		const duration = timeframeDurationMs(timeframe);
 		return ohlcv.map((k) => ({
 			timestamp: k[0] ?? 0,
-			closed: k[0] !== undefined ? k[0] + this.timeframeDurationMs(timeframe) <= Date.now() : undefined,
+			closed: k[0] !== undefined && duration !== undefined ? k[0] + duration <= Date.now() : undefined,
 			open: k[1] ?? 0,
 			high: k[2] ?? 0,
 			low: k[3] ?? 0,
@@ -361,23 +427,95 @@ export class PaperExchangeClient implements ExchangeClient {
 
 	async getOpenOrders(symbol?: string): Promise<Order[]> {
 		await this.settleOpenOrders();
-		const account = symbol && this.isFuturesSymbol(symbol) ? this.futuresAccount : this.account;
-		return account.orders.filter((o) => o.status === "open" && (!symbol || o.symbol === symbol)).map(toOrder);
+		const accounts = symbol
+			? [this.isFuturesSymbol(symbol) ? this.futuresAccount : this.account]
+			: this.marketType === "spot"
+				? [this.account]
+				: this.marketType === "usdm-futures"
+					? [this.futuresAccount]
+					: [this.account, this.futuresAccount];
+		return accounts
+			.flatMap((account) => account.orders)
+			.filter((order) => order.status === "open" && (!symbol || order.symbol === symbol))
+			.map(toOrder);
 	}
 
 	async getOrderHistory(symbol?: string, limit = 50): Promise<Order[]> {
 		await this.settleOpenOrders();
-		const account = symbol && this.isFuturesSymbol(symbol) ? this.futuresAccount : this.account;
-		const closed = account.orders.filter((o) => o.status !== "open" && (!symbol || o.symbol === symbol));
-		return closed.slice(-limit).map(toOrder);
+		const accounts = symbol
+			? [this.isFuturesSymbol(symbol) ? this.futuresAccount : this.account]
+			: this.marketType === "spot"
+				? [this.account]
+				: this.marketType === "usdm-futures"
+					? [this.futuresAccount]
+					: [this.account, this.futuresAccount];
+		return accounts
+			.flatMap((account) => account.orders)
+			.filter((order) => order.status !== "open" && (!symbol || order.symbol === symbol))
+			.sort((a, b) => b.timestamp - a.timestamp)
+			.slice(0, limit)
+			.map(toOrder);
+	}
+
+	async getOrderByClientId(clientOrderId: string, symbol: string): Promise<Order> {
+		await this.settleOpenOrders();
+		const account = this.isFuturesSymbol(symbol) ? this.futuresAccount : this.account;
+		const order = account.orders.find(
+			(candidate) => candidate.clientOrderId === clientOrderId && candidate.symbol === symbol,
+		);
+		if (!order) throw new Error(`Order client id ${clientOrderId} on ${symbol} not found`);
+		return toOrder(order);
+	}
+
+	async getOrder(id: string, symbol: string): Promise<Order> {
+		await this.settleOpenOrders();
+		const account = this.isFuturesSymbol(symbol) ? this.futuresAccount : this.account;
+		const order = account.orders.find((candidate) => candidate.id === id && candidate.symbol === symbol);
+		if (!order) throw new Error(`Order ${id} on ${symbol} not found`);
+		return toOrder(order);
+	}
+
+	async getOrderListByClientId(listClientOrderId: string): Promise<OrderList> {
+		await this.settleOpenOrders();
+		const orders = [...this.account.orders, ...this.futuresAccount.orders].filter(
+			(order) => order.listClientOrderId === listClientOrderId,
+		);
+		if (orders.length === 0) throw new Error(`Order list ${listClientOrderId} not found`);
+		return this.orderListFromOrders(listClientOrderId, orders);
+	}
+
+	async getOrderList(orderListId: string): Promise<OrderList> {
+		await this.settleOpenOrders();
+		const orders = [...this.account.orders, ...this.futuresAccount.orders].filter(
+			(order) => order.ocoGroup === orderListId,
+		);
+		if (orders.length === 0) throw new Error(`Order list ${orderListId} not found`);
+		return this.orderListFromOrders(orderListId, orders);
+	}
+
+	private orderListFromOrders(orderListId: string, orders: PaperOrder[]): OrderList {
+		const mapped = orders.map(toOrder);
+		const status = mapped.some((order) => order.status === "open")
+			? "open"
+			: mapped.some((order) => order.status === "closed")
+				? "closed"
+				: "canceled";
+		return {
+			id: orderListId,
+			listOrderStatus: status === "open" ? "EXECUTING" : "ALL_DONE",
+			status,
+			orders: mapped,
+		};
 	}
 
 	async placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResult> {
 		if (this.isFuturesSymbol(input.symbol)) {
 			if (this.marketType === "spot") throw new Error("Futures markets are disabled in spot mode");
-			return this.placeFuturesMarketOrder(input);
+			return this.placeFuturesMarketOrder(await this.normalizeOrderInput(input));
 		}
 		if (this.marketType === "usdm-futures") throw new Error("Spot markets are disabled in futures mode");
+		input = await this.normalizeOrderInput(input);
+		input = { ...input, clientOrderId: input.clientOrderId ?? `paper-${this.nextOrderId}` };
 		await this.settleOpenOrders();
 		baseAsset(input.symbol, this.quoteCurrency); // validates market
 		if (input.amount <= 0) throw new Error("Amount must be positive");
@@ -400,6 +538,7 @@ export class PaperExchangeClient implements ExchangeClient {
 
 		const order: PaperOrder = {
 			id: String(this.nextOrderId),
+			clientOrderId: input.clientOrderId,
 			symbol: input.symbol,
 			side: input.side,
 			type: input.type,
@@ -469,7 +608,15 @@ export class PaperExchangeClient implements ExchangeClient {
 		await this.settleOpenOrders();
 		baseAsset(input.symbol, this.quoteCurrency); // validates market
 		if (input.amount <= 0) throw new Error("Amount must be positive");
-		const { stopLossPrice, takeProfitPrice } = input;
+		const normalized = await this.normalizeOrderInput({
+			symbol: input.symbol,
+			side: input.side,
+			type: "market",
+			amount: input.amount,
+		});
+		const amount = normalized.amount;
+		const stopLossPrice = Number(this.exchange.priceToPrecision(input.symbol, input.stopLossPrice));
+		const takeProfitPrice = Number(this.exchange.priceToPrecision(input.symbol, input.takeProfitPrice));
 		if (!Number.isFinite(stopLossPrice) || stopLossPrice <= 0) throw new Error("stopLossPrice must be positive");
 		if (!Number.isFinite(takeProfitPrice) || takeProfitPrice <= 0)
 			throw new Error("takeProfitPrice must be positive");
@@ -487,18 +634,21 @@ export class PaperExchangeClient implements ExchangeClient {
 		}
 
 		const group = `oco-${this.nextOrderId}`;
+		const listClientOrderId = input.listClientOrderId ?? `paper-list-${this.nextOrderId}`;
 		const now = Date.now();
 		// Buys reserve quote at the worst-case (higher) trigger; sells reserve base once.
 		const reservePrice = Math.max(stopLossPrice, takeProfitPrice);
-		const makeLeg = (type: OrderType, stopPrice: number): PaperOrder => ({
+		const makeLeg = (type: OrderType, stopPrice: number, clientOrderId?: string): PaperOrder => ({
 			id: String(this.nextOrderId++),
+			clientOrderId,
+			listClientOrderId,
 			symbol: input.symbol,
 			side: input.side,
 			type,
 			stopPrice,
 			reservePrice,
 			ocoGroup: group,
-			amount: input.amount,
+			amount,
 			filled: 0,
 			cost: 0,
 			status: "open",
@@ -507,9 +657,9 @@ export class PaperExchangeClient implements ExchangeClient {
 		});
 		// Stop-loss leg first: on a candle that crosses both triggers, the
 		// conservative (loss) leg wins.
-		const stopLeg = makeLeg("stop_market", stopLossPrice);
-		const profitLeg = makeLeg("take_profit_market", takeProfitPrice);
-		this.reserve(input.side, input.symbol, input.amount, reservePrice);
+		const stopLeg = makeLeg("stop_market", stopLossPrice, input.belowClientOrderId);
+		const profitLeg = makeLeg("take_profit_market", takeProfitPrice, input.aboveClientOrderId);
+		this.reserve(input.side, input.symbol, amount, reservePrice);
 		this.account.orders.push(stopLeg, profitLeg);
 		this.persist();
 		return { orders: [toOrder(stopLeg), toOrder(profitLeg)] };
@@ -517,50 +667,70 @@ export class PaperExchangeClient implements ExchangeClient {
 
 	private async placeFuturesMarketOrder(input: PlaceOrderInput): Promise<PlaceOrderResult> {
 		if (input.type !== "market") throw new Error("Paper futures currently support market orders only");
-		if (!input.closePosition && input.amount <= 0) throw new Error("Amount must be positive");
+		if (input.amount <= 0) throw new Error("Amount must be positive");
 		if (input.closePosition && input.reduceOnly === false) throw new Error("closePosition is always reduceOnly");
 		const ticker = await this.futuresExchange.fetchTicker(input.symbol);
 		const price = ticker.last;
 		if (price === undefined || price <= 0) throw new Error(`No price available for ${input.symbol}`);
 		const account = this.futuresAccount;
 		const asset = baseAsset(input.symbol, `${this.quoteCurrency}:${this.quoteCurrency}`);
-		const current = account.entries[asset] ?? { amount: 0, cost: 0 };
+		const positionSide = this.resolveFuturesPositionSide(input.positionSide);
+		const entryKey = this.futuresEntryKey(asset, positionSide);
+		const current = account.entries[entryKey] ?? { amount: 0, cost: 0 };
 		const currentQty = Math.abs(current.amount);
 		const currentAvg = currentQty > 0 ? current.cost / currentQty : 0;
 		const requested = input.closePosition ? currentQty : input.amount;
-		if (input.closePosition && currentQty === 0) throw new Error("closePosition requires an open futures position");
 		const signed = input.side === "buy" ? requested : -requested;
-		if (input.reduceOnly && current.amount !== 0 && Math.sign(signed) === Math.sign(current.amount))
-			throw new Error("reduceOnly order cannot increase the position");
-		const closing =
-			current.amount !== 0 && Math.sign(signed) !== Math.sign(current.amount)
-				? Math.min(Math.abs(current.amount), Math.abs(signed))
-				: 0;
+		const reducing = currentQty > 0 && Math.sign(signed) !== Math.sign(current.amount);
+		if (input.closePosition && (!reducing || currentQty === 0)) {
+			throw new Error("closePosition requires an open position and the matching reduce side");
+		}
+		if (input.reduceOnly) {
+			if (currentQty === 0) throw new Error("reduceOnly order requires an open futures position");
+			if (!reducing) throw new Error("reduceOnly order cannot increase the position");
+			if (requested > currentQty) throw new Error("reduceOnly order amount exceeds the open position");
+		}
+		if (this.positionMode === "hedge") {
+			const openingSide = positionSide === "LONG" ? "buy" : "sell";
+			if (currentQty === 0 && input.side !== openingSide) {
+				throw new Error(`${input.side} cannot open a ${positionSide} position in hedge mode`);
+			}
+			if (reducing && requested > currentQty) {
+				throw new Error(`Order amount exceeds the open ${positionSide} position`);
+			}
+		}
+		const closing = reducing ? Math.min(currentQty, requested) : 0;
 		const pnl = closing * (price - currentAvg) * Math.sign(current.amount);
 		const notional = requested * price;
 		const fee = notional * this.feeRate;
 		const releasedMargin = (closing * currentAvg) / this.futuresLeverage;
 		const remaining = current.amount + signed;
-		const opening = Math.max(0, Math.abs(remaining) - Math.max(0, currentQty - closing));
+		const opening = requested - closing;
 		const openingMargin = (opening * price) / this.futuresLeverage;
 		const available = account.balances[this.quoteCurrency] ?? 0;
 		if (available + releasedMargin + pnl < fee + openingMargin) throw new Error("Insufficient futures margin");
 		account.balances[this.quoteCurrency] = available + releasedMargin + pnl - fee - openingMargin;
-		if (remaining === 0) delete account.entries[asset];
-		else
-			account.entries[asset] = {
+		if (remaining === 0) delete account.entries[entryKey];
+		else {
+			const sameDirection = currentQty === 0 || !reducing;
+			account.entries[entryKey] = {
 				amount: remaining,
-				cost:
-					Math.sign(remaining) === Math.sign(current.amount)
-						? current.cost + (Math.abs(signed) - closing) * price
+				cost: sameDirection
+					? current.cost + requested * price
+					: Math.sign(remaining) === Math.sign(current.amount)
+						? Math.abs(remaining) * currentAvg
 						: Math.abs(remaining) * price,
 			};
+		}
 		account.realizedPnl += pnl;
 		const order: PaperOrder = {
 			id: String(this.nextOrderId++),
 			symbol: input.symbol,
 			side: input.side,
 			type: "market",
+			positionSide,
+			reduceOnly: input.reduceOnly,
+			closePosition: input.closePosition,
 			amount: requested,
 			filled: requested,
 			average: price,
@@ -578,10 +748,28 @@ export class PaperExchangeClient implements ExchangeClient {
 			cost: notional,
 			fee,
 			realizedPnl: pnl,
+			positionSide,
 			timestamp: order.timestamp,
 		});
 		this.persistAll();
 		return { order: toOrder(order), fee };
+	}
+
+	private resolveFuturesPositionSide(positionSide: PlaceOrderInput["positionSide"]): "BOTH" | "LONG" | "SHORT" {
+		if (this.positionMode === "hedge") {
+			if (positionSide !== "LONG" && positionSide !== "SHORT") {
+				throw new Error("Hedge mode futures orders require positionSide LONG or SHORT");
+			}
+			return positionSide;
+		}
+		if (positionSide !== undefined && positionSide !== "BOTH") {
+			throw new Error("One-way mode futures orders must use positionSide BOTH or omit it");
+		}
+		return "BOTH";
+	}
+
+	private futuresEntryKey(asset: string, positionSide: "BOTH" | "LONG" | "SHORT"): string {
+		return this.positionMode === "hedge" ? `${asset}:${positionSide}` : asset;
 	}
 
 	async cancelOrder(id: string, symbol: string): Promise<void> {
@@ -597,6 +785,17 @@ export class PaperExchangeClient implements ExchangeClient {
 				if (sibling.ocoGroup === order.ocoGroup && sibling.status === "open") sibling.status = "canceled";
 			}
 		}
+		this.persistAll();
+	}
+
+	async cancelOrderList(orderListId: string, symbol: string): Promise<void> {
+		const account = this.isFuturesSymbol(symbol) ? this.futuresAccount : this.account;
+		const orders = account.orders.filter(
+			(order) => order.ocoGroup === orderListId && order.symbol === symbol && order.status === "open",
+		);
+		if (orders.length === 0) throw new Error(`Open order list ${orderListId} on ${symbol} not found`);
+		this.releaseReservation(orders[0]);
+		for (const order of orders) order.status = "canceled";
 		this.persistAll();
 	}
 
@@ -625,13 +824,6 @@ export class PaperExchangeClient implements ExchangeClient {
 		this.futuresMarginType = marginType;
 		this.futuresAccount.marginType = marginType;
 		this.persistAll();
-	}
-
-	private timeframeDurationMs(timeframe: string): number {
-		const match = /^(\\d+)([smhdw])$/.exec(timeframe);
-		if (!match) return 0;
-		const units: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
-		return Number(match[1]) * (units[match[2]] ?? 0);
 	}
 
 	async getTopMarkets(limit: number): Promise<Ticker[]> {
@@ -672,6 +864,7 @@ export class PaperExchangeClient implements ExchangeClient {
 			realizedPnl: 0,
 			leverage: this.futuresLeverage,
 			marginType: this.futuresMarginType,
+			positionMode: this.positionMode,
 			createdAt: Date.now(),
 		};
 		this.nextOrderId = 1;
@@ -687,8 +880,16 @@ export class PaperExchangeClient implements ExchangeClient {
 
 	private async futuresPositions(): Promise<Position[]> {
 		const result: Position[] = [];
-		for (const [asset, entry] of Object.entries(this.futuresAccount.entries)) {
+		for (const [entryKey, entry] of Object.entries(this.futuresAccount.entries)) {
 			if (entry.amount === 0) continue;
+			const separator = entryKey.lastIndexOf(":");
+			const positionSide =
+				this.positionMode === "hedge" && separator > 0
+					? (entryKey.slice(separator + 1) as "LONG" | "SHORT")
+					: entry.amount > 0
+						? "LONG"
+						: "SHORT";
+			const asset = this.positionMode === "hedge" && separator > 0 ? entryKey.slice(0, separator) : entryKey;
 			const symbol = `${asset}/${this.quoteCurrency}:${this.quoteCurrency}`;
 			const ticker = await this.futuresExchange.fetchTicker(symbol);
 			const mark = ticker.last;
@@ -700,7 +901,7 @@ export class PaperExchangeClient implements ExchangeClient {
 				asset,
 				amount: Math.abs(entry.amount),
 				quoteValue: Math.abs(entry.amount) * mark,
-				positionSide: entry.amount > 0 ? "LONG" : "SHORT",
+				positionSide,
 				leverage: this.futuresLeverage,
 				marginType: this.futuresMarginType,
 				markPrice: mark,
@@ -889,8 +1090,12 @@ export class PaperExchangeClient implements ExchangeClient {
 				order.lastCheckedAt = now;
 				dirty = true;
 				if (fire) this.fillRestingOrder(order, fire.price);
-			} catch {
-				// Price feed hiccup: leave the order resting, retry on next read.
+			} catch (error) {
+				if (dirty) this.persist();
+				throw new Error(
+					`Failed to settle paper order ${order.id} on ${order.symbol}: ${error instanceof Error ? error.message : String(error)}`,
+					{ cause: error },
+				);
 			}
 		}
 		if (dirty) this.persist();
@@ -1038,7 +1243,7 @@ export class PaperExchangeClient implements ExchangeClient {
 function toTicker(t: CcxtTicker): Ticker {
 	return {
 		symbol: t.symbol,
-		last: t.last ?? 0,
+		last: t.last ?? undefined,
 		bid: t.bid ?? undefined,
 		ask: t.ask ?? undefined,
 		high24h: t.high,
@@ -1053,6 +1258,8 @@ function toTicker(t: CcxtTicker): Ticker {
 function toOrder(o: PaperOrder): Order {
 	return {
 		id: o.id,
+		clientOrderId: o.clientOrderId,
+		listClientOrderId: o.listClientOrderId,
 		symbol: o.symbol,
 		side: o.side,
 		type: o.type,
@@ -1060,6 +1267,11 @@ function toOrder(o: PaperOrder): Order {
 		stopPrice: o.stopPrice,
 		trailingPercent: o.trailingPercent,
 		ocoGroup: o.ocoGroup,
+		orderListId: o.ocoGroup,
+		listOrderStatus: o.ocoGroup ? (o.status === "open" ? "EXECUTING" : "ALL_DONE") : undefined,
+		positionSide: o.positionSide,
+		reduceOnly: o.reduceOnly,
+		closePosition: o.closePosition,
 		amount: o.amount,
 		filled: o.filled,
 		remaining: o.amount - o.filled,

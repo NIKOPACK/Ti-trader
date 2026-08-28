@@ -1,7 +1,7 @@
 import type { AgentToolResult, ExtensionContext, ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { type Static, Type } from "typebox";
-import { getTrading } from "../context.ts";
-import type { PlaceOrderInput } from "../exchange/types.ts";
+import { getTrading, type TradingRuntime } from "../context.ts";
+import type { Order, PlaceOrderInput, Position } from "../exchange/types.ts";
 
 const SYMBOL_DESC = `Market symbol in ccxt format, e.g. "BTC/USDT". The quote currency must match the configured quote currency.`;
 
@@ -96,8 +96,21 @@ const orderSchema = Type.Object({
 });
 
 const cancelOrderSchema = Type.Object({
-	id: Type.String({ description: "Order id (see get_open_orders)" }),
-	symbol: Type.String({ description: SYMBOL_DESC }),
+	id: Type.String({ minLength: 1, description: "Order id (see get_open_orders)" }),
+	symbol: Type.String({ minLength: 1, description: SYMBOL_DESC }),
+});
+const getOrderStatusSchema = Type.Object({
+	symbol: Type.String({ minLength: 1, description: SYMBOL_DESC }),
+	id: Type.Optional(Type.String({ minLength: 1, description: "Order id" })),
+	origClientOrderId: Type.Optional(Type.String({ minLength: 1, description: "Client order id" })),
+});
+const getOrderListStatusSchema = Type.Object({
+	orderListId: Type.Optional(Type.String({ minLength: 1, description: "Native OCO/order-list id" })),
+	listClientOrderId: Type.Optional(Type.String({ minLength: 1, description: "Client order-list id" })),
+});
+const cancelOrderListSchema = Type.Object({
+	orderListId: Type.String({ minLength: 1, description: "Native OCO/order-list id" }),
+	symbol: Type.String({ minLength: 1, description: SYMBOL_DESC }),
 });
 
 const ocoSchema = Type.Object({
@@ -122,6 +135,8 @@ type OcoToolParams = Static<typeof ocoSchema>;
 
 type OrderToolParams = Static<typeof orderSchema>;
 
+type TradingProvider = () => TradingRuntime;
+
 function jsonResult(data: unknown): AgentToolResult<unknown> {
 	return {
 		content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
@@ -135,6 +150,48 @@ function round(n: number | undefined, decimals = 8): number | undefined {
 	return Math.round(n * f) / f;
 }
 
+function isFuturesSymbol(symbol: string, quoteCurrency: string): boolean {
+	return symbol.endsWith(`/${quoteCurrency}:${quoteCurrency}`);
+}
+
+function reduceSide(position: Position): "buy" | "sell" {
+	return position.positionSide === "SHORT" || position.amount < 0 ? "buy" : "sell";
+}
+
+function countsTowardsDailyLimit(trading: TradingRuntime, side: "buy" | "sell", params: OrderToolParams): boolean {
+	if (!isFuturesSymbol(params.symbol, trading.config.quoteCurrency)) return side === "buy";
+	if (params.reduceOnly || params.closePosition) return false;
+	if (trading.config.positionMode === "hedge") {
+		if (params.positionSide === "LONG" && side === "sell") return false;
+		if (params.positionSide === "SHORT" && side === "buy") return false;
+	}
+	return true;
+}
+
+async function findClosePosition(
+	trading: TradingRuntime,
+	side: "buy" | "sell",
+	params: OrderToolParams,
+): Promise<Position> {
+	const positions = await trading.exchange.getPositions();
+	const matches = positions.filter(
+		(position) =>
+			position.symbol === params.symbol &&
+			Math.abs(position.amount) > 0 &&
+			reduceSide(position) === side &&
+			(trading.config.positionMode !== "hedge" || position.positionSide === params.positionSide),
+	);
+	if (matches.length === 0) {
+		throw new Error(
+			`No ${params.positionSide ? `${params.positionSide} ` : ""}position on ${params.symbol} can be closed with a ${side} order`,
+		);
+	}
+	if (matches.length > 1) {
+		throw new Error(`Multiple matching positions found on ${params.symbol}; specify positionSide explicitly`);
+	}
+	return matches[0];
+}
+
 export function createGetPriceTool(): ToolDefinition<typeof getPriceSchema> {
 	return {
 		name: "get_price",
@@ -145,11 +202,16 @@ export function createGetPriceTool(): ToolDefinition<typeof getPriceSchema> {
 			const t = await getTrading().exchange.getTicker(params.symbol);
 			return jsonResult({
 				symbol: t.symbol,
-				last: t.last,
+				last: t.last ?? null,
 				bid: t.bid ?? null,
 				ask: t.ask ?? null,
-				dataQuality: { last: Number.isFinite(t.last), bid: t.bid !== undefined, ask: t.ask !== undefined },
+				dataQuality: {
+					last: t.last !== undefined && Number.isFinite(t.last),
+					bid: t.bid !== undefined,
+					ask: t.ask !== undefined,
+				},
 				warnings: [
+					...(t.last === undefined ? ["last price unavailable"] : []),
 					...(t.bid === undefined ? ["bid unavailable"] : []),
 					...(t.ask === undefined ? ["ask unavailable"] : []),
 				],
@@ -320,8 +382,8 @@ export function createGetPositionsTool(): ToolDefinition<typeof emptySchema> {
 		name: "get_positions",
 		label: "get_positions",
 		description:
-			"Get current spot holdings valued in quote currency. In paper mode includes average entry price " +
-			"and unrealized PnL per position.",
+			"Get current spot holdings or futures positions valued in quote currency, including side, leverage, " +
+			"margin mode, average entry price and unrealized PnL when available.",
 		parameters: emptySchema,
 		async execute() {
 			const trading = getTrading();
@@ -333,6 +395,14 @@ export function createGetPositionsTool(): ToolDefinition<typeof emptySchema> {
 					symbol: p.symbol,
 					amount: p.amount,
 					quoteValue: round(p.quoteValue, 2),
+					positionSide: p.positionSide,
+					leverage: p.leverage,
+					marginType: p.marginType,
+					markPrice: p.markPrice,
+					liquidationPrice: p.liquidationPrice,
+					margin: round(p.margin, 2),
+					costBasisStatus: p.costBasisStatus,
+					costBasisReason: p.costBasisReason,
 					avgEntryPrice: p.avgEntryPrice,
 					unrealizedPnl: round(p.unrealizedPnl, 2),
 					unrealizedPnlPct: round(p.unrealizedPnlPct, 2),
@@ -358,11 +428,48 @@ export function createGetOpenOrdersTool(): ToolDefinition<typeof symbolFilterSch
 	};
 }
 
+export function createGetOrderStatusTool(): ToolDefinition<typeof getOrderStatusSchema> {
+	return {
+		name: "get_order_status",
+		label: "get_order_status",
+		description: "Query one order by symbol and id. Returns the exchange status or propagates the query error.",
+		parameters: getOrderStatusSchema,
+		async execute(_id, params) {
+			if ((params.id === undefined) === (params.origClientOrderId === undefined))
+				throw new Error("Provide exactly one of id or origClientOrderId");
+			const order =
+				params.id !== undefined
+					? await getTrading().exchange.getOrder(params.id, params.symbol)
+					: await getTrading().exchange.getOrderByClientId(params.origClientOrderId!, params.symbol);
+			return jsonResult({ status: "ok", error: null, order: formatOrder(order) });
+		},
+	};
+}
+
+export function createGetOrderListStatusTool(): ToolDefinition<typeof getOrderListStatusSchema> {
+	return {
+		name: "get_order_list_status",
+		label: "get_order_list_status",
+		description: "Query a native OCO/order-list by orderListId.",
+		parameters: getOrderListStatusSchema,
+		async execute(_id, params) {
+			if ((params.orderListId === undefined) === (params.listClientOrderId === undefined))
+				throw new Error("Provide exactly one of orderListId or listClientOrderId");
+			const list =
+				params.orderListId !== undefined
+					? await getTrading().exchange.getOrderList(params.orderListId)
+					: await getTrading().exchange.getOrderListByClientId(params.listClientOrderId!);
+			return jsonResult({ status: "ok", error: null, orderList: { ...list, orders: list.orders.map(formatOrder) } });
+		},
+	};
+}
+
 export function createGetOrderHistoryTool(): ToolDefinition<typeof orderHistorySchema> {
 	return {
 		name: "get_order_history",
 		label: "get_order_history",
-		description: "List recently closed/filled orders, optionally filtered by symbol.",
+		description:
+			"List recent terminal orders (filled, canceled, rejected or expired), optionally filtered by symbol.",
 		parameters: orderHistorySchema,
 		async execute(_id, params) {
 			const limit = Math.min(Math.max(Math.floor(params.limit ?? 20), 1), 100);
@@ -379,9 +486,10 @@ async function executeOrder(
 	side: "buy" | "sell",
 	params: OrderToolParams,
 	ctx: ExtensionContext,
+	trading: TradingRuntime,
 ): Promise<AgentToolResult<unknown>> {
-	const trading = getTrading();
 	const { config } = trading;
+	const futuresOrder = isFuturesSymbol(params.symbol, config.quoteCurrency);
 
 	const priceRequired = params.type === "limit" || params.type === "stop" || params.type === "take_profit";
 	if (priceRequired && (params.price === undefined || !Number.isFinite(params.price) || params.price <= 0)) {
@@ -407,19 +515,32 @@ async function executeOrder(
 	} else if (params.trailingPercent !== undefined) {
 		throw new Error("trailingPercent is only valid for trailing_stop_market orders");
 	}
-	if (params.closePosition && params.type !== "market" && !stopType)
-		throw new Error("closePosition is supported only for market or stop/take-profit orders");
+	if (
+		params.closePosition &&
+		params.type !== "market" &&
+		params.type !== "stop_market" &&
+		params.type !== "take_profit_market"
+	) {
+		throw new Error("closePosition is supported only for market, stop_market or take_profit_market orders");
+	}
 	if (params.closePosition && (params.amount !== undefined || params.quoteAmount !== undefined)) {
 		throw new Error("closePosition orders must omit amount and quoteAmount");
 	}
 	if (params.closePosition && params.reduceOnly === false) throw new Error("closePosition is always reduceOnly");
-	if (config.marketType === "usdm-futures") {
+	if (params.closePosition && !futuresOrder) throw new Error("closePosition is supported only for futures positions");
+	if (futuresOrder) {
 		if (config.positionMode === "hedge" && (!params.positionSide || params.positionSide === "BOTH")) {
 			throw new Error("Hedge mode futures orders require positionSide LONG or SHORT");
 		}
 		if (config.positionMode === "one-way" && params.positionSide && params.positionSide !== "BOTH") {
 			throw new Error("One-way mode futures orders must use positionSide BOTH or omit it");
 		}
+	} else if (
+		params.reduceOnly !== undefined ||
+		params.positionSide !== undefined ||
+		params.closePosition !== undefined
+	) {
+		throw new Error("reduceOnly, positionSide and closePosition are futures-only parameters");
 	}
 
 	if (!params.closePosition && (params.amount === undefined) === (params.quoteAmount === undefined)) {
@@ -440,19 +561,25 @@ async function executeOrder(
 		throw new Error("quoteAmount must be a positive finite number");
 	}
 
+	const closePosition = params.closePosition ? await findClosePosition(trading, side, params) : undefined;
+
 	// Resolve base amount and estimated notional against the current price.
 	const ticker = await trading.exchange.getTicker(params.symbol);
 	const refPrice =
-		params.price ?? params.stopPrice ?? (side === "buy" ? ticker.ask || ticker.last : ticker.bid || ticker.last);
-	if (!refPrice || refPrice <= 0) throw new Error(`No reference price for ${params.symbol}`);
+		params.price ?? params.stopPrice ?? (side === "buy" ? (ticker.ask ?? ticker.last) : (ticker.bid ?? ticker.last));
+	if (refPrice === undefined || !Number.isFinite(refPrice) || refPrice <= 0) {
+		throw new Error(`No reference price for ${params.symbol}`);
+	}
 
-	let amount = params.amount;
-	if (amount === undefined && !params.closePosition) amount = (params.quoteAmount ?? 0) / refPrice;
-	if (!params.closePosition && (!amount || amount <= 0)) throw new Error("Order amount must be positive");
-	const notional = params.closePosition ? 0 : (params.quoteAmount ?? (amount ?? 0) * refPrice);
-
-	const riskError = trading.checkRisk(params.symbol, notional);
-	if (riskError) throw new Error(`Risk limit: ${riskError}`);
+	let amount = closePosition ? Math.abs(closePosition.amount) : params.amount;
+	if (amount === undefined) amount = (params.quoteAmount ?? 0) / refPrice;
+	if (!Number.isFinite(amount) || amount <= 0) throw new Error("Order amount must be positive");
+	const notional =
+		closePosition && Number.isFinite(closePosition.quoteValue) && closePosition.quoteValue > 0
+			? closePosition.quoteValue
+			: (params.quoteAmount ?? amount * refPrice);
+	const countTowardsDailyLimit = countsTowardsDailyLimit(trading, side, params);
+	const reservation = trading.reserveRisk(params.symbol, notional, { countTowardsDailyLimit });
 
 	const summary =
 		`${side.toUpperCase()} ${amount} ${params.symbol} (${params.type})` +
@@ -461,49 +588,62 @@ async function executeOrder(
 		(params.trailingPercent !== undefined ? ` trail ${params.trailingPercent}%` : "") +
 		` ≈ ${notional.toFixed(2)} ${config.quoteCurrency}`;
 
-	if (trading.mode === "live" && config.confirmLiveOrders) {
-		if (!ctx.hasUI) {
+	let submitted = false;
+	try {
+		if (trading.mode === "live" && config.confirmLiveOrders) {
+			if (!ctx.hasUI) {
+				throw new Error(
+					"Live orders require interactive confirmation but no UI is available. " +
+						"Set confirmLiveOrders=false in ~/.ti-trader/agent/trading.json to allow headless live trading.",
+				);
+			}
+			const usage = trading.dailyUsage();
+			const confirmed = await ctx.ui.confirm(
+				`Confirm LIVE order on ${config.exchange}`,
+				`${summary}\n\nReserved/used notional after fill: ${(usage.used + usage.reserved).toFixed(2)} / ${usage.limit} ${config.quoteCurrency}`,
+			);
+			if (!confirmed) {
+				reservation.release();
+				ctx.ui.notify("Order cancelled by user", "info");
+				return jsonResult({ status: "cancelled", reason: "user rejected confirmation", order: summary });
+			}
+		}
+
+		const input: PlaceOrderInput = {
+			symbol: params.symbol,
+			side,
+			type: params.type,
+			amount,
+			price: priceRequired ? params.price : undefined,
+			reduceOnly: params.closePosition ? true : params.reduceOnly,
+			positionSide: params.positionSide,
+			stopPrice: params.stopPrice,
+			trailingPercent: params.trailingPercent,
+			closePosition: params.closePosition,
+		};
+		const result = await trading.exchange.placeOrder(input);
+		submitted = true;
+		reservation.commit();
+
+		return jsonResult({
+			status: "ok",
+			mode: trading.mode,
+			summary,
+			fee: round(result.fee, 4),
+			order: formatOrder(result.order),
+		});
+	} catch (error) {
+		reservation.release();
+		if (submitted) {
 			throw new Error(
-				"Live orders require interactive confirmation but no UI is available. " +
-					"Set confirmLiveOrders=false in ~/.ti-trader/agent/trading.json to allow headless live trading.",
+				`Order was submitted, but risk accounting failed. Verify exchange state before retrying: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		const usage = trading.dailyUsage();
-		const confirmed = await ctx.ui.confirm(
-			`Confirm LIVE order on ${config.exchange}`,
-			`${summary}\n\nDaily notional after fill: ${(usage.used + notional).toFixed(2)} / ${usage.limit} ${config.quoteCurrency}`,
-		);
-		if (!confirmed) {
-			ctx.ui.notify("Order cancelled by user", "info");
-			return jsonResult({ status: "cancelled", reason: "user rejected confirmation", order: summary });
-		}
+		throw error;
 	}
-
-	const input: PlaceOrderInput = {
-		symbol: params.symbol,
-		side,
-		type: params.type,
-		amount: amount ?? 0,
-		price: priceRequired ? params.price : undefined,
-		reduceOnly: params.reduceOnly,
-		positionSide: params.positionSide,
-		stopPrice: params.stopPrice,
-		trailingPercent: params.trailingPercent,
-		closePosition: params.closePosition,
-	};
-	const result = await trading.exchange.placeOrder(input);
-	trading.recordFill(notional, { countTowardsDailyLimit: !params.reduceOnly && !params.closePosition });
-
-	return jsonResult({
-		status: "ok",
-		mode: trading.mode,
-		summary,
-		fee: round(result.fee, 4),
-		order: formatOrder(result.order),
-	});
 }
 
-export function createBuyTool(): ToolDefinition<typeof orderSchema> {
+export function createBuyTool(tradingProvider: TradingProvider = getTrading): ToolDefinition<typeof orderSchema> {
 	return {
 		name: "buy",
 		label: "buy",
@@ -514,12 +654,12 @@ export function createBuyTool(): ToolDefinition<typeof orderSchema> {
 			"Futures additionally support reduceOnly, positionSide and closePosition.",
 		parameters: orderSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return executeOrder("buy", params, ctx);
+			return executeOrder("buy", params, ctx, tradingProvider());
 		},
 	};
 }
 
-export function createSellTool(): ToolDefinition<typeof orderSchema> {
+export function createSellTool(tradingProvider: TradingProvider = getTrading): ToolDefinition<typeof orderSchema> {
 	return {
 		name: "sell",
 		label: "sell",
@@ -530,7 +670,7 @@ export function createSellTool(): ToolDefinition<typeof orderSchema> {
 			"(trailingPercent pullback from the peak); all work in paper and live mode.",
 		parameters: orderSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return executeOrder("sell", params, ctx);
+			return executeOrder("sell", params, ctx, tradingProvider());
 		},
 	};
 }
@@ -546,6 +686,24 @@ export function createCancelOrderTool(): ToolDefinition<typeof cancelOrderSchema
 		async execute(_id, params) {
 			await getTrading().exchange.cancelOrder(params.id, params.symbol);
 			return jsonResult({ status: "ok", cancelled: params.id, symbol: params.symbol });
+		},
+	};
+}
+
+export function createCancelOrderListTool(): ToolDefinition<typeof cancelOrderListSchema> {
+	return {
+		name: "cancel_order_list",
+		label: "cancel_order_list",
+		description: "Cancel every open leg in an OCO/order-list by orderListId.",
+		parameters: cancelOrderListSchema,
+		async execute(_id, params) {
+			await getTrading().exchange.cancelOrderList(params.orderListId, params.symbol);
+			return jsonResult({
+				status: "ok",
+				error: null,
+				cancelledOrderListId: params.orderListId,
+				symbol: params.symbol,
+			});
 		},
 	};
 }
@@ -570,6 +728,9 @@ export function createPlaceOcoTool(): ToolDefinition<typeof ocoSchema> {
 async function executeOco(params: OcoToolParams, ctx: ExtensionContext): Promise<AgentToolResult<unknown>> {
 	const trading = getTrading();
 	const { config } = trading;
+	if (isFuturesSymbol(params.symbol, config.quoteCurrency)) {
+		throw new Error("OCO orders are not supported for futures; use one reduce-only protective order instead");
+	}
 	if (!Number.isFinite(params.amount) || params.amount <= 0) throw new Error("amount must be positive");
 	if (params.stopLossPrice === params.takeProfitPrice)
 		throw new Error("stopLossPrice and takeProfitPrice must differ");
@@ -578,51 +739,61 @@ async function executeOco(params: OcoToolParams, ctx: ExtensionContext): Promise
 	const refPrice = ticker.last;
 	if (!refPrice || refPrice <= 0) throw new Error(`No reference price for ${params.symbol}`);
 	const notional = params.amount * refPrice;
-	const riskError = trading.checkRisk(params.symbol, notional, {
+	const reservation = trading.reserveRisk(params.symbol, notional, {
 		countTowardsDailyLimit: params.side === "buy",
 	});
-	if (riskError) throw new Error(`Risk limit: ${riskError}`);
 
 	const summary =
 		`OCO ${params.side.toUpperCase()} ${params.amount} ${params.symbol}` +
 		` SL ${params.stopLossPrice} / TP ${params.takeProfitPrice}` +
 		` ≈ ${notional.toFixed(2)} ${config.quoteCurrency}`;
 
-	if (trading.mode === "live" && config.confirmLiveOrders) {
-		if (!ctx.hasUI) {
+	let submitted = false;
+	try {
+		if (trading.mode === "live" && config.confirmLiveOrders) {
+			if (!ctx.hasUI) {
+				throw new Error(
+					"Live orders require interactive confirmation but no UI is available. " +
+						"Set confirmLiveOrders=false in ~/.ti-trader/agent/trading.json to allow headless live trading.",
+				);
+			}
+			const usage = trading.dailyUsage();
+			const confirmed = await ctx.ui.confirm(
+				`Confirm LIVE OCO order on ${config.exchange}`,
+				`${summary}\n\nReserved/used notional after fill: ${(usage.used + usage.reserved).toFixed(2)} / ${usage.limit} ${config.quoteCurrency}`,
+			);
+			if (!confirmed) {
+				reservation.release();
+				ctx.ui.notify("Order cancelled by user", "info");
+				return jsonResult({ status: "cancelled", reason: "user rejected confirmation", order: summary });
+			}
+		}
+
+		const result = await trading.exchange.placeOcoOrder({
+			symbol: params.symbol,
+			side: params.side,
+			amount: params.amount,
+			stopLossPrice: params.stopLossPrice,
+			takeProfitPrice: params.takeProfitPrice,
+		});
+		submitted = true;
+		reservation.commit();
+
+		return jsonResult({
+			status: "ok",
+			mode: trading.mode,
+			summary,
+			orders: result.orders.map(formatOrder),
+		});
+	} catch (error) {
+		reservation.release();
+		if (submitted) {
 			throw new Error(
-				"Live orders require interactive confirmation but no UI is available. " +
-					"Set confirmLiveOrders=false in ~/.ti-trader/agent/trading.json to allow headless live trading.",
+				`OCO order was submitted, but risk accounting failed. Verify exchange state before retrying: ${error instanceof Error ? error.message : String(error)}`,
 			);
 		}
-		const usage = trading.dailyUsage();
-		const confirmed = await ctx.ui.confirm(
-			`Confirm LIVE OCO order on ${config.exchange}`,
-			`${summary}\n\nDaily notional after fill: ${(usage.used + notional).toFixed(2)} / ${usage.limit} ${config.quoteCurrency}`,
-		);
-		if (!confirmed) {
-			ctx.ui.notify("Order cancelled by user", "info");
-			return jsonResult({ status: "cancelled", reason: "user rejected confirmation", order: summary });
-		}
+		throw error;
 	}
-
-	const result = await trading.exchange.placeOcoOrder({
-		symbol: params.symbol,
-		side: params.side,
-		amount: params.amount,
-		stopLossPrice: params.stopLossPrice,
-		takeProfitPrice: params.takeProfitPrice,
-	});
-	// A sell OCO protects an already-counted holding. A buy OCO is a planned
-	// entry and therefore consumes the cumulative entry quota.
-	trading.recordFill(notional, { countTowardsDailyLimit: params.side === "buy" });
-
-	return jsonResult({
-		status: "ok",
-		mode: trading.mode,
-		summary,
-		orders: result.orders.map(formatOrder),
-	});
 }
 
 export function createGetFundingRateHistoryTool(): ToolDefinition<typeof fundingHistorySchema> {
@@ -705,15 +876,39 @@ export function createGetRiskStatusTool(): ToolDefinition<typeof emptySchema> {
 		async execute() {
 			const trading = getTrading();
 			const usage = trading.dailyUsage();
-			const [openOrders, positions, history] = await Promise.all([
+			const [openOrders, positions] = await Promise.all([
 				trading.exchange.getOpenOrders(),
 				trading.exchange.getPositions(),
-				trading.exchange.getOrderHistory(undefined, 100),
 			]);
+			const history = new Map<string, Order>();
+			const historyErrors: string[] = [];
+			const historySymbols = [
+				...new Set([
+					...openOrders.map((order) => order.symbol),
+					...positions.map((position) => position.symbol),
+					...trading.config.risk.allowedSymbols,
+				]),
+			];
+			const queries = trading.exchange.id === "binance" ? historySymbols : [undefined];
+			if (queries.length === 0) {
+				historyErrors.push("Binance requires a symbol for closed-order history and no account symbol is known yet");
+			}
+			for (const symbol of queries) {
+				try {
+					for (const order of await trading.exchange.getOrderHistory(symbol, 100)) {
+						history.set(`${order.symbol}:${order.id}`, order);
+					}
+				} catch (error) {
+					historyErrors.push(
+						`${symbol ?? "all symbols"}: ${error instanceof Error ? error.message : String(error)}`,
+					);
+				}
+			}
+			const historicalOrders = [...history.values()];
 			const orderNotional = (order: { amount: number; price?: number; stopPrice?: number }): number =>
 				order.amount * (order.price ?? order.stopPrice ?? 0);
 			const protective = (order: { type: string }): boolean =>
-				order.type.includes("stop") || order.type.includes("take_profit");
+				order.type === "oco" || order.type.includes("stop") || order.type.includes("take_profit");
 			const openProtective = openOrders.filter(protective);
 			const openEntries = openOrders.filter((order) => !protective(order));
 			const sumNotional = (orders: typeof openOrders): number =>
@@ -734,8 +929,10 @@ export function createGetRiskStatusTool(): ToolDefinition<typeof emptySchema> {
 					protectiveOpenOrders: sumNotional(openProtective),
 					entryOpenOrders: sumNotional(openEntries),
 					positions: positions.reduce((sum, position) => sum + position.quoteValue, 0),
-					closedHistory: history.reduce((sum, order) => sum + order.cost, 0),
+					closedHistory: historicalOrders.reduce((sum, order) => sum + order.cost, 0),
+					closedHistoryAvailable: historyErrors.length === 0,
 				},
+				warnings: historyErrors.map((error) => `Closed-order history unavailable: ${error}`),
 				breakdownSemantics:
 					"entries is the persisted quota used (paper cumulative, live daily); protectiveOpenOrders, entryOpenOrders, positions, and closedHistory are current observations and are not interchangeable with entries or added to usage.used.",
 			});
@@ -752,6 +949,13 @@ function formatOrder(o: {
 	stopPrice?: number;
 	trailingPercent?: number;
 	ocoGroup?: string;
+	orderListId?: string;
+	listOrderStatus?: string;
+	clientOrderId?: string;
+	listClientOrderId?: string;
+	positionSide?: "BOTH" | "LONG" | "SHORT";
+	reduceOnly?: boolean;
+	closePosition?: boolean;
 	amount: number;
 	filled: number;
 	remaining: number;
@@ -769,6 +973,13 @@ function formatOrder(o: {
 		stopPrice: o.stopPrice,
 		trailingPercent: o.trailingPercent,
 		ocoGroup: o.ocoGroup,
+		orderListId: o.orderListId,
+		listOrderStatus: o.listOrderStatus,
+		clientOrderId: o.clientOrderId,
+		listClientOrderId: o.listClientOrderId,
+		positionSide: o.positionSide,
+		reduceOnly: o.reduceOnly,
+		closePosition: o.closePosition,
 		amount: o.amount,
 		filled: o.filled,
 		remaining: o.remaining,
@@ -790,10 +1001,13 @@ export function createTradingTools(): ToolDefinition[] {
 		createGetPositionsTool(),
 		createGetOpenOrdersTool(),
 		createGetOrderHistoryTool(),
+		createGetOrderStatusTool(),
+		createGetOrderListStatusTool(),
 		createBuyTool(),
 		createSellTool(),
 		createPlaceOcoTool(),
 		createCancelOrderTool(),
+		createCancelOrderListTool(),
 		createGetRiskStatusTool(),
 		createGetFundingRateTool(),
 		createGetFundingRateHistoryTool(),

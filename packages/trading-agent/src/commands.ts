@@ -29,6 +29,12 @@ function text(language: TradingLanguage, chinese: string, english: string): stri
 	return language === "zh-CN" ? chinese : english;
 }
 
+async function waitForIdleBeforeMutation(ctx: ExtensionCommandContext): Promise<void> {
+	if (ctx.isIdle()) return;
+	ctx.ui.notify("Waiting for the active agent turn before changing trading state", "info");
+	await ctx.waitForIdle();
+}
+
 /**
  * Trading slash commands rendered as durable transcript entries (not sent to
  * the LLM). Registered as an inline extension factory at startup.
@@ -106,6 +112,7 @@ export function createTradingExtension() {
 					ctx.ui.notify("Language must be zh-CN or en-US", "error");
 					return;
 				}
+				await waitForIdleBeforeMutation(ctx);
 				trading.setLanguage(language);
 				updateStatus(ctx);
 				ctx.ui.notify(language === "zh-CN" ? "语言已切换为中文" : "Language changed to English", "info");
@@ -142,7 +149,7 @@ export function createTradingExtension() {
 		});
 
 		pi.registerCommand("positions", {
-			description: "Show current holdings with average entry and unrealized PnL (paper mode)",
+			description: "Show current holdings with average entry and unrealized PnL when available",
 			handler: async (_args, ctx) => {
 				const trading = getTrading();
 				const positions = await trading.exchange.getPositions();
@@ -156,8 +163,10 @@ export function createTradingExtension() {
 							? `  PnL ${p.unrealizedPnl >= 0 ? "+" : ""}${fmt(p.unrealizedPnl)} (${fmt(p.unrealizedPnlPct)}%)`
 							: "";
 					const entry = p.avgEntryPrice !== undefined ? `  entry ${fmt(p.avgEntryPrice, 6)}` : "";
+					const basis =
+						p.costBasisStatus && p.costBasisStatus !== "complete" ? `  basis ${p.costBasisStatus}` : "";
 					return {
-						text: `${padEndWidth(p.symbol, 12)} ${padStartWidth(fmtAmount(p.amount), 16)}  ≈ ${fmt(p.quoteValue)}${entry}${pnl}`,
+						text: `${padEndWidth(p.symbol, 12)} ${padStartWidth(fmtAmount(p.amount), 16)}  ≈ ${fmt(p.quoteValue)}${entry}${basis}${pnl}`,
 						tone: p.unrealizedPnl === undefined ? undefined : p.unrealizedPnl >= 0 ? "up" : "down",
 					};
 				});
@@ -279,6 +288,7 @@ export function createTradingExtension() {
 					}
 				}
 				try {
+					await waitForIdleBeforeMutation(ctx);
 					await trading.setMode(target as TradingMode);
 					updateStatus(ctx);
 					show("mode", [
@@ -315,6 +325,7 @@ export function createTradingExtension() {
 					target = SUPPORTED_EXCHANGES.find((exchange) => choice.endsWith(`(${exchange.id})`))?.id ?? choice;
 				}
 				try {
+					await waitForIdleBeforeMutation(ctx);
 					await trading.setExchange(target);
 					updateStatus(ctx);
 					show("exchange", [`Switched to ${target} (${trading.mode} mode).`]);
@@ -370,6 +381,7 @@ export function createTradingExtension() {
 					if (!confirmed) return;
 				}
 				try {
+					await waitForIdleBeforeMutation(ctx);
 					await trading.setMarketType(target);
 					updateStatus(ctx);
 					show("market", [
@@ -408,6 +420,7 @@ export function createTradingExtension() {
 						ctx.ui.notify("Risk usage reset cancelled", "info");
 						return;
 					}
+					await waitForIdleBeforeMutation(ctx);
 					trading.resetRiskUsage();
 					ctx.ui.notify("Used notional quota reset to 0", "info");
 					return;
@@ -488,6 +501,7 @@ export function createTradingExtension() {
 					ctx.ui.notify("Paper account unchanged", "info");
 					return;
 				}
+				await waitForIdleBeforeMutation(ctx);
 				const applied = trading.resetPaperAccount(startQuote);
 				show("paper", [`Paper account reset. Balance: ${fmt(applied)} ${trading.config.quoteCurrency}.`]);
 				ctx.ui.notify(`Paper account reset to ${fmt(applied)} ${trading.config.quoteCurrency}`, "info");

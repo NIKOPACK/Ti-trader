@@ -195,10 +195,19 @@ export type {
 	ResolvedResource,
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
-export type { ResourceCollision, ResourceDiagnostic, ResourceLoader } from "./core/resource-loader.ts";
+export type { ManifestFlavor, PiManifest, TiManifest } from "./core/pi-manifest.ts";
+export type {
+	DefaultResourceLoaderOptions,
+	ResourceCollision,
+	ResourceDiagnostic,
+	ResourceExtensionPaths,
+	ResourceLoader,
+	ResourceLoaderReloadOptions,
+} from "./core/resource-loader.ts";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.ts";
 // SDK for programmatic usage
 export {
+	type AgentSessionResourceLoaderOptions,
 	AgentSessionRuntime,
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,

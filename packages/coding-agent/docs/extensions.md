@@ -2505,6 +2505,9 @@ const ok = await ctx.ui.confirm("Delete?", "This cannot be undone");
 // Text input
 const name = await ctx.ui.input("Name:", "placeholder");
 
+// Secret input (masked in the TUI; RPC clients receive secret: true)
+const apiKey = await ctx.ui.input("API key:", "paste key", { secret: true });
+
 // Multi-line editor
 const text = await ctx.ui.editor("Edit:", "prefilled text");
 

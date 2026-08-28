@@ -10,6 +10,7 @@ import { SessionManager } from "../src/core/session-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import type { Skill } from "../src/core/skills.ts";
 import { createSyntheticSourceInfo } from "../src/core/source-info.ts";
+import type { AgentSessionResourceLoaderOptions, CreateAgentSessionServicesOptions } from "../src/index.ts";
 
 import { createModelRegistry } from "./model-runtime-test-utils.ts";
 
@@ -31,6 +32,13 @@ describe("DefaultResourceLoader", () => {
 	});
 
 	describe("reload", () => {
+		it("should expose manifest flavor through the public service options", () => {
+			const resourceLoaderOptions = { manifestFlavor: "ti" } satisfies AgentSessionResourceLoaderOptions;
+			const servicesOptions = { cwd, resourceLoaderOptions } satisfies CreateAgentSessionServicesOptions;
+
+			expect(servicesOptions.resourceLoaderOptions.manifestFlavor).toBe("ti");
+		});
+
 		it("should initialize with empty results before reload", () => {
 			const loader = new DefaultResourceLoader({ cwd, agentDir });
 
@@ -186,6 +194,44 @@ Project skill`,
 			// mergePaths processes project paths before user paths, so the project
 			// alias is the canonical survivor.
 			expect(extensionsResult.extensions[0].path).toBe(join(cwd, ".pi", "extensions", "shared.ts"));
+		});
+
+		it("should forward the manifest flavor to extension package discovery", async () => {
+			const packageDir = join(agentDir, "extensions", "flavored-package");
+			const piExtension = join(packageDir, "pi.ts");
+			const tiExtension = join(packageDir, "ti.ts");
+			mkdirSync(packageDir, { recursive: true });
+			writeFileSync(
+				piExtension,
+				`export default function(pi) {
+	pi.registerCommand("from-pi-manifest", { description: "pi", handler: async () => {} });
+}`,
+			);
+			writeFileSync(
+				tiExtension,
+				`export default function(pi) {
+	pi.registerCommand("from-ti-manifest", { description: "ti", handler: async () => {} });
+}`,
+			);
+			writeFileSync(
+				join(packageDir, "package.json"),
+				JSON.stringify({
+					name: "flavored-package",
+					pi: { extensions: ["./pi.ts"] },
+					ti: { extensions: ["./ti.ts"] },
+				}),
+			);
+
+			const defaultLoader = new DefaultResourceLoader({ cwd, agentDir });
+			await defaultLoader.reload();
+			const tiLoader = new DefaultResourceLoader({ cwd, agentDir, manifestFlavor: "ti" });
+			await tiLoader.reload();
+
+			expect(defaultLoader.getExtensions().errors).toEqual([]);
+			expect(defaultLoader.getExtensions().extensions.map((extension) => extension.path)).toEqual([piExtension]);
+			expect(tiLoader.getExtensions().errors).toEqual([]);
+			expect(tiLoader.getExtensions().extensions.map((extension) => extension.path)).toEqual([tiExtension]);
+			expect(tiLoader.getExtensions().extensions[0]?.commands.has("from-ti-manifest")).toBe(true);
 		});
 
 		it("should load user extensions before trust and reuse them after trust resolves", async () => {

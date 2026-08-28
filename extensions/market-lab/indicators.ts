@@ -110,7 +110,7 @@ export function calculateIndicators(candles: Candle[]): IndicatorPoint[] {
 			bbUpper: bands.upper,
 			bbLower: bands.lower,
 			volumeSma20,
-			volumeRatio: volumeSma20 === undefined ? undefined : candle.volume / volumeSma20,
+			volumeRatio: volumeSma20 !== undefined && volumeSma20 > 0 ? candle.volume / volumeSma20 : undefined,
 		});
 	}
 	return points;

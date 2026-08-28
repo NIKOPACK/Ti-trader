@@ -432,6 +432,7 @@ export async function createAgentSessionRuntime(
 }
 
 export {
+	type AgentSessionResourceLoaderOptions,
 	type AgentSessionRuntimeDiagnostic,
 	type AgentSessionServices,
 	type CreateAgentSessionFromServicesOptions,

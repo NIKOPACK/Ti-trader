@@ -1,0 +1,17 @@
+{
+  "name": "ti-zhihu-research-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Read-only Zhihu global web search extension for Ti",
+  "ti": { "extensions": ["./index.ts"] },
+  "pi": { "extensions": ["./index.ts"] },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "typescript": "5.9.3"
+  }
+}

@@ -35,6 +35,17 @@ describe("Input component", () => {
 	});
 
 	describe("render", () => {
+		it("masks secret values without changing the submitted value", () => {
+			const input = new Input({ mask: true });
+			input.setValue("secret-value");
+
+			const [line] = input.render(40);
+			assert.ok(line);
+			assert.ok(!line.includes("secret-value"));
+			assert.strictEqual(line.match(/\*/g)?.length, 12);
+			assert.strictEqual(input.getValue(), "secret-value");
+		});
+
 		it("does not overflow with wide CJK and fullwidth text", () => {
 			const width = 93;
 			const cases = [
