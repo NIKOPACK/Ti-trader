@@ -28,8 +28,17 @@ export function reduceSide(p: Position): "buy" | "sell" {
 }
 
 /** Stop-loss style protection: a reduce-direction resting order with a stop component. */
-export function isProtection(order: Order, p: Position): boolean {
-	return order.symbol === p.symbol && order.side === reduceSide(p) && order.type.includes("stop");
+export function isProtection(order: Order, p: Position, coveragePct = 95): boolean {
+	if (order.symbol !== p.symbol || order.side !== reduceSide(p) || !order.type.includes("stop")) return false;
+	const positionAmount = Math.abs(p.amount);
+	return positionAmount > 0 && Math.abs(order.amount) >= positionAmount * (coveragePct / 100);
+}
+
+export function protectionCoverage(order: Order, p: Position, coveragePct = 95): "protected" | "partial" | "none" {
+	if (order.symbol !== p.symbol || order.side !== reduceSide(p) || !order.type.includes("stop")) return "none";
+	const positionAmount = Math.abs(p.amount);
+	if (positionAmount <= 0 || Math.abs(order.amount) <= 0) return "none";
+	return Math.abs(order.amount) >= positionAmount * (coveragePct / 100) ? "protected" : "partial";
 }
 
 /**
@@ -108,7 +117,10 @@ export function createOrderMonitorExtension() {
 			const unprotectedKeys = new Set<string>();
 
 			for (const p of positions) {
-				const protections = open.filter((o) => isProtection(o, p));
+				const protections = open.filter((o) => isProtection(o, p, cfg.protectionCoveragePct));
+				const partialProtections = open.filter(
+					(o) => protectionCoverage(o, p, cfg.protectionCoveragePct) === "partial",
+				);
 				const cooldownMs = cfg.alertCooldownSec * 1000;
 
 				if (protections.length === 0) {
@@ -123,7 +135,10 @@ export function createOrderMonitorExtension() {
 					if (now - st.firstSeenAt >= grace && cooled) {
 						st.lastAlertAt = now;
 						alerts.push(
-							`UNPROTECTED: ${describePosition(p)} has no stop-loss order. ` +
+							`${partialProtections.length > 0 ? "PARTIALLY PROTECTED" : "UNPROTECTED"}: ${describePosition(p)} has ` +
+								(partialProtections.length > 0
+									? "stop-loss coverage below the configured threshold. "
+									: "no stop-loss order. ") +
 								`Place protection (place_oco, or a ${reduceSide(p)} stop_market at your invalidation level) ` +
 								"or briefly tell the user why you are leaving it unprotected.",
 						);

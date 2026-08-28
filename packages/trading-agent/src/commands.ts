@@ -29,6 +29,40 @@ function text(language: TradingLanguage, chinese: string, english: string): stri
  */
 export function createTradingExtension() {
 	return (pi: ExtensionAPI): void => {
+		let lastObservedMode: TradingMode | undefined;
+		let modeAlertInFlight = false;
+
+		const observeMode = (ctx: ExtensionContext): void => {
+			const trading = getTrading();
+			const mode = trading.mode;
+			if (lastObservedMode === undefined) {
+				lastObservedMode = mode;
+				return;
+			}
+			if (lastObservedMode === mode || modeAlertInFlight) return;
+			const previous = lastObservedMode;
+			lastObservedMode = mode;
+			modeAlertInFlight = true;
+			const label = mode === "live" ? "LIVE (real funds)" : "PAPER (simulated)";
+			if (ctx.hasUI) ctx.ui.notify(`Trading mode changed: ${previous.toUpperCase()} → ${label}`, "warning");
+			pi.sendMessage(
+				{
+					customType: "mode-change",
+					content: `[mode change] Trading mode is now ${label}. Re-check this before placing any order.`,
+					display: true,
+				},
+				{ triggerTurn: false },
+			);
+			modeAlertInFlight = false;
+		};
+
+		pi.on("session_start", async (_event, ctx) => {
+			lastObservedMode = getTrading().mode;
+			observeMode(ctx);
+		});
+		pi.on("input", async (_event, ctx) => observeMode(ctx));
+		pi.on("turn_start", async (_event, ctx) => observeMode(ctx));
+		pi.on("turn_end", async (_event, ctx) => observeMode(ctx));
 		pi.registerEntryRenderer<TableData>("trading:table", (entry, _opts, theme) =>
 			renderTradingTable(entry.data ?? { title: "trading", lines: [] }, theme),
 		);

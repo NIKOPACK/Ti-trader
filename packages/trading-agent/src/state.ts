@@ -51,6 +51,8 @@ export interface TradingConfig {
 		alertLossPct: number;
 		/** Minimum seconds between repeated guard alerts for the same position. */
 		alertCooldownSec: number;
+		/** Fraction of a position that a stop order must cover to count as protected. */
+		protectionCoveragePct: number;
 	};
 }
 
@@ -81,6 +83,7 @@ export const DEFAULT_CONFIG: TradingConfig = {
 		guardPositions: true,
 		alertLossPct: 5,
 		alertCooldownSec: 900,
+		protectionCoveragePct: 95,
 	},
 };
 
@@ -150,6 +153,12 @@ export function validateTradingConfig(config: TradingConfig): void {
 		throw new Error("monitor.alertLossPct must be a positive percentage");
 	if (!Number.isFinite(config.monitor.alertCooldownSec) || config.monitor.alertCooldownSec < 60)
 		throw new Error("monitor.alertCooldownSec must be at least 60 seconds");
+	if (
+		!Number.isFinite(config.monitor.protectionCoveragePct) ||
+		config.monitor.protectionCoveragePct <= 0 ||
+		config.monitor.protectionCoveragePct > 100
+	)
+		throw new Error("monitor.protectionCoveragePct must be in (0, 100]");
 }
 
 export function saveTradingConfig(config: TradingConfig): void {
