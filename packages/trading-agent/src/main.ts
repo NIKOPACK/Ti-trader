@@ -19,7 +19,7 @@ import { createOrderMonitorExtension } from "./monitor.ts";
 import { buildTradingPrompt } from "./prompt.ts";
 import { createTradingTools } from "./tools/index.ts";
 
-const VERSION = "0.1.3";
+const VERSION = "0.1.4";
 
 /** Mirror pi's session-dir encoding, rooted at our own agent dir. */
 function getTradingSessionDir(cwd: string, agentDir: string): string {
