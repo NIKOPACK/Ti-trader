@@ -70,8 +70,9 @@ export class TradingRuntime {
 	 * Validate an order against risk limits. Returns an error message, or null
 	 * when the order is within limits.
 	 */
-	checkRisk(symbol: string, notional: number): string | null {
+	checkRisk(symbol: string, notional: number, options: { countTowardsDailyLimit?: boolean } = {}): string | null {
 		const { risk, quoteCurrency, marketType } = this.config;
+		const countTowardsDailyLimit = options.countTowardsDailyLimit ?? true;
 		const symbolParts = symbol.split("/");
 		const validSymbol =
 			symbolParts.length === 2 &&
@@ -88,6 +89,11 @@ export class TradingRuntime {
 		if (notional > risk.maxOrderNotional) {
 			return `Order notional ${notional.toFixed(2)} ${quoteCurrency} exceeds maxOrderNotional ${risk.maxOrderNotional}`;
 		}
+		// Protective exit orders (for example an OCO attached to an existing
+		// position) still obey the per-order cap, but must not consume the
+		// entry-notional quota. Otherwise adding protection can reject the very
+		// position it is meant to protect.
+		if (!countTowardsDailyLimit) return null;
 		this.refreshDailyCounter();
 		if (this.state.usedDailyNotional + notional > risk.maxDailyNotional) {
 			const used = this.state.usedDailyNotional.toFixed(2);
@@ -101,8 +107,9 @@ export class TradingRuntime {
 		return null;
 	}
 
-	/** Record a filled order's notional against the daily limit. */
-	recordFill(notional: number): void {
+	/** Record entry/order notional against the daily limit. Protective exits are excluded. */
+	recordFill(notional: number, options: { countTowardsDailyLimit?: boolean } = {}): void {
+		if (options.countTowardsDailyLimit === false) return;
 		this.refreshDailyCounter();
 		this.state.usedDailyNotional += notional;
 		saveTradingState(this.state);

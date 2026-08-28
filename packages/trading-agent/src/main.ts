@@ -67,6 +67,7 @@ export async function main(argv: string[]): Promise<void> {
 				noContextFiles: true,
 				noSkills: true,
 				noExtensions: parsed.noExtensions,
+				additionalExtensionPaths: parsed.extensions,
 				systemPrompt: buildTradingPrompt(trading.config),
 				extensionFactories: [createTradingExtension(), createOrderMonitorExtension()],
 			},

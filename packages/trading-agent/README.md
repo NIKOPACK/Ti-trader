@@ -73,6 +73,8 @@ node packages/trading-agent/dist/cli.js --mode paper --exchange binance
 
 首次运行用 `/login` 配置模型 Provider；使用 `/exchange-login` 配置交易所 API。交易所支持 Binance（币安）、OKX、Bybit。使用 `/language` 可在中文和 English 之间切换，设置保存于 `~/.ti-trader/agent/trading.json`。模型认证存于 `~/.ti-trader/agent/auth.json`，交易所 API key 存于 `~/.ti-trader/agent/keys.json`，与 pi coding agent 隔离。
 
+可选扩展位于仓库根目录 `extensions/`。使用 `--extension <path>` 加载用户扩展，可重复指定；使用 `--no-extensions` 禁用自动发现的用户扩展。公开互联网研究扩展位于 `extensions/web-search/`，当前提供受限的 `fetch_source` 来源读取工具；交易所 ccxt 连接仍属于 Ti 交易核心。
+
 ## 配置
 
 `~/.ti-trader/agent/trading.json`：
@@ -175,4 +177,6 @@ src/
   monitor.ts            后台成交监控 + 仓位守护（裸仓/浮亏告警，唤醒 agent）
   commands.ts           交易 slash 命令（inline extension factory）
   prompt.ts             交易系统提示词（整体替换编码提示词）
+extensions/
+  web-search/           可选只读公开互联网研究扩展（独立安全策略）
 ```

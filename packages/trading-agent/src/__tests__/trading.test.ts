@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { parseTradingArgs } from "../args.ts";
 import { TradingRuntime } from "../context.ts";
 import type { Order, Position } from "../exchange/types.ts";
-import { isProtection, reduceSide } from "../monitor.ts";
+import { isProtection, protectionCoverage, reduceSide } from "../monitor.ts";
 import { DEFAULT_CONFIG, loadTradingState, saveTradingState, validateTradingConfig } from "../state.ts";
 
 describe("trading configuration", () => {
@@ -59,10 +59,14 @@ describe("position guard", () => {
 	});
 	it("recognizes stop-style reduce orders as protection", () => {
 		expect(isProtection(order({ type: "stop_market" }), position())).toBe(true);
+		expect(isProtection(order({ type: "stop_market", amount: 0.48 }), position())).toBe(true);
+		expect(protectionCoverage(order({ type: "stop_market", amount: 0.48 }), position())).toBe("protected");
+		expect(protectionCoverage(order({ type: "stop_market", amount: 0.4 }), position())).toBe("partial");
 		expect(isProtection(order({ type: "trailing_stop_market" }), position())).toBe(true);
 		expect(isProtection(order({ type: "stop" }), position())).toBe(true);
 	});
 	it("ignores non-protective orders", () => {
+		expect(isProtection(order({ type: "stop_market", amount: 0.4 }), position())).toBe(false);
 		expect(isProtection(order({ type: "limit" }), position())).toBe(false);
 		expect(isProtection(order({ type: "take_profit_market" }), position())).toBe(false);
 		expect(isProtection(order({ type: "stop_market", side: "buy" }), position())).toBe(false);
@@ -75,6 +79,28 @@ describe("market data tool registration", () => {
 		const { createTradingTools } = await import("../tools/index.ts");
 		const names = createTradingTools().map((tool) => tool.name);
 		expect(names).toEqual(expect.arrayContaining(["get_order_book", "get_market_info", "get_contract_stats"]));
+	});
+});
+
+describe("risk accounting", () => {
+	function runtimeWithUsage(usedDailyNotional: number): TradingRuntime {
+		const runtime = Object.create(TradingRuntime.prototype) as TradingRuntime;
+		runtime.config = DEFAULT_CONFIG;
+		(runtime as unknown as { state: { date: string; usedDailyNotional: number } }).state = {
+			date: new Date().toISOString().slice(0, 10),
+			usedDailyNotional,
+		};
+		return runtime;
+	}
+
+	it("allows protective sell orders when the entry quota is exhausted", () => {
+		const runtime = runtimeWithUsage(DEFAULT_CONFIG.risk.maxDailyNotional);
+		expect(runtime.checkRisk("BTC/USDT", 500, { countTowardsDailyLimit: false })).toBeNull();
+	});
+
+	it("still enforces the per-order limit for protective orders", () => {
+		const runtime = runtimeWithUsage(DEFAULT_CONFIG.risk.maxDailyNotional);
+		expect(runtime.checkRisk("BTC/USDT", 500.01, { countTowardsDailyLimit: false })).toMatch(/maxOrderNotional/);
 	});
 });
 
@@ -133,6 +159,7 @@ describe("CLI arguments", () => {
 			mode: "paper",
 			exchange: "okx",
 			noExtensions: false,
+			extensions: [],
 			verbose: false,
 			message: "analyze BTC",
 		});

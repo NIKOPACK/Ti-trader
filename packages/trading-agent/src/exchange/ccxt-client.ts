@@ -4,6 +4,7 @@ import type {
 	Balance,
 	ContractStats,
 	ExchangeClient,
+	FundingRateRecord,
 	Kline,
 	MarketInfo,
 	Order,
@@ -27,8 +28,12 @@ function toTicker(t: CcxtTicker): Ticker {
 		changePct24h: t.percentage,
 		volume24h: t.baseVolume,
 		quoteVolume24h: t.quoteVolume,
-		timestamp: t.timestamp ?? Date.now(),
+		timestamp: validTimestamp(t.timestamp),
 	};
+}
+
+function validTimestamp(timestamp: number | undefined): number {
+	return timestamp !== undefined && Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : Date.now();
 }
 
 function toOrder(o: CcxtOrder): Order {
@@ -45,7 +50,7 @@ function toOrder(o: CcxtOrder): Order {
 		average: o.average,
 		cost: o.cost ?? 0,
 		status: (o.status === "open" ? "open" : o.status === "canceled" ? "canceled" : "closed") as Order["status"],
-		timestamp: o.timestamp ?? Date.now(),
+		timestamp: validTimestamp(o.timestamp),
 	};
 }
 
@@ -112,6 +117,19 @@ export class CcxtExchangeClient implements ExchangeClient {
 
 	async getMarketInfo(symbol: string): Promise<MarketInfo> {
 		const market = await this.ensureMarket(symbol);
+		const info = market.info as Record<string, unknown> | undefined;
+		const rawContractType = String(info?.contractType ?? "").toUpperCase();
+		const contractType = !market.contract
+			? "spot"
+			: rawContractType.includes("PERPETUAL")
+				? "perpetual"
+				: rawContractType.includes("DELIVERY") ||
+						rawContractType.includes("CURRENT_QUARTER") ||
+						rawContractType.includes("NEXT_QUARTER")
+					? "delivery"
+					: "unknown";
+		const stringArray = (value: unknown): string[] | undefined =>
+			Array.isArray(value) && value.every((item) => typeof item === "string") ? value : undefined;
 		return {
 			symbol: market.symbol,
 			base: market.base,
@@ -119,6 +137,14 @@ export class CcxtExchangeClient implements ExchangeClient {
 			settle: market.settle,
 			marketType: market.swap ? "swap" : "spot",
 			contract: market.contract,
+			contractType,
+			pair: typeof info?.pair === "string" ? info.pair : undefined,
+			marginAsset: typeof info?.marginAsset === "string" ? info.marginAsset : undefined,
+			status: typeof info?.status === "string" ? info.status : undefined,
+			onboardDate: typeof info?.onboardDate === "number" ? info.onboardDate : undefined,
+			deliveryDate: typeof info?.deliveryDate === "number" ? info.deliveryDate : undefined,
+			orderTypes: stringArray(market.orderTypes),
+			timeInForce: stringArray(market.timeInForce),
 			linear: market.linear,
 			inverse: market.inverse,
 			active: market.active,
@@ -147,8 +173,13 @@ export class CcxtExchangeClient implements ExchangeClient {
 			// Binance may reject open-interest requests for unsupported symbols.
 		}
 		const info = ticker.info as Record<string, unknown> | undefined;
-		const markPrice = Number(info?.markPrice ?? NaN);
-		const indexPrice = Number(info?.indexPrice ?? NaN);
+		const markPrice = Number(info?.markPrice ?? funding.markPrice ?? NaN);
+		const indexPrice = Number(info?.indexPrice ?? funding.indexPrice ?? NaN);
+		const fundingInfo = funding.info as Record<string, unknown> | undefined;
+		const numberOrUndefined = (value: unknown): number | undefined => {
+			const number = Number(value);
+			return Number.isFinite(number) ? number : undefined;
+		};
 		const stats: ContractStats = {
 			symbol,
 			lastPrice: ticker.last ?? undefined,
@@ -156,6 +187,9 @@ export class CcxtExchangeClient implements ExchangeClient {
 			indexPrice: Number.isFinite(indexPrice) ? indexPrice : undefined,
 			fundingRate: funding.fundingRate ?? undefined,
 			nextFundingTime: funding.nextFundingTimestamp,
+			nextFundingRate: numberOrUndefined(fundingInfo?.nextFundingRate),
+			estimatedSettlePrice: numberOrUndefined(fundingInfo?.estimatedSettlePrice),
+			interestRate: numberOrUndefined(fundingInfo?.interestRate),
 			openInterest,
 		};
 		if (stats.markPrice !== undefined && stats.indexPrice !== undefined) {
@@ -165,11 +199,19 @@ export class CcxtExchangeClient implements ExchangeClient {
 		return stats;
 	}
 
+	private timeframeDurationMs(timeframe: string): number {
+		const match = /^(\\d+)([smhdw])$/.exec(timeframe);
+		if (!match) return 0;
+		const units: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+		return Number(match[1]) * (units[match[2]] ?? 0);
+	}
+
 	async getKlines(symbol: string, timeframe: string, limit: number): Promise<Kline[]> {
 		await this.ensureMarket(symbol);
 		const ohlcv = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
 		return ohlcv.map((k) => ({
 			timestamp: k[0] ?? 0,
+			closed: k[0] !== undefined ? k[0] + this.timeframeDurationMs(timeframe) <= Date.now() : undefined,
 			open: k[1] ?? 0,
 			high: k[2] ?? 0,
 			low: k[3] ?? 0,
@@ -357,6 +399,25 @@ export class CcxtExchangeClient implements ExchangeClient {
 		if (minAmount !== undefined && amount < minAmount)
 			throw new Error(`Amount ${amount} is below minimum ${minAmount} for ${input.symbol}`);
 		try {
+			if (this.id === "binance" && this.marketType === "spot") {
+				if (input.side !== "sell")
+					throw new Error(
+						"Binance spot native OCO buy brackets are not supported safely [errorCategory=UNSUPPORTED_ORDER_TYPE]",
+					);
+				// Binance spot has one balance reservation for both legs. Use its
+				// atomic order-list endpoint; submitting two independent sells is not safe.
+				const raw = await this.createBinanceSpotOco(
+					input.symbol,
+					input.side,
+					amount,
+					stopLossPrice,
+					takeProfitPrice,
+				);
+				const reports = Array.isArray(raw?.orderReports) ? raw.orderReports : [];
+				return {
+					orders: reports.map((report) => this.binanceReportToOrder(report, input.symbol, input.side, amount)),
+				};
+			}
 			// ccxt folds both trigger prices into a single one-cancels-the-other
 			// order on exchanges that support it (e.g. okx ordType "oco").
 			const order = await this.exchange.createOrder(input.symbol, "market", input.side, amount, undefined, {
@@ -366,12 +427,59 @@ export class CcxtExchangeClient implements ExchangeClient {
 			return { orders: [toOrder(order)] };
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
+			const category =
+				this.id === "binance" && this.marketType === "spot"
+					? "BALANCE_LOCK_OR_UNSUPPORTED_OCO"
+					: "UNSUPPORTED_ORDER_TYPE";
 			throw new Error(
-				`OCO order failed on ${this.id}: ${message}. Not every exchange supports one-order OCO via ccxt ` +
-					`(okx does). Fall back to a separate stop_market and take_profit_market order and cancel the ` +
-					`survivor manually after one fills.`,
+				`OCO order failed on ${this.id} [errorCategory=${category}]: ${message}. ` +
+					`No separate conditional orders were submitted because spot sell legs reserve the same balance.`,
 			);
 		}
+	}
+
+	private async createBinanceSpotOco(
+		symbol: string,
+		side: "buy" | "sell",
+		amount: number,
+		stopLossPrice: number,
+		takeProfitPrice: number,
+	): Promise<Record<string, unknown>> {
+		const endpoint = (this.exchange as unknown as Record<string, unknown>).privatePostOrderListOco;
+		if (typeof endpoint !== "function")
+			throw new Error("Binance ccxt adapter does not expose order-list OCO endpoint");
+		const market = this.exchange.markets[symbol];
+		const params = {
+			symbol: market.id,
+			side: side.toUpperCase(),
+			quantity: this.exchange.amountToPrecision(symbol, amount),
+			aboveType: "LIMIT_MAKER",
+			abovePrice: this.exchange.priceToPrecision(symbol, takeProfitPrice),
+			belowType: "STOP_LOSS_LIMIT",
+			belowPrice: this.exchange.priceToPrecision(symbol, stopLossPrice),
+			belowStopPrice: this.exchange.priceToPrecision(symbol, stopLossPrice),
+		};
+		return (await (endpoint as (params: Record<string, string>) => Promise<unknown>).call(
+			this.exchange,
+			params,
+		)) as Record<string, unknown>;
+	}
+
+	private binanceReportToOrder(report: unknown, symbol: string, side: "buy" | "sell", amount: number): Order {
+		const r = (report && typeof report === "object" ? report : {}) as Record<string, unknown>;
+		return {
+			id: String(r.orderId ?? r.clientOrderId ?? "unknown"),
+			symbol,
+			side,
+			type: "limit",
+			price: Number(r.price) || undefined,
+			amount,
+			filled: Number(r.executedQty) || 0,
+			remaining: amount - (Number(r.executedQty) || 0),
+			cost: Number(r.cummulativeQuoteQty) || 0,
+			status: r.status === "FILLED" ? "closed" : r.status === "CANCELED" ? "canceled" : "open",
+			timestamp: validTimestamp(Number(r.transactTime ?? Date.now())),
+		};
 	}
 
 	async cancelOrder(id: string, symbol: string): Promise<void> {
@@ -395,12 +503,32 @@ export class CcxtExchangeClient implements ExchangeClient {
 
 	async getTopMarkets(limit: number): Promise<Ticker[]> {
 		const tickers = await this.exchange.fetchTickers();
-		const suffix = `/${this.quoteCurrency}`;
+		const suffix =
+			this.marketType === "usdm-futures" ? `/${this.quoteCurrency}:${this.quoteCurrency}` : `/${this.quoteCurrency}`;
 		return Object.values(tickers)
-			.filter((t) => t.symbol.endsWith(suffix) && !t.symbol.includes(":"))
+			.filter((t) => t.symbol.endsWith(suffix))
 			.sort((a, b) => (b.quoteVolume ?? 0) - (a.quoteVolume ?? 0))
 			.slice(0, limit)
 			.map(toTicker);
+	}
+
+	async getFundingRateHistory(symbol: string, limit = 20): Promise<FundingRateRecord[]> {
+		if (this.marketType !== "usdm-futures")
+			throw new Error("Funding rates are available only in USDⓈ-M futures mode");
+		await this.ensureMarket(symbol);
+		const records = await this.exchange.fetchFundingRateHistory(
+			symbol,
+			undefined,
+			Math.min(Math.max(Math.floor(limit), 1), 100),
+		);
+		return records.map((record) => ({
+			symbol,
+			fundingTime: record.timestamp ?? 0,
+			rate: record.fundingRate ?? 0,
+			markPrice: Number.isFinite(Number((record.info as Record<string, unknown> | undefined)?.markPrice))
+				? Number((record.info as Record<string, unknown>).markPrice)
+				: undefined,
+		}));
 	}
 
 	async getFundingRate(symbol: string): Promise<{ symbol: string; rate: number; nextFundingTime?: number }> {

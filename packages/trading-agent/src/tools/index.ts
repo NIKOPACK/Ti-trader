@@ -28,6 +28,12 @@ const emptySchema = Type.Object({});
 const futuresSymbolSchema = Type.Object({
 	symbol: Type.String({ description: 'Binance USDⓈ-M ccxt symbol, e.g. "BTC/USDT:USDT".' }),
 });
+const fundingHistorySchema = Type.Object({
+	symbol: Type.String({ description: 'Binance USDⓈ-M ccxt symbol, e.g. "BTC/USDT:USDT".' }),
+	limit: Type.Optional(
+		Type.Integer({ minimum: 1, maximum: 100, description: "Number of historical funding records. Default 20." }),
+	),
+});
 const leverageSchema = Type.Object({ symbol: Type.String(), leverage: Type.Integer({ minimum: 1, maximum: 125 }) });
 const marginSchema = Type.Object({
 	symbol: Type.String(),
@@ -191,10 +197,18 @@ export function createGetMarketInfoTool(): ToolDefinition<typeof marketInfoSchem
 				...info,
 				dataQuality: {
 					marketType: true,
+					contractType: info.contractType !== undefined,
+					pair: info.pair !== undefined,
+					marginAsset: info.marginAsset !== undefined,
+					status: info.status !== undefined,
 					settlement: info.settle !== undefined,
 					limits: info.minAmount !== undefined || info.minNotional !== undefined,
 				},
 				warnings: [
+					...(info.contract && info.contractType === "unknown"
+						? ["Contract type was not identified by the exchange adapter"]
+						: []),
+					...(info.contract && info.marginAsset === undefined ? ["Margin asset unavailable"] : []),
 					...(info.settle === undefined ? ["settlement asset unavailable"] : []),
 					...(info.minAmount === undefined && info.minNotional === undefined ? ["order limits unavailable"] : []),
 				],
@@ -215,6 +229,9 @@ export function createGetContractStatsTool(): ToolDefinition<typeof futuresSymbo
 			return jsonResult({
 				...stats,
 				dataQuality: {
+					estimatedSettlePrice: stats.estimatedSettlePrice !== undefined,
+					nextFundingRate: stats.nextFundingRate !== undefined,
+					interestRate: stats.interestRate !== undefined,
 					markPrice: stats.markPrice !== undefined,
 					indexPrice: stats.indexPrice !== undefined,
 					fundingRate: stats.fundingRate !== undefined,
@@ -244,14 +261,26 @@ export function createGetKlinesTool(): ToolDefinition<typeof getKlinesSchema> {
 				symbol: params.symbol,
 				timeframe: params.timeframe ?? "1h",
 				count: klines.length,
-				candles: klines.map((k) => [
-					new Date(k.timestamp).toISOString(),
-					k.open,
-					k.high,
-					k.low,
-					k.close,
-					round(k.volume, 4),
-				]),
+				dataQuality: {
+					count: klines.length > 0,
+					oldest: klines[0]?.timestamp !== undefined,
+					newest: klines.at(-1)?.timestamp !== undefined,
+				},
+				warnings: [
+					...(klines.length === 0 ? ["No candles returned"] : []),
+					...(klines.length > 0 && klines.at(-1)!.timestamp > Date.now()
+						? ["Latest candle timestamp is in the future"]
+						: []),
+				],
+				candles: klines.map((k) => ({
+					time: new Date(k.timestamp).toISOString(),
+					closed: k.closed ?? null,
+					open: k.open,
+					high: k.high,
+					low: k.low,
+					close: k.close,
+					volume: round(k.volume, 4),
+				})),
 			});
 		},
 	};
@@ -302,7 +331,7 @@ export function createGetPositionsTool(): ToolDefinition<typeof emptySchema> {
 				count: positions.length,
 				positions: positions.map((p) => ({
 					symbol: p.symbol,
-					amount: round(p.amount),
+					amount: p.amount,
 					quoteValue: round(p.quoteValue, 2),
 					avgEntryPrice: p.avgEntryPrice,
 					unrealizedPnl: round(p.unrealizedPnl, 2),
@@ -463,7 +492,7 @@ async function executeOrder(
 		closePosition: params.closePosition,
 	};
 	const result = await trading.exchange.placeOrder(input);
-	trading.recordFill(notional);
+	trading.recordFill(notional, { countTowardsDailyLimit: !params.reduceOnly && !params.closePosition });
 
 	return jsonResult({
 		status: "ok",
@@ -529,7 +558,8 @@ export function createPlaceOcoTool(): ToolDefinition<typeof ocoSchema> {
 			"Place a one-cancels-the-other bracket: a stop-loss AND a take-profit exit for the same amount. " +
 			"When one leg fills the other is cancelled automatically, so one holding is protected in both " +
 			"directions without double-reserving funds. Preferred way to protect a position after an entry fills. " +
-			"Paper mode simulates the bracket; live support depends on the exchange (okx native).",
+			"Paper mode simulates the bracket. Binance spot uses native OCO when available; do not place separate " +
+			"conditional sell orders because each order reserves the same asset balance. Other live exchanges must support OCO.",
 		parameters: ocoSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			return executeOco(params, ctx);
@@ -548,7 +578,9 @@ async function executeOco(params: OcoToolParams, ctx: ExtensionContext): Promise
 	const refPrice = ticker.last;
 	if (!refPrice || refPrice <= 0) throw new Error(`No reference price for ${params.symbol}`);
 	const notional = params.amount * refPrice;
-	const riskError = trading.checkRisk(params.symbol, notional);
+	const riskError = trading.checkRisk(params.symbol, notional, {
+		countTowardsDailyLimit: params.side === "buy",
+	});
 	if (riskError) throw new Error(`Risk limit: ${riskError}`);
 
 	const summary =
@@ -581,7 +613,9 @@ async function executeOco(params: OcoToolParams, ctx: ExtensionContext): Promise
 		stopLossPrice: params.stopLossPrice,
 		takeProfitPrice: params.takeProfitPrice,
 	});
-	trading.recordFill(notional);
+	// A sell OCO protects an already-counted holding. A buy OCO is a planned
+	// entry and therefore consumes the cumulative entry quota.
+	trading.recordFill(notional, { countTowardsDailyLimit: params.side === "buy" });
 
 	return jsonResult({
 		status: "ok",
@@ -589,6 +623,28 @@ async function executeOco(params: OcoToolParams, ctx: ExtensionContext): Promise
 		summary,
 		orders: result.orders.map(formatOrder),
 	});
+}
+
+export function createGetFundingRateHistoryTool(): ToolDefinition<typeof fundingHistorySchema> {
+	return {
+		name: "get_funding_rate_history",
+		label: "get_funding_rate_history",
+		description: "Get historical USDⓈ-M futures funding rates. Read-only; unavailable in spot mode.",
+		parameters: fundingHistorySchema,
+		async execute(_id, params) {
+			const records = await getTrading().exchange.getFundingRateHistory(params.symbol, params.limit ?? 20);
+			return jsonResult({
+				symbol: params.symbol,
+				count: records.length,
+				records,
+				dataQuality: { available: records.length > 0 },
+				warnings:
+					records.length === 0
+						? ["No funding history returned; paper mode does not simulate funding history."]
+						: [],
+			});
+		},
+	};
 }
 
 export function createGetFundingRateTool(): ToolDefinition<typeof futuresSymbolSchema> {
@@ -649,6 +705,19 @@ export function createGetRiskStatusTool(): ToolDefinition<typeof emptySchema> {
 		async execute() {
 			const trading = getTrading();
 			const usage = trading.dailyUsage();
+			const [openOrders, positions, history] = await Promise.all([
+				trading.exchange.getOpenOrders(),
+				trading.exchange.getPositions(),
+				trading.exchange.getOrderHistory(undefined, 100),
+			]);
+			const orderNotional = (order: { amount: number; price?: number; stopPrice?: number }): number =>
+				order.amount * (order.price ?? order.stopPrice ?? 0);
+			const protective = (order: { type: string }): boolean =>
+				order.type.includes("stop") || order.type.includes("take_profit");
+			const openProtective = openOrders.filter(protective);
+			const openEntries = openOrders.filter((order) => !protective(order));
+			const sumNotional = (orders: typeof openOrders): number =>
+				orders.reduce((sum, order) => sum + (order.cost || orderNotional(order)), 0);
 			return jsonResult({
 				mode: trading.mode,
 				limits: {
@@ -658,6 +727,17 @@ export function createGetRiskStatusTool(): ToolDefinition<typeof emptySchema> {
 				},
 				quoteCurrency: trading.config.quoteCurrency,
 				usage,
+				breakdown: {
+					// `usage.used` is the authoritative persisted quota. The other
+					// fields are current-account observations and are not added to it.
+					entries: usage.used,
+					protectiveOpenOrders: sumNotional(openProtective),
+					entryOpenOrders: sumNotional(openEntries),
+					positions: positions.reduce((sum, position) => sum + position.quoteValue, 0),
+					closedHistory: history.reduce((sum, order) => sum + order.cost, 0),
+				},
+				breakdownSemantics:
+					"entries is the persisted quota used (paper cumulative, live daily); protectiveOpenOrders, entryOpenOrders, positions, and closedHistory are current observations and are not interchangeable with entries or added to usage.used.",
 			});
 		},
 	};
@@ -689,9 +769,9 @@ function formatOrder(o: {
 		stopPrice: o.stopPrice,
 		trailingPercent: o.trailingPercent,
 		ocoGroup: o.ocoGroup,
-		amount: round(o.amount),
-		filled: round(o.filled),
-		remaining: round(o.remaining),
+		amount: o.amount,
+		filled: o.filled,
+		remaining: o.remaining,
 		average: o.average,
 		cost: round(o.cost, 2),
 		status: o.status,
@@ -716,6 +796,7 @@ export function createTradingTools(): ToolDefinition[] {
 		createCancelOrderTool(),
 		createGetRiskStatusTool(),
 		createGetFundingRateTool(),
+		createGetFundingRateHistoryTool(),
 		createSetLeverageTool(),
 		createSetMarginModeTool(),
 		createGetFuturesPositionsTool(),

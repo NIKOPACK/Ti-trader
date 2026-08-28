@@ -7,6 +7,7 @@ export interface TradingArgs {
 	mode?: TradingMode;
 	exchange?: string;
 	noExtensions: boolean;
+	extensions: string[];
 	verbose: boolean;
 	/** Initial message (positional args joined). */
 	message?: string;
@@ -18,6 +19,7 @@ export function parseTradingArgs(argv: string[]): TradingArgs {
 		version: false,
 		print: false,
 		noExtensions: false,
+		extensions: [],
 		verbose: false,
 	};
 	const positional: string[] = [];
@@ -43,6 +45,12 @@ export function parseTradingArgs(argv: string[]): TradingArgs {
 			case "--no-extensions":
 				result.noExtensions = true;
 				break;
+			case "--extension": {
+				const value = argv[++i];
+				if (!value) throw new Error("--extension requires a path");
+				result.extensions.push(value);
+				break;
+			}
 			case "--mode": {
 				const value = argv[++i];
 				if (value !== "paper" && value !== "live") {
@@ -62,6 +70,10 @@ export function parseTradingArgs(argv: string[]): TradingArgs {
 					const value = arg.slice("--mode=".length);
 					if (value !== "paper" && value !== "live") throw new Error(`--mode must be "paper" or "live"`);
 					result.mode = value;
+				} else if (arg.startsWith("--extension=")) {
+					const value = arg.slice("--extension=".length);
+					if (!value) throw new Error("--extension requires a path");
+					result.extensions.push(value);
 				} else if (arg.startsWith("--exchange=")) {
 					result.exchange = arg.slice("--exchange=".length).toLowerCase();
 				} else if (arg.startsWith("-")) {
@@ -87,7 +99,8 @@ Options:
   --mode <paper|live>     Trading mode (default: from ~/.ti-trader/agent/trading.json, initially paper)
   --exchange <id>         ccxt exchange id, e.g. binance, okx (default: from config)
   -p, --print             Non-interactive: run once with the given message and exit
-      --no-extensions     Do not load user extensions
+      --extension <path>   Load an extension (repeatable)
+      --no-extensions      Do not load user extensions
       --verbose           Verbose output
   -h, --help              Show this help
   -v, --version           Show version

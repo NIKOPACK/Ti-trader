@@ -5,6 +5,7 @@ import type {
 	Balance,
 	ContractStats,
 	ExchangeClient,
+	FundingRateRecord,
 	Kline,
 	MarketInfo,
 	Order,
@@ -298,6 +299,7 @@ export class PaperExchangeClient implements ExchangeClient {
 		const ohlcv = await this.exchangeFor(symbol).fetchOHLCV(symbol, timeframe, undefined, limit);
 		return ohlcv.map((k) => ({
 			timestamp: k[0] ?? 0,
+			closed: k[0] !== undefined ? k[0] + this.timeframeDurationMs(timeframe) <= Date.now() : undefined,
 			open: k[1] ?? 0,
 			high: k[2] ?? 0,
 			low: k[3] ?? 0,
@@ -598,6 +600,12 @@ export class PaperExchangeClient implements ExchangeClient {
 		this.persistAll();
 	}
 
+	async getFundingRateHistory(symbol: string, _limit = 20): Promise<FundingRateRecord[]> {
+		if (!this.isFuturesSymbol(symbol) || this.marketType === "spot")
+			throw new Error("Paper futures funding requires a futures symbol");
+		return [];
+	}
+
 	async getFundingRate(symbol: string): Promise<{ symbol: string; rate: number; nextFundingTime?: number }> {
 		if (!this.isFuturesSymbol(symbol) || this.marketType === "spot")
 			throw new Error("Paper futures funding requires a futures symbol");
@@ -617,6 +625,13 @@ export class PaperExchangeClient implements ExchangeClient {
 		this.futuresMarginType = marginType;
 		this.futuresAccount.marginType = marginType;
 		this.persistAll();
+	}
+
+	private timeframeDurationMs(timeframe: string): number {
+		const match = /^(\\d+)([smhdw])$/.exec(timeframe);
+		if (!match) return 0;
+		const units: Record<string, number> = { s: 1000, m: 60_000, h: 3_600_000, d: 86_400_000, w: 604_800_000 };
+		return Number(match[1]) * (units[match[2]] ?? 0);
 	}
 
 	async getTopMarkets(limit: number): Promise<Ticker[]> {

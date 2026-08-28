@@ -30,6 +30,8 @@ export interface OrderBook {
 	askDepth: number;
 }
 
+export type ContractType = "spot" | "perpetual" | "delivery" | "unknown";
+
 export interface MarketInfo {
 	symbol: string;
 	base: string;
@@ -37,6 +39,14 @@ export interface MarketInfo {
 	settle?: string;
 	marketType: "spot" | "swap";
 	contract: boolean;
+	contractType?: ContractType;
+	pair?: string;
+	marginAsset?: string;
+	status?: string;
+	onboardDate?: number;
+	deliveryDate?: number;
+	orderTypes?: string[];
+	timeInForce?: string[];
 	linear?: boolean;
 	inverse?: boolean;
 	active?: boolean;
@@ -55,6 +65,9 @@ export interface ContractStats {
 	indexPrice?: number;
 	fundingRate?: number;
 	nextFundingTime?: number;
+	nextFundingRate?: number;
+	estimatedSettlePrice?: number;
+	interestRate?: number;
 	openInterest?: number;
 	openInterestValue?: number;
 	basis?: number;
@@ -63,6 +76,8 @@ export interface ContractStats {
 
 export interface Kline {
 	timestamp: number;
+	/** False when the exchange returned the currently forming candle. */
+	closed?: boolean;
 	open: number;
 	high: number;
 	low: number;
@@ -177,6 +192,13 @@ export interface PlaceOcoOrderResult {
 	orders: Order[];
 }
 
+export interface FundingRateRecord {
+	symbol: string;
+	fundingTime: number;
+	rate: number;
+	markPrice?: number;
+}
+
 export interface ExchangeClient {
 	readonly id: string;
 	readonly mode: "paper" | "live";
@@ -196,6 +218,7 @@ export interface ExchangeClient {
 	/** Top markets by 24h quote volume for the configured quote currency. */
 	getTopMarkets(limit: number): Promise<Ticker[]>;
 	getFundingRate(symbol: string): Promise<{ symbol: string; rate: number; nextFundingTime?: number }>;
+	getFundingRateHistory(symbol: string, limit?: number): Promise<FundingRateRecord[]>;
 	setLeverage(symbol: string, leverage: number): Promise<void>;
 	setMarginMode(symbol: string, marginType: "isolated" | "cross"): Promise<void>;
 	close(): Promise<void>;

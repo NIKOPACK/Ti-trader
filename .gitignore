@@ -47,6 +47,7 @@ out.html
 packages/coding-agent/binaries/
 todo.md
 plans/
+.ti-local/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh

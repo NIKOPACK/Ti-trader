@@ -23,7 +23,10 @@
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",
-		"build": "npm run clean && tsgo -p tsconfig.build.json && shx chmod +x dist/cli.js",
+		"build": "npm run clean && tsgo -p tsconfig.build.json && npm run build:web-search-extension && npm run build:market-lab-extension && npm run build:market-research-extension && shx chmod +x dist/cli.js",
+		"build:web-search-extension": "tsgo -p ../../extensions/web-search/tsconfig.json && shx mkdir -p dist/web-search && shx cp ../../extensions/web-search/dist/index.js ../../extensions/web-search/package.json ../../extensions/web-search/README.md dist/web-search/",
+		"build:market-lab-extension": "tsgo -p ../../extensions/market-lab/tsconfig.json && shx mkdir -p dist/market-lab && shx cp ../../extensions/market-lab/dist/index.js ../../extensions/market-lab/dist/indicators.js ../../extensions/market-lab/package.json ../../extensions/market-lab/README.md dist/market-lab/",
+		"build:market-research-extension": "tsgo -p ../../extensions/market-research/tsconfig.json && shx mkdir -p dist/market-research && shx cp ../../extensions/market-research/dist/index.js ../../extensions/market-research/package.json ../../extensions/market-research/README.md ../../extensions/market-research/SKILL.md dist/market-research/",
 		"test": "vitest --run src --passWithNoTests",
 		"smoke": "node scripts/runtime-check.mjs && node scripts/paper-smoke.mjs",
 		"prepublishOnly": "npm run build"
