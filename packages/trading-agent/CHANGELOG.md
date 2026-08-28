@@ -4,6 +4,17 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.4] - 2026-08-28
+
+### Added
+
+- Added read-only market research, technical indicator, and web search extensions.
+- Added futures market metadata and funding-rate history tools.
+
+### Fixed
+
+- Prevented protective sell orders and OCO exits from consuming entry risk quota.
+
 ## [0.1.3] - 2026-08-27
 
 ### Added
@@ -62,7 +73,8 @@ Initial public release.
 - Coding tools disabled; system prompt fully replaced with a trading-domain prompt
 - Configuration and state under `~/.ti/agent/`, isolated from the pi coding agent's `~/.pi`
 
-[Unreleased]: https://github.com/NIKOPACK/Ti/compare/v0.1.3...HEAD
+[Unreleased]: https://github.com/NIKOPACK/Ti/compare/v0.1.4...HEAD
+[0.1.4]: https://github.com/NIKOPACK/Ti/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/NIKOPACK/Ti/compare/v0.1.2...v0.1.3
 [0.1.1]: https://github.com/NIKOPACK/Ti/compare/v0.1.0...v0.1.1
 [0.1.0]: https://github.com/NIKOPACK/Ti/releases/tag/v0.1.0
