@@ -5,6 +5,7 @@ import {
 	loadExchangeKeys,
 	loadTradingConfig,
 	loadTradingState,
+	type MarketType,
 	saveTradingConfig,
 	saveTradingState,
 	type TradingConfig,
@@ -63,6 +64,14 @@ export class TradingRuntime {
 		if (!normalized) throw new Error("Exchange id must not be empty");
 		if (normalized === this.config.exchange) return;
 		const nextConfig = { ...this.config, exchange: normalized };
+		await this.replaceClient(nextConfig);
+	}
+
+	async setMarketType(marketType: MarketType): Promise<void> {
+		if (!("spot" === marketType || "usdm-futures" === marketType || "both" === marketType))
+			throw new Error(`Invalid market type: ${marketType}`);
+		if (marketType === this.config.marketType) return;
+		const nextConfig = { ...this.config, marketType };
 		await this.replaceClient(nextConfig);
 	}
 

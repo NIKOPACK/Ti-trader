@@ -1,6 +1,12 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getTrading } from "./context.ts";
-import { loadExchangeKeys, saveExchangeKeys, type TradingLanguage, type TradingMode } from "./state.ts";
+import {
+	loadExchangeKeys,
+	type MarketType,
+	saveExchangeKeys,
+	type TradingLanguage,
+	type TradingMode,
+} from "./state.ts";
 import { padEndWidth, padStartWidth, renderTradingTable, type TableData, type TableLine } from "./table.ts";
 
 const SUPPORTED_EXCHANGES = [
@@ -75,7 +81,7 @@ export function createTradingExtension() {
 			const trading = getTrading();
 			ctx.ui.setStatus(
 				"trading-status",
-				`${trading.mode === "live" ? "LIVE" : "PAPER"}  ${trading.config.exchange}  ${trading.config.quoteCurrency}  ${trading.config.language}`,
+				`${trading.mode === "live" ? "LIVE" : "PAPER"}  ${trading.config.exchange}  ${trading.config.marketType}  ${trading.config.quoteCurrency}  ${trading.config.language}`,
 			);
 		};
 
@@ -313,6 +319,64 @@ export function createTradingExtension() {
 					updateStatus(ctx);
 					show("exchange", [`Switched to ${target} (${trading.mode} mode).`]);
 					ctx.ui.notify(`Exchange: ${target}`, "info");
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				}
+			},
+		});
+
+		pi.registerCommand("market", {
+			description: "Show or switch market type. Usage: /market [spot|usdm-futures|both]",
+			handler: async (args, ctx) => {
+				const trading = getTrading();
+				let target = args.trim().toLowerCase() as MarketType | "";
+				if (!target) {
+					const choice = await ctx.ui.select(
+						text(
+							trading.config.language,
+							`市场类型（当前：${trading.config.marketType}）`,
+							`Market type (current: ${trading.config.marketType})`,
+						),
+						trading.config.language === "zh-CN"
+							? ["现货（spot）", "USDⓈ-M 合约（usdm-futures）", "现货+合约（仅 paper）", "取消"]
+							: ["Spot (spot)", "USDⓈ-M Futures (usdm-futures)", "Spot + Futures (paper only)", "Cancel"],
+					);
+					if (!choice || choice === "取消" || choice === "Cancel") return;
+					target =
+						choice.includes("现货+") || choice.includes("Spot + Futures")
+							? "both"
+							: choice.includes("usdm-futures")
+								? "usdm-futures"
+								: "spot";
+				}
+				if (target !== "spot" && target !== "usdm-futures" && target !== "both") {
+					ctx.ui.notify(`Unknown market type "${target}". Use spot, usdm-futures, or both.`, "error");
+					return;
+				}
+				if (target === "both" && trading.mode !== "paper") {
+					ctx.ui.notify('market type "both" is available only in paper mode', "error");
+					return;
+				}
+				if (target === "usdm-futures" && trading.config.exchange !== "binance") {
+					ctx.ui.notify("USDⓈ-M futures require Binance", "error");
+					return;
+				}
+				const isLiveFutures = trading.mode === "live" && target === "usdm-futures";
+				if (isLiveFutures) {
+					const confirmed = await ctx.ui.confirm(
+						"Switch to Binance USDⓈ-M futures?",
+						"This uses the separate futures wallet and exposes leverage and liquidation risk. Existing spot orders and positions are not changed.",
+					);
+					if (!confirmed) return;
+				}
+				try {
+					await trading.setMarketType(target);
+					updateStatus(ctx);
+					show("market", [
+						`Market type: ${target}`,
+						target === "usdm-futures" ? "Symbol format: BTC/USDT:USDT" : "",
+					]);
+					ctx.ui.notify(`Market type: ${target}`, "info");
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}
