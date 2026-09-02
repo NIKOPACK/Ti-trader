@@ -155,6 +155,10 @@ export type AuthEvent =
  */
 export interface AuthInteraction {
 	signal?: AbortSignal;
+	/** Optional caller identity for OAuth providers that support attribution. */
+	originator?: string;
+	/** Optional OAuth referrer for providers that accept caller attribution. */
+	referrer?: string;
 
 	prompt(prompt: AuthPrompt): Promise<string>;
 	notify(event: AuthEvent): void;

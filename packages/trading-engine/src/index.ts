@@ -1,6 +1,28 @@
+export {
+	type RiskClock,
+	RiskCommitError,
+	type RiskConfig,
+	RiskLedger,
+	type RiskLimits,
+	type RiskReconciliationInfo,
+	type RiskReservation,
+	type RiskReservationState,
+	RiskReservationStateError,
+	type RiskStateMutator,
+	RiskStatePersistenceError,
+	type RiskStateStore,
+	type RiskUsageState,
+	type TradingMode,
+	type TradingRiskState,
+} from "@earendil-works/ti-trading-risk";
 export { CcxtExchangeClient } from "./ccxt-client.ts";
 export type { ExchangeCredentials, FuturesMarginType, FuturesPositionMode, MarketType } from "./client-types.ts";
-export { PreparedPlanError, TradingEngine, type TradingEngineSubmissionPolicy } from "./engine.ts";
+export {
+	PreparedPlanError,
+	TradingEngine,
+	type TradingEngineConfig,
+	type TradingEngineSubmissionPolicy,
+} from "./engine.ts";
 export type {
 	OcoIntent,
 	OrderIntent,
@@ -12,6 +34,8 @@ export type {
 } from "./order-plan.ts";
 export {
 	countsTowardsDailyLimit,
+	futuresAmountStep,
+	futuresContractLotStep,
 	isBinanceCloseAllTrigger,
 	isFuturesSymbol,
 	OrderPreparationError,
@@ -19,24 +43,19 @@ export {
 	prepareOrder,
 } from "./order-plan.ts";
 export { PaperExchangeClient } from "./paper-client.ts";
-export { isProtection, protectionCoverage, reduceSide } from "./protection.ts";
 export {
-	type EngineClock,
-	RiskCommitError,
-	RiskLedger,
-	type RiskLimits,
-	type RiskReconciliationInfo,
-	type RiskReservation,
-	type RiskReservationState,
-	RiskReservationStateError,
-	type RiskStateMutator,
-	RiskStatePersistenceError,
-	type RiskStateStore,
-	type RiskUsageState,
-	type TradingEngineConfig,
-	type TradingMode,
-	type TradingRiskState,
-} from "./risk.ts";
+	acquireFileLock,
+	acquireFileLockSync,
+	DEFAULT_FILE_LOCK,
+	type FileLock,
+	type FileLockOptions,
+	readJsonFile,
+	releaseFileLock,
+	touchFileLock,
+	withFileLockSync,
+	writeJsonFile,
+} from "./persist.ts";
+export { isProtection, protectionCoverage, reduceSide } from "./protection.ts";
 export type {
 	Balance,
 	ContractStats,

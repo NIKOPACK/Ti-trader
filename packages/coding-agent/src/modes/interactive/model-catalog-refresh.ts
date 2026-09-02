@@ -2,7 +2,7 @@ import type { ModelsRefreshResult } from "@earendil-works/pi-ai";
 import type { ModelRuntime } from "../../core/model-runtime.ts";
 import { raceWithAbortSignal } from "../../utils/abort.ts";
 
-type ModelCatalogRuntime = Pick<ModelRuntime, "refresh">;
+type ModelCatalogRuntime = Pick<ModelRuntime, "refresh"> & Partial<Pick<ModelRuntime, "isModelNetworkEnabled">>;
 
 interface ActiveModelCatalogRefresh {
 	controller: AbortController;
@@ -15,6 +15,9 @@ class ModelCatalogRefreshCoordinator {
 
 	refresh(modelRuntime: ModelCatalogRuntime, signal: AbortSignal): Promise<ModelsRefreshResult> {
 		signal.throwIfAborted();
+		if (modelRuntime.isModelNetworkEnabled && !modelRuntime.isModelNetworkEnabled()) {
+			return Promise.resolve({ aborted: false, errors: new Map() });
+		}
 		let active = this.activeByRuntime.get(modelRuntime);
 		if (!active) {
 			const controller = new AbortController();

@@ -4,6 +4,7 @@
 		"outDir": "./dist",
 		"rootDir": "./src",
 		"paths": {
+			"@earendil-works/ti-trading-engine": ["../trading-engine/dist/index.d.ts"],
 			"@earendil-works/pi-agent-core": ["../agent/dist/index.d.ts"],
 			"@earendil-works/pi-agent-core/*": ["../agent/dist/*.d.ts"],
 			"@earendil-works/pi-ai": ["../ai/dist/index.d.ts"],

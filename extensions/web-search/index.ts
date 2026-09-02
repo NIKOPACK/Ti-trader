@@ -7,7 +7,9 @@ const searchParameters = Type.Object({
 	query: Type.String({ minLength: 1, maxLength: 500, description: "Search query" }),
 	maxResults: Type.Optional(Type.Integer({ minimum: 1, maximum: 10, description: "Maximum results (default 5)" })),
 	domains: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 253 }), { maxItems: 10 })),
-	recencyDays: Type.Optional(Type.Integer({ minimum: 1, maximum: 3650, description: "Only results from this many recent days" })),
+	recencyDays: Type.Optional(
+		Type.Integer({ minimum: 1, maximum: 3650, description: "Only results from this many recent days" }),
+	),
 });
 
 type SearchRequest = {
@@ -31,7 +33,14 @@ export interface SearchResponse {
 	searchedAt: string;
 }
 
-const DEFAULT_ALLOWED_HOSTS = new Set(["binance.com", "www.binance.com", "okx.com", "www.okx.com", "bybit.com", "www.bybit.com"]);
+const DEFAULT_ALLOWED_HOSTS = new Set([
+	"binance.com",
+	"www.binance.com",
+	"okx.com",
+	"www.okx.com",
+	"bybit.com",
+	"www.bybit.com",
+]);
 const MAX_BYTES = 256 * 1024;
 const TIMEOUT_MS = 10_000;
 const DEFAULT_ENDPOINT = "https://api.tavily.com/search";
@@ -161,7 +170,11 @@ function parseSearchResponse(payload: unknown): SearchResult[] {
 	for (const item of response.results) {
 		if (typeof item !== "object" || item === null) throw new Error("Invalid web search result");
 		const candidate = item as Record<string, unknown>;
-		if (typeof candidate.title !== "string" || typeof candidate.url !== "string" || typeof candidate.content !== "string") {
+		if (
+			typeof candidate.title !== "string" ||
+			typeof candidate.url !== "string" ||
+			typeof candidate.content !== "string"
+		) {
 			throw new Error("Invalid web search result");
 		}
 		if (!candidate.url.startsWith("https://")) throw new Error("Invalid web search result URL");
@@ -181,7 +194,11 @@ export async function webSearch(params: unknown, signal?: AbortSignal): Promise<
 	const apiKey = process.env.TAVILY_API_KEY;
 	if (!apiKey) throw new Error("TAVILY_API_KEY is not configured");
 	const endpoint = getSearchEndpoint();
-	const body: Record<string, unknown> = { api_key: apiKey, query: request.query, max_results: request.maxResults ?? 5 };
+	const body: Record<string, unknown> = {
+		api_key: apiKey,
+		query: request.query,
+		max_results: request.maxResults ?? 5,
+	};
 	if (request.domains) body.include_domains = request.domains;
 	if (request.recencyDays) body.days = request.recencyDays;
 	const response = await fetch(endpoint, {
@@ -212,7 +229,8 @@ async function fetchSource(
 	const response = await fetch(url, { method: "GET", redirect: "error", signal: requestSignal(signal) });
 	if (!response.ok) throw new Error(`Network request failed with HTTP ${response.status}`);
 	const contentType = response.headers.get("content-type")?.toLowerCase() ?? "";
-	if (!contentType.includes("text/") && !contentType.includes("json") && !contentType.includes("xml")) throw new Error("Only text, JSON, and XML responses are allowed");
+	if (!contentType.includes("text/") && !contentType.includes("json") && !contentType.includes("xml"))
+		throw new Error("Only text, JSON, and XML responses are allowed");
 	return { url: response.url, contentType, text: await readResponseText(response) };
 }
 
@@ -225,7 +243,12 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
 		parameters: searchParameters,
 		async execute(_toolCallId, params, signal) {
 			const result = await webSearch(params, signal);
-			return { content: [{ type: "text", text: `UNTRUSTED WEB SEARCH RESULTS\n${JSON.stringify(result.results, null, 2)}` }], details: result };
+			return {
+				content: [
+					{ type: "text", text: `UNTRUSTED WEB SEARCH RESULTS\n${JSON.stringify(result.results, null, 2)}` },
+				],
+				details: result,
+			};
 		},
 	});
 	pi.registerTool({
@@ -236,7 +259,10 @@ export default function webSearchExtension(pi: ExtensionAPI): void {
 		parameters: Type.Object({ url: Type.String({ description: "HTTPS URL on the configured allowlist" }) }),
 		async execute(_toolCallId, params, signal) {
 			const result = await fetchSource(params.url, signal);
-			return { content: [{ type: "text", text: `UNTRUSTED EXTERNAL CONTENT\nURL: ${result.url}\n${result.text}` }], details: { url: result.url, contentType: result.contentType, truncated: false } };
+			return {
+				content: [{ type: "text", text: `UNTRUSTED EXTERNAL CONTENT\nURL: ${result.url}\n${result.text}` }],
+				details: { url: result.url, contentType: result.contentType, truncated: false },
+			};
 		},
 	});
 }

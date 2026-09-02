@@ -33,6 +33,7 @@ export class InteractiveThemeController {
 			showError: (message: string) => void;
 			onChanged: () => void;
 			initialThemeSetting?: string;
+			customThemesDir?: string;
 		},
 	) {
 		this.ui = ui;
@@ -44,7 +45,7 @@ export class InteractiveThemeController {
 			this.currentThemeSetting ?? this.getSettingsManager().getThemeSetting(),
 			this.terminalTheme,
 		);
-		initTheme(this.activeThemeName, true);
+		initTheme(this.activeThemeName, true, options.customThemesDir);
 		this.bindTerminalColorSchemeListener();
 	}
 

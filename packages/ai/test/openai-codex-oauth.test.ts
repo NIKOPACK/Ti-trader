@@ -74,6 +74,29 @@ describe("OpenAI Codex OAuth", () => {
 		vi.useRealTimers();
 	});
 
+	it("uses the caller originator in the browser authorization URL", async () => {
+		const controller = new AbortController();
+		let authorizationUrl: string | undefined;
+
+		const loginPromise = openaiCodexOAuth.login({
+			signal: controller.signal,
+			originator: "ti",
+			prompt: async (prompt) => {
+				if (prompt.type === "select") return "browser";
+				throw new Error("Login cancelled");
+			},
+			notify: (event) => {
+				if (event.type !== "auth_url") return;
+				authorizationUrl = event.url;
+				controller.abort();
+			},
+		});
+
+		await expect(loginPromise).rejects.toThrow("Login cancelled");
+		expect(authorizationUrl).toBeDefined();
+		expect(new URL(authorizationUrl!).searchParams.get("originator")).toBe("ti");
+	});
+
 	it("logs in with the OpenAI Codex device code flow", async () => {
 		vi.useFakeTimers();
 		const startTime = new Date("2026-05-20T00:00:00Z");

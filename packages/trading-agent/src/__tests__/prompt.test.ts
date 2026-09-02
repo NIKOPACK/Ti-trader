@@ -30,4 +30,45 @@ describe("trading prompt", () => {
 		expect(prompt).toContain("`closed=false`");
 		expect(prompt).toContain("`closed=null` means finality is unknown");
 	});
+
+	it("allows reviewed preflight warnings but keeps unknown evidence blocking", () => {
+		const prompt = promptFor({ exchange: "binance", marketType: "usdm-futures", mode: "live" });
+
+		expect(prompt).toContain(
+			'`status: "ok_with_warnings"` may continue only after you explicitly review and accept each warning',
+		);
+		expect(prompt).toContain("`rejected` and `unknown` block execution");
+		expect(prompt).toContain("Live futures fee and maintenance-margin data are currently unavailable");
+	});
+
+	it("instructs the agent to use market-lab indicator and strategy tools", () => {
+		const prompt = promptFor({ marketType: "spot" });
+
+		expect(prompt).toContain("calculate_indicators");
+		expect(prompt).toContain("evaluate_strategy");
+		expect(prompt).toContain("Do not invent EMA/RSI/MACD/ATR values from raw klines");
+		expect(prompt).toContain("named presets ema-cross (default), rsi-revert, macd-hist");
+		expect(prompt).toContain("never treat bias as permission to trade");
+		expect(prompt).toContain("screen_markets");
+		expect(prompt).toContain("simulate_rule");
+		expect(prompt).toContain("closed-candle replay, not a backtest");
+	});
+
+	it("treats trigger fires as observations rather than live trading authorization", () => {
+		const prompt = promptFor({ mode: "live" });
+
+		expect(prompt).toContain("A [trigger:id] message is an observation, not trading authorization");
+		expect(prompt).toContain("Live sessions never auto-wake from triggers");
+		expect(prompt).toContain("/risk reconcile");
+	});
+
+	it("states futures amount units and Binance close-all quantity semantics", () => {
+		const prompt = promptFor({ exchange: "binance", marketType: "usdm-futures" });
+
+		expect(prompt).toContain("Futures agent amounts are always base currency");
+		expect(prompt).toContain("exchange amount and amount limits are contracts");
+		expect(prompt).toContain("Never assume contractSize=1");
+		expect(prompt).toContain("stop_market/take_profit_market close-all orders use closePosition");
+		expect(prompt).toContain("a returned amount of 0 can mean the exchange omitted quantity");
+	});
 });

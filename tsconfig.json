@@ -27,7 +27,10 @@
 			"@earendil-works/pi-client/*": ["./packages/client/src/*"],
 			"typebox": ["./node_modules/typebox"],
 			"@earendil-works/pi-tui": ["./packages/tui/src/index.ts"],
-			"@earendil-works/pi-tui/*": ["./packages/tui/src/*"]
+			"@earendil-works/pi-tui/*": ["./packages/tui/src/*"],
+			"@earendil-works/ti-trading-engine": ["./packages/trading-engine/src/index.ts"],
+			"@earendil-works/ti-trading-risk": ["./packages/trading-risk/src/index.ts"],
+			"@earendil-works/ti-triggers": ["./packages/triggers/src/index.ts"]
 		}
 	},
 	"include": ["packages/*/src/**/*", "packages/*/test/**/*", "extensions/**/*.ts", "packages/coding-agent/examples/**/*"],

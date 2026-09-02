@@ -184,6 +184,8 @@ export type SettingsScope = "global" | "project";
 
 export interface SettingsManagerCreateOptions {
 	projectTrusted?: boolean;
+	/** Project-local configuration directory name. Defaults to `.pi`. */
+	projectConfigDirName?: string;
 }
 
 export interface SettingsStorage {
@@ -210,11 +212,11 @@ export class FileSettingsStorage implements SettingsStorage {
 	private globalSettingsPath: string;
 	private projectSettingsPath: string;
 
-	constructor(cwd: string, agentDir: string) {
+	constructor(cwd: string, agentDir: string, projectConfigDirName: string = CONFIG_DIR_NAME) {
 		const resolvedCwd = resolvePath(cwd);
 		const resolvedAgentDir = resolvePath(agentDir);
 		this.globalSettingsPath = join(resolvedAgentDir, "settings.json");
-		this.projectSettingsPath = join(resolvedCwd, CONFIG_DIR_NAME, "settings.json");
+		this.projectSettingsPath = join(resolvedCwd, projectConfigDirName, "settings.json");
 	}
 
 	private acquireLockSyncWithRetry(path: string): () => void {
@@ -307,6 +309,7 @@ export class SettingsManager {
 	private writeQueue: Promise<void> = Promise.resolve();
 	private errors: SettingsError[];
 	private settingsPaths: SettingsPaths;
+	private readonly projectConfigDirName: string;
 
 	private constructor(
 		storage: SettingsStorage,
@@ -317,6 +320,7 @@ export class SettingsManager {
 		initialErrors: SettingsError[] = [],
 		projectTrusted = true,
 		settingsPaths: SettingsPaths = {},
+		projectConfigDirName: string = CONFIG_DIR_NAME,
 	) {
 		this.storage = storage;
 		this.globalSettings = initialGlobal;
@@ -326,6 +330,7 @@ export class SettingsManager {
 		this.projectSettingsLoadError = projectLoadError;
 		this.errors = [...initialErrors];
 		this.settingsPaths = settingsPaths;
+		this.projectConfigDirName = projectConfigDirName;
 		this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
 	}
 
@@ -337,11 +342,17 @@ export class SettingsManager {
 	): SettingsManager {
 		const resolvedCwd = resolvePath(cwd);
 		const resolvedAgentDir = resolvePath(agentDir);
-		const storage = new FileSettingsStorage(resolvedCwd, resolvedAgentDir);
-		return SettingsManager.fromStorageWithPaths(storage, options, {
-			global: join(resolvedAgentDir, "settings.json"),
-			project: join(resolvedCwd, CONFIG_DIR_NAME, "settings.json"),
-		});
+		const projectConfigDirName = options.projectConfigDirName ?? CONFIG_DIR_NAME;
+		const storage = new FileSettingsStorage(resolvedCwd, resolvedAgentDir, projectConfigDirName);
+		return SettingsManager.fromStorageWithPaths(
+			storage,
+			options,
+			{
+				global: join(resolvedAgentDir, "settings.json"),
+				project: join(resolvedCwd, projectConfigDirName, "settings.json"),
+			},
+			projectConfigDirName,
+		);
 	}
 
 	/** Create a SettingsManager from an arbitrary storage backend */
@@ -354,6 +365,7 @@ export class SettingsManager {
 		storage: SettingsStorage,
 		options: SettingsManagerCreateOptions,
 		settingsPaths: SettingsPaths = {},
+		projectConfigDirName: string = options.projectConfigDirName ?? CONFIG_DIR_NAME,
 	): SettingsManager {
 		const projectTrusted = options.projectTrusted ?? true;
 		const globalLoad = SettingsManager.tryLoadFromStorage(storage, "global");
@@ -375,6 +387,7 @@ export class SettingsManager {
 			initialErrors,
 			projectTrusted,
 			settingsPaths,
+			projectConfigDirName,
 		);
 	}
 
@@ -484,6 +497,10 @@ export class SettingsManager {
 
 	getProjectSettings(): Settings {
 		return structuredClone(this.projectSettings);
+	}
+
+	getProjectConfigDirName(): string {
+		return this.projectConfigDirName;
 	}
 
 	isProjectTrusted(): boolean {

@@ -72,6 +72,8 @@ export interface CreateModelRuntimeOptions {
 	modelsStorePath?: string;
 	/** Allow create() to refresh model catalogs over the network. Defaults to false. */
 	allowModelNetwork?: boolean;
+	/** Enable model catalog network access for the lifetime of this runtime. Defaults to true unless PI_OFFLINE is set. */
+	enableModelNetwork?: boolean;
 	/** Timeout for the create-time network model refresh. */
 	modelRefreshTimeoutMs?: number;
 	catalogBaseUrl?: string;
@@ -193,7 +195,7 @@ export class ModelRuntime implements Models {
 			modelsPath,
 			modelsStore,
 			providers,
-			process.env.PI_OFFLINE === undefined,
+			options.enableModelNetwork ?? process.env.PI_OFFLINE === undefined,
 		);
 		runtime.configureRadiusProviders();
 		runtime.rebuildProviders();
@@ -383,6 +385,10 @@ export class ModelRuntime implements Models {
 
 	getProviders(): readonly Provider[] {
 		return this.models.getProviders();
+	}
+
+	isModelNetworkEnabled(): boolean {
+		return this.modelNetworkEnabled;
 	}
 
 	getProvider(providerId: string): Provider | undefined {
@@ -698,7 +704,7 @@ export class ModelRuntime implements Models {
 		}
 		const refreshOptions = {
 			...options,
-			allowNetwork: options.allowNetwork ?? this.modelNetworkEnabled,
+			allowNetwork: this.modelNetworkEnabled && (options.allowNetwork ?? true),
 		};
 		// Published pi-ai builds before ModelsStore returned void and accepted a provider ID.
 		// The fallback keeps source-mode CLI tests working without rebuilding workspace dependencies.

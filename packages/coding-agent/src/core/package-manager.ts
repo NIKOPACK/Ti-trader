@@ -37,7 +37,6 @@ import type { Readable } from "node:stream";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { gt, maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
-import { CONFIG_DIR_NAME } from "../config.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
@@ -935,7 +934,7 @@ export class DefaultPackageManager implements PackageManager {
 		await this.resolvePackageSources(packageSources, accumulator, onMissing);
 
 		const globalBaseDir = this.agentDir;
-		const projectBaseDir = join(this.cwd, CONFIG_DIR_NAME);
+		const projectBaseDir = join(this.cwd, this.settingsManager.getProjectConfigDirName());
 
 		for (const resourceType of RESOURCE_TYPES) {
 			const target = this.getTargetMap(accumulator, resourceType);
@@ -2035,7 +2034,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 		if (scope === "project") {
 			this.assertProjectTrustedForScope(scope);
-			return join(this.cwd, CONFIG_DIR_NAME, "npm");
+			return join(this.cwd, this.settingsManager.getProjectConfigDirName(), "npm");
 		}
 		return join(this.agentDir, "npm");
 	}
@@ -2076,7 +2075,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 		if (scope === "project") {
 			this.assertProjectTrustedForScope(scope);
-			return join(this.cwd, CONFIG_DIR_NAME, "npm", "node_modules", source.name);
+			return join(this.cwd, this.settingsManager.getProjectConfigDirName(), "npm", "node_modules", source.name);
 		}
 		return join(this.agentDir, "npm", "node_modules", source.name);
 	}
@@ -2115,7 +2114,7 @@ export class DefaultPackageManager implements PackageManager {
 		}
 		if (scope === "project") {
 			this.assertProjectTrustedForScope(scope);
-			return join(this.cwd, CONFIG_DIR_NAME, "git");
+			return join(this.cwd, this.settingsManager.getProjectConfigDirName(), "git");
 		}
 		return join(this.agentDir, "git");
 	}
@@ -2141,7 +2140,7 @@ export class DefaultPackageManager implements PackageManager {
 	private getBaseDirForScope(scope: SourceScope): string {
 		if (scope === "project") {
 			this.assertProjectTrustedForScope(scope);
-			return join(this.cwd, CONFIG_DIR_NAME);
+			return join(this.cwd, this.settingsManager.getProjectConfigDirName());
 		}
 		if (scope === "user") {
 			return this.agentDir;

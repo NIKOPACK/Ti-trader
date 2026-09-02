@@ -142,13 +142,13 @@ function credentialsFromTokenResponse(body: JsonObject, previousRefreshToken?: s
 	};
 }
 
-async function requestDeviceCode(signal: AbortSignal): Promise<XaiDeviceCode> {
+async function requestDeviceCode(signal: AbortSignal, referrer: string = "pi"): Promise<XaiDeviceCode> {
 	const response = await postForm(
 		XAI_DEVICE_CODE_URL,
 		{
 			client_id: XAI_CLIENT_ID,
 			scope: XAI_SCOPE,
-			referrer: "pi",
+			referrer,
 		},
 		signal,
 	);
@@ -199,7 +199,7 @@ async function pollForTokens(device: XaiDeviceCode, signal: AbortSignal): Promis
 }
 
 async function loginXai(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
-	const device = await requestDeviceCode(interaction.signal);
+	const device = await requestDeviceCode(interaction.signal, interaction.referrer);
 	interaction.notify({
 		type: "device_code",
 		userCode: device.userCode,

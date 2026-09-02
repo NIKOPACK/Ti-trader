@@ -1,7 +1,6 @@
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
 import { basename, dirname, join, resolve, sep } from "node:path";
 import chalk from "chalk";
-import { CONFIG_DIR_NAME } from "../config.ts";
 import { loadThemeFromPath, type Theme } from "../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 
@@ -680,6 +679,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			skillsResult = loadSkills({
 				cwd: this.cwd,
 				agentDir: this.agentDir,
+				projectConfigDirName: this.settingsManager.getProjectConfigDirName(),
 				skillPaths,
 				includeDefaults: false,
 			});
@@ -703,6 +703,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 			const allPrompts = loadPromptTemplates({
 				cwd: this.cwd,
 				agentDir: this.agentDir,
+				projectConfigDirName: this.settingsManager.getProjectConfigDirName(),
 				promptPaths,
 				includeDefaults: false,
 			});
@@ -819,10 +820,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 			join(this.agentDir, "extensions"),
 		];
 		const projectRoots = [
-			join(this.cwd, CONFIG_DIR_NAME, "skills"),
-			join(this.cwd, CONFIG_DIR_NAME, "prompts"),
-			join(this.cwd, CONFIG_DIR_NAME, "themes"),
-			join(this.cwd, CONFIG_DIR_NAME, "extensions"),
+			join(this.cwd, this.settingsManager.getProjectConfigDirName(), "skills"),
+			join(this.cwd, this.settingsManager.getProjectConfigDirName(), "prompts"),
+			join(this.cwd, this.settingsManager.getProjectConfigDirName(), "themes"),
+			join(this.cwd, this.settingsManager.getProjectConfigDirName(), "extensions"),
 		];
 
 		for (const root of agentRoots) {
@@ -875,7 +876,10 @@ export class DefaultResourceLoader implements ResourceLoader {
 		const themes: Theme[] = [];
 		const diagnostics: ResourceDiagnostic[] = [];
 		if (includeDefaults) {
-			const defaultDirs = [join(this.agentDir, "themes"), join(this.cwd, CONFIG_DIR_NAME, "themes")];
+			const defaultDirs = [
+				join(this.agentDir, "themes"),
+				join(this.cwd, this.settingsManager.getProjectConfigDirName(), "themes"),
+			];
 
 			for (const dir of defaultDirs) {
 				this.loadThemesFromDir(dir, themes, diagnostics);
@@ -1024,7 +1028,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private discoverSystemPromptFile(): string | undefined {
-		const projectPath = join(this.cwd, CONFIG_DIR_NAME, "SYSTEM.md");
+		const projectPath = join(this.cwd, this.settingsManager.getProjectConfigDirName(), "SYSTEM.md");
 		if (this.settingsManager.isProjectTrusted() && existsSync(projectPath)) {
 			return projectPath;
 		}
@@ -1038,7 +1042,7 @@ export class DefaultResourceLoader implements ResourceLoader {
 	}
 
 	private discoverAppendSystemPromptFile(): string | undefined {
-		const projectPath = join(this.cwd, CONFIG_DIR_NAME, "APPEND_SYSTEM.md");
+		const projectPath = join(this.cwd, this.settingsManager.getProjectConfigDirName(), "APPEND_SYSTEM.md");
 		if (this.settingsManager.isProjectTrusted() && existsSync(projectPath)) {
 			return projectPath;
 		}

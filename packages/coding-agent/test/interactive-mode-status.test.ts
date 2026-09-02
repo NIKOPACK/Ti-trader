@@ -404,6 +404,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 	test("matches model command arguments across provider/model order", async () => {
 		type TestModel = { id: string; provider: string; name: string };
 		type FakeInteractiveMode = {
+			options: { enableSessionShare?: boolean };
 			session: {
 				scopedModels: Array<{ model: TestModel }>;
 				modelRuntime: { getAvailableSnapshot: () => TestModel[] };
@@ -427,6 +428,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			{ id: "gpt-5.5", provider: "openai-codex", name: "GPT-5.5" },
 		];
 		const fakeThis: FakeInteractiveMode = {
+			options: {},
 			session: {
 				scopedModels: [],
 				modelRuntime: { getAvailableSnapshot: () => models },
@@ -454,6 +456,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 
 	test("matches login command arguments by provider id and name", async () => {
 		type FakeInteractiveMode = {
+			options: { enableSessionShare?: boolean };
 			session: {
 				scopedModels: [];
 				modelRuntime: { getAvailableSnapshot: () => [] };
@@ -474,6 +477,7 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 			}
 		).prototype.createBaseAutocompleteProvider;
 		const fakeThis: FakeInteractiveMode = {
+			options: {},
 			session: {
 				scopedModels: [],
 				modelRuntime: { getAvailableSnapshot: () => [] },
@@ -505,6 +509,73 @@ describe("InteractiveMode.createBaseAutocompleteProvider", () => {
 				description: "Anthropic · subscription/API key",
 			},
 		]);
+	});
+
+	test("hides remote session sharing when disabled by the host", async () => {
+		type FakeInteractiveMode = {
+			options: { enableSessionShare?: boolean };
+			session: {
+				scopedModels: [];
+				modelRuntime: { getAvailableSnapshot: () => [] };
+				promptTemplates: [];
+				extensionRunner: { getRegisteredCommands: () => [] };
+				resourceLoader: { getSkills: () => { skills: [] } };
+			};
+			settingsManager: { getEnableSkillCommands: () => boolean };
+			skillCommands: Map<string, string>;
+			sessionManager: { getCwd: () => string };
+			fdPath: null;
+		};
+
+		const createBaseAutocompleteProvider = (
+			InteractiveMode as unknown as {
+				prototype: { createBaseAutocompleteProvider(this: FakeInteractiveMode): AutocompleteProvider };
+			}
+		).prototype.createBaseAutocompleteProvider;
+		const fakeThis: FakeInteractiveMode = {
+			options: { enableSessionShare: false },
+			session: {
+				scopedModels: [],
+				modelRuntime: { getAvailableSnapshot: () => [] },
+				promptTemplates: [],
+				extensionRunner: { getRegisteredCommands: () => [] },
+				resourceLoader: { getSkills: () => ({ skills: [] }) },
+			},
+			settingsManager: { getEnableSkillCommands: () => false },
+			skillCommands: new Map(),
+			sessionManager: { getCwd: () => "/tmp" },
+			fdPath: null,
+		};
+
+		const provider = createBaseAutocompleteProvider.call(fakeThis);
+		const suggestions = await provider.getSuggestions(["/sh"], 0, 3, {
+			signal: new AbortController().signal,
+		});
+
+		expect(suggestions).toBeNull();
+	});
+
+	test("rejects direct remote session sharing when disabled by the host", async () => {
+		const showWarning = vi.fn();
+		const handleShareCommand = (
+			InteractiveMode as unknown as {
+				prototype: {
+					handleShareCommand(this: {
+						options: { enableSessionShare?: boolean };
+						appName: string;
+						showWarning: (message: string) => void;
+					}): Promise<void>;
+				};
+			}
+		).prototype.handleShareCommand;
+
+		await handleShareCommand.call({
+			options: { enableSessionShare: false },
+			appName: "Ti",
+			showWarning,
+		});
+
+		expect(showWarning).toHaveBeenCalledWith("Ti has disabled remote session sharing.");
 	});
 });
 describe("InteractiveMode.showLoadedResources", () => {

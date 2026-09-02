@@ -21,7 +21,6 @@ function ledger(mode: "paper" | "live" = "paper", initial = 0, date = "2026-01-0
 	const config = {
 		mode,
 		marketType: "spot" as const,
-		positionMode: "one-way" as const,
 		quoteCurrency: "USDT",
 		risk: { maxOrderNotional: 500, maxDailyNotional: 1_000, allowedSymbols: [] },
 	};
@@ -75,7 +74,6 @@ describe("RiskLedger", () => {
 		const config = {
 			mode: "paper" as const,
 			marketType: "spot" as const,
-			positionMode: "one-way" as const,
 			quoteCurrency: "USDT",
 			risk: { maxOrderNotional: 500, maxDailyNotional: 500, allowedSymbols: [] },
 		};
@@ -100,7 +98,6 @@ describe("RiskLedger", () => {
 			{
 				mode: "paper",
 				marketType: "spot",
-				positionMode: "one-way",
 				quoteCurrency: "USDT",
 				risk: { maxOrderNotional: 500, maxDailyNotional: 1_000, allowedSymbols: [] },
 			},
@@ -132,7 +129,6 @@ describe("RiskLedger", () => {
 		const base = {
 			mode: "paper" as const,
 			marketType: "spot" as const,
-			positionMode: "one-way" as const,
 			quoteCurrency: "USDT",
 			risk: { maxOrderNotional: 500, maxDailyNotional: 1_000, allowedSymbols: [] },
 		};
@@ -172,7 +168,6 @@ describe("RiskLedger", () => {
 					{
 						mode: "paper",
 						marketType: "spot",
-						positionMode: "one-way",
 						quoteCurrency: "USDT",
 						risk: { maxOrderNotional: 500, maxDailyNotional: 1_000, allowedSymbols: [] },
 					},
@@ -232,7 +227,6 @@ describe("RiskLedger", () => {
 		const config = {
 			mode: "paper" as const,
 			marketType: "spot" as const,
-			positionMode: "one-way" as const,
 			quoteCurrency: "USDT",
 			risk: { maxOrderNotional: 500, maxDailyNotional: 1_000, allowedSymbols: [] },
 		};
@@ -278,7 +272,6 @@ describe("RiskLedger", () => {
 			{
 				mode: "paper",
 				marketType: "spot",
-				positionMode: "one-way",
 				quoteCurrency: "USDT",
 				risk: { maxOrderNotional: 500, maxDailyNotional: 1_000, allowedSymbols: [] },
 			},
@@ -293,5 +286,90 @@ describe("RiskLedger", () => {
 		).toThrow("mutator failed");
 		expect(state).toEqual(before);
 		expect(risk.usage().used).toBe(0);
+	});
+});
+
+describe("RiskLedger allowedSymbols", () => {
+	function store() {
+		let state: TradingRiskState = {
+			paper: { date: "2026-01-01", usedDailyNotional: 0 },
+			live: { date: "2026-01-01", usedDailyNotional: 0 },
+		};
+		return {
+			load: () => structuredClone(state),
+			save: (next: TradingRiskState) => {
+				state = structuredClone(next);
+			},
+			transact: <T>(mutator: (next: TradingRiskState) => T): T => {
+				const next = structuredClone(state);
+				const result = mutator(next);
+				state = structuredClone(next);
+				return result;
+			},
+		};
+	}
+
+	const base = {
+		mode: "paper" as const,
+		quoteCurrency: "USDT",
+		risk: { maxOrderNotional: 500, maxDailyNotional: 1_000, allowedSymbols: [] as string[] },
+	};
+
+	it("accepts an empty allowlist", () => {
+		expect(
+			() => new RiskLedger({ ...base, marketType: "spot", risk: { ...base.risk, allowedSymbols: [] } }, store()),
+		).not.toThrow();
+	});
+
+	it("accepts matching spot and futures symbols", () => {
+		expect(
+			() =>
+				new RiskLedger(
+					{ ...base, marketType: "spot", risk: { ...base.risk, allowedSymbols: ["BTC/USDT"] } },
+					store(),
+				),
+		).not.toThrow();
+		expect(
+			() =>
+				new RiskLedger(
+					{ ...base, marketType: "usdm-futures", risk: { ...base.risk, allowedSymbols: ["BTC/USDT:USDT"] } },
+					store(),
+				),
+		).not.toThrow();
+		expect(
+			() =>
+				new RiskLedger(
+					{
+						...base,
+						marketType: "both",
+						risk: { ...base.risk, allowedSymbols: ["BTC/USDT", "ETH/USDT:USDT"] },
+					},
+					store(),
+				),
+		).not.toThrow();
+	});
+
+	it("rejects symbols that do not match the quote and market family", () => {
+		expect(
+			() =>
+				new RiskLedger(
+					{ ...base, marketType: "spot", risk: { ...base.risk, allowedSymbols: ["BTC/USDT:USDT"] } },
+					store(),
+				),
+		).toThrow(/risk.allowedSymbols must contain USDT symbols/);
+		expect(
+			() =>
+				new RiskLedger(
+					{ ...base, marketType: "usdm-futures", risk: { ...base.risk, allowedSymbols: ["BTC/USDT"] } },
+					store(),
+				),
+		).toThrow(/risk.allowedSymbols must contain USDT symbols/);
+		expect(
+			() =>
+				new RiskLedger(
+					{ ...base, marketType: "spot", risk: { ...base.risk, allowedSymbols: ["BTC/USDC"] } },
+					store(),
+				),
+		).toThrow(/risk.allowedSymbols must contain USDT symbols/);
 	});
 });

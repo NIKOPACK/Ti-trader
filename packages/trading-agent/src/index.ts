@@ -1,9 +1,5 @@
 // Library entry: trading tools, exchange layer and runtime for programmatic use.
-export { createTradingExtension } from "./commands.ts";
-export { AGENT_DIR, APP_NAME, CONFIG_DIR, KEYS_PATH, PAPER_DIR, TRADING_CONFIG_PATH } from "./config.ts";
-export { getTrading, initTrading, TradingRuntime } from "./context.ts";
-export { CcxtExchangeClient } from "./exchange/ccxt-client.ts";
-export { PaperExchangeClient } from "./exchange/paper-client.ts";
+
 export type {
 	Balance,
 	ContractStats,
@@ -11,6 +7,7 @@ export type {
 	ExchangeClient,
 	FundingRateRecord,
 	Kline,
+	MarketDataClient,
 	MarketInfo,
 	Order,
 	OrderBook,
@@ -26,7 +23,18 @@ export type {
 	PlaceOrderType,
 	Position,
 	Ticker,
-} from "./exchange/types.ts";
+} from "@earendil-works/ti-trading-engine";
+export { createTradingExtension } from "./commands.ts";
+export {
+	AGENT_DIR,
+	APP_NAME,
+	CONFIG_DIR,
+	CONFIG_DIR_NAME,
+	KEYS_PATH,
+	PAPER_DIR,
+	TRADING_CONFIG_PATH,
+} from "./config.ts";
+export { getTrading, initTrading, TradingRuntime } from "./context.ts";
 export { main } from "./main.ts";
 export { buildTradingPrompt } from "./prompt.ts";
 export {
@@ -43,4 +51,34 @@ export {
 	type TradingConfig,
 	type TradingMode,
 } from "./state.ts";
-export { createTradingTools } from "./tools/index.ts";
+export {
+	createBuyTool,
+	createCancelOrderListTool,
+	createCancelOrderTool,
+	createCheckOrderTool,
+	createGetBalanceTool,
+	createGetContractStatsTool,
+	createGetFundingRateHistoryTool,
+	createGetFundingRateTool,
+	createGetFuturesPositionsTool,
+	createGetKlinesTool,
+	createGetMarketInfoTool,
+	createGetOpenOrdersTool,
+	createGetOrderBookTool,
+	createGetOrderHistoryTool,
+	createGetOrderListStatusTool,
+	createGetOrderStatusTool,
+	createGetPortfolioSnapshotTool,
+	createGetPositionsTool,
+	createGetPriceTool,
+	createGetRiskStatusTool,
+	createGetTopMarketsTool,
+	createGetTradingCapabilitiesTool,
+	createPlaceOcoTool,
+	createSellTool,
+	createSetLeverageTool,
+	createSetMarginModeTool,
+	createSetMultiAssetsModeTool,
+	createTradingTools,
+	type TradingProvider,
+} from "./tools/index.ts";

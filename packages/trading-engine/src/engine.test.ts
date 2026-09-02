@@ -1,8 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
-import { PreparedPlanError, TradingEngine } from "./engine.ts";
+import { PreparedPlanError, TradingEngine, type TradingEngineConfig } from "./engine.ts";
 import type { OrderIntent, PreparedOrder } from "./order-plan.ts";
 import { OrderPreparationError } from "./order-plan.ts";
-import type { TradingEngineConfig } from "./risk.ts";
 import type { ExchangeClient, Order, PlaceOrderResult, Ticker } from "./types.ts";
 
 const config: TradingEngineConfig = {
@@ -290,5 +289,74 @@ describe("close-position planning with unavailable valuation", () => {
 		await expect(planning).rejects.toThrow(/Order notional must be positive and finite/);
 		await expect(planning).rejects.toBeInstanceOf(OrderPreparationError);
 		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
+	});
+});
+
+describe("futures quoteAmount contract lots", () => {
+	const doge = "DOGE/USDT:USDT";
+	const dogeMarket = {
+		symbol: doge,
+		base: "DOGE",
+		quote: "USDT",
+		marketType: "swap" as const,
+		contract: true,
+		linear: true,
+		amountUnit: "contracts" as const,
+		contractSize: 1,
+		amountPrecision: 0,
+		minAmount: 1,
+		minNotional: 5,
+		active: true,
+	};
+	const dogeTicker = { symbol: doge, timestamp: 1, last: 0.08224 };
+
+	function dogeEngine(overrides: Partial<ExchangeClient> = {}) {
+		return makeFuturesEngine({
+			getTicker: async () => dogeTicker,
+			getMarketInfo: async () => dogeMarket,
+			...overrides,
+		});
+	}
+
+	it("snaps quoteAmount up to a representable contract lot and min notional", async () => {
+		const trading = dogeEngine();
+		const plan = await trading.prepareOrder("buy", { symbol: doge, type: "market", quoteAmount: 5 });
+		expect(plan.amount).toBe(61);
+		expect(plan.input.amount).toBe(61);
+		expect(plan.notional).toBeCloseTo(61 * 0.08224);
+		expect(plan.notional).toBeGreaterThanOrEqual(5);
+	});
+
+	it("raises a ceiled lot that still sits below min notional", async () => {
+		const trading = dogeEngine();
+		const plan = await trading.prepareOrder("buy", { symbol: doge, type: "market", quoteAmount: 4.9 });
+		expect(plan.amount).toBe(61);
+		expect(plan.notional).toBeCloseTo(61 * 0.08224);
+	});
+
+	it("rejects an explicit amount that is not on the contract grid", async () => {
+		const trading = dogeEngine();
+		await expect(
+			trading.prepareOrder("buy", { symbol: doge, type: "market", amount: 60.79766536964981 }),
+		).rejects.toThrow(/cannot be represented exactly/);
+	});
+
+	it("rejects quoteAmount when amount precision is unavailable", async () => {
+		const trading = dogeEngine({
+			getMarketInfo: async () => ({ ...dogeMarket, amountPrecision: undefined }),
+		});
+		await expect(trading.prepareOrder("buy", { symbol: doge, type: "market", quoteAmount: 5 })).rejects.toThrow(
+			/amount precision is unavailable/,
+		);
+	});
+
+	it("uses TICK_SIZE amountStep 1 instead of treating amountPrecision 1 as 0.1 contracts", async () => {
+		const trading = dogeEngine({
+			getTicker: async () => ({ symbol: doge, timestamp: 1, last: 0.08241 }),
+			getMarketInfo: async () => ({ ...dogeMarket, amountPrecision: 1, amountStep: 1 }),
+		});
+		const plan = await trading.prepareOrder("buy", { symbol: doge, type: "market", quoteAmount: 20 });
+		expect(plan.amount).toBe(243);
+		expect(plan.input.amount).toBe(243);
 	});
 });

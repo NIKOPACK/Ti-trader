@@ -6,9 +6,12 @@ const monitorState = vi.hoisted(() => ({ runtime: undefined as unknown }));
 vi.mock("../context.ts", () => ({
 	getTrading: () => monitorState.runtime,
 }));
+vi.mock("../settings-menu.ts", () => ({
+	openTradingSettings: vi.fn(async () => {}),
+}));
 
+import type { Order, Position } from "@earendil-works/ti-trading-engine";
 import type { TradingRuntime } from "../context.ts";
-import type { ExchangeClient, Order, Position } from "../exchange/types.ts";
 import { createOrderMonitorExtension, isProtection, protectionCoverage } from "../monitor.ts";
 import { DEFAULT_CONFIG } from "../state.ts";
 
@@ -30,7 +33,13 @@ function order(overrides: Partial<Order> = {}): Order {
 	};
 }
 
-function setupMonitor(options: { openSnapshots: Order[][]; historyResults: Array<Order[] | Error> }) {
+function setupMonitor(options: {
+	openSnapshots: Order[][];
+	historyResults: Array<Order[] | Error>;
+	positions?: Position[];
+	guardPositions?: boolean;
+	enabled?: boolean;
+}) {
 	let openIndex = 0;
 	let historyIndex = 0;
 	const getOpenOrders = vi.fn(async () => {
@@ -44,18 +53,22 @@ function setupMonitor(options: { openSnapshots: Order[][]; historyResults: Array
 		if (result instanceof Error) throw result;
 		return result;
 	});
-	const exchange = {
-		getOpenOrders,
-		getOrderHistory,
-		getPositions: vi.fn(async () => []),
-	} as unknown as ExchangeClient;
 	monitorState.runtime = {
 		config: {
 			...DEFAULT_CONFIG,
-			monitor: { ...DEFAULT_CONFIG.monitor, intervalSec: 5, guardPositions: false },
+			monitor: {
+				...DEFAULT_CONFIG.monitor,
+				intervalSec: 5,
+				guardPositions: options.guardPositions ?? false,
+				enabled: options.enabled ?? true,
+			},
 		},
-		exchange,
-	} as TradingRuntime;
+		tradingEngine: {
+			getOpenOrders,
+			getOrderHistory,
+			getPositions: vi.fn(async () => options.positions ?? []),
+		},
+	} as unknown as TradingRuntime;
 
 	let startHandler: EventHandler | undefined;
 	let shutdownHandler: EventHandler | undefined;
@@ -73,6 +86,7 @@ function setupMonitor(options: { openSnapshots: Order[][]; historyResults: Array
 	const notify = vi.fn();
 	const context = { hasUI: true, ui: { notify } } as unknown as ExtensionContext;
 	return {
+		getOpenOrders,
 		getOrderHistory,
 		notify,
 		sendMessage,
@@ -95,6 +109,20 @@ afterEach(() => {
 	vi.clearAllTimers();
 	vi.useRealTimers();
 	vi.restoreAllMocks();
+});
+
+describe("order monitor config gating", () => {
+	it("does not poll while the monitor is disabled in config", async () => {
+		const monitor = setupMonitor({
+			openSnapshots: [[]],
+			historyResults: [[]],
+			enabled: false,
+		});
+		await monitor.start();
+		await vi.advanceTimersByTimeAsync(15_000);
+		expect(monitor.getOpenOrders).not.toHaveBeenCalled();
+		await monitor.stop();
+	});
 });
 
 describe("order monitor pending classification", () => {
@@ -255,9 +283,47 @@ describe("position guard protection matching", () => {
 		expect(protectionCoverage(closeAll, long, 95, "hedge")).toBe("protected");
 	});
 
+	it("does not treat a zero-size position as protected", () => {
+		const empty: Position = { ...long, amount: 0, quoteValue: 0 };
+		const closeAll = order({
+			symbol: empty.symbol,
+			positionSide: "LONG",
+			amount: 0,
+			remaining: 0,
+			closePosition: true,
+		});
+		expect(isProtection(closeAll, empty, 95, "hedge")).toBe(false);
+		expect(protectionCoverage(closeAll, empty, 95, "hedge")).toBe("none");
+	});
+
 	it("treats an OCO order as having a stop component", () => {
 		const oco = order({ symbol: long.symbol, type: "oco", positionSide: "LONG" });
 		expect(isProtection(oco, long, 95, "hedge")).toBe(true);
 		expect(protectionCoverage(oco, long, 95, "hedge")).toBe("protected");
+	});
+
+	it("renders an unvalued position in the unprotected alert without toFixed exceptions", async () => {
+		const unvalued: Position = {
+			symbol: "BTC/USDT",
+			asset: "BTC",
+			amount: 1,
+			avgEntryPrice: 100,
+			valuationStatus: "unavailable",
+			valuationReason: "Ticker for BTC/USDT did not provide a finite positive last price",
+		};
+		const monitor = setupMonitor({
+			openSnapshots: [[], [], []],
+			historyResults: [[], []],
+			positions: [unvalued],
+			guardPositions: true,
+		});
+		await monitor.start();
+
+		await expect(vi.advanceTimersByTimeAsync(10_000)).resolves.not.toThrow();
+		// Unprotected alert fires after the grace interval; it must render the
+		// unvalued marker instead of formatting an undefined quote value.
+		expect(monitor.notify).toHaveBeenCalledWith(expect.stringContaining("quote valuation unavailable"), "warning");
+		expect(monitor.notify).toHaveBeenCalledWith(expect.stringContaining("UNPROTECTED: BTC/USDT 1"), "warning");
+		await monitor.stop();
 	});
 });

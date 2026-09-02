@@ -27,7 +27,7 @@ jobs:
       # This standalone example has its own dependency manifest.
       - run: npm ci --ignore-scripts
         working-directory: packages/coding-agent/examples/extensions/with-deps
-      - name: Build upstream runtime and trading agent
+      - name: Build upstream runtime and trading packages
         run: |
           npm --prefix packages/tui run build
           npm --prefix packages/telemetry run build
@@ -36,7 +36,16 @@ jobs:
           npm --prefix packages/protocol run build
           npm --prefix packages/client run build
           npm --prefix packages/coding-agent run build:unbundled
-          npm run build:trading
+          npm --prefix packages/trading-risk run build
+          npm --prefix packages/trading-engine run build
+          npm --prefix packages/triggers run build
+          npm --prefix packages/trading-agent run build
+      - name: Verify trading package contents
+        run: |
+          npm pack --dry-run --json --workspace packages/trading-risk > /tmp/ti-trading-risk-pack.json
+          npm pack --dry-run --json --workspace packages/trading-engine > /tmp/ti-trading-engine-pack.json
+          node -e 'const fs = require("node:fs"); for (const name of ["trading-risk", "trading-engine"]) { const pack = JSON.parse(fs.readFileSync(`/tmp/ti-${name}-pack.json`, "utf8")); const files = pack.flatMap((entry) => entry.files.map((file) => file.path)); const tests = files.filter((file) => /\.test\.(js|d\.ts|js\.map)$/.test(file)); if (tests.length > 0) { console.error(`${name} package contains test modules: ${tests.join(", ")}`); process.exit(1); } }'
+          npm pack --dry-run --json --workspace packages/trading-agent > /tmp/ti-trading-agent-pack.json
       - run: npm run check
       - name: Install native search tools for coding-agent tests
         run: |

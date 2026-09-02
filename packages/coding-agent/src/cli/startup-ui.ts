@@ -61,25 +61,29 @@ function loadThemes(resources: ResolvedResource[]): Theme[] {
 	return themes;
 }
 
-async function loadStartupThemes(settingsManager: SettingsManager): Promise<Theme[]> {
+async function loadStartupThemes(settingsManager: SettingsManager, agentDir: string): Promise<Theme[]> {
 	const globalSettingsManager = SettingsManager.inMemory(settingsManager.getGlobalSettings(), {
 		projectTrusted: false,
+		projectConfigDirName: settingsManager.getProjectConfigDirName(),
 	});
 	const packageManager = new DefaultPackageManager({
 		cwd: process.cwd(),
-		agentDir: getAgentDir(),
+		agentDir,
 		settingsManager: globalSettingsManager,
 	});
 	const resolvedPaths = await packageManager.resolve(async () => "skip");
 	return loadThemes(resolvedPaths.themes);
 }
 
-export async function createStartupTui(settingsManager: SettingsManager): Promise<TUI> {
-	setRegisteredThemes(await loadStartupThemes(settingsManager));
+export async function createStartupTui(
+	settingsManager: SettingsManager,
+	agentDir: string = getAgentDir(),
+): Promise<TUI> {
+	setRegisteredThemes(await loadStartupThemes(settingsManager, agentDir));
 	const terminalTheme = detectTerminalBackgroundFromEnv().theme;
 	initTheme(resolveThemeSetting(settingsManager.getThemeSetting(), terminalTheme) ?? terminalTheme);
 	setKeybindings(KeybindingsManager.create());
-	const ui: TUI = new TuiMainScreen(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
+	const ui: TUI = new TuiMainScreen(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), agentDir);
 	ui.setClearOnShrink(settingsManager.getClearOnShrink());
 	return ui;
 }
@@ -135,8 +139,9 @@ export async function showStartupSelector<T>(
 	settingsManager: SettingsManager,
 	title: string,
 	options: Array<{ label: string; value: T }>,
+	agentDir: string = getAgentDir(),
 ): Promise<T | undefined> {
-	const ui = await createStartupTui(settingsManager);
+	const ui = await createStartupTui(settingsManager, agentDir);
 	return new Promise((resolve) => {
 		let settled = false;
 		const finish = async (result: T | undefined) => {
@@ -163,8 +168,11 @@ export async function showStartupSelector<T>(
 }
 
 /** Show the first-time setup dialog and persist the result */
-export async function showFirstTimeSetup(settingsManager: SettingsManager): Promise<void> {
-	const ui = await createStartupTui(settingsManager);
+export async function showFirstTimeSetup(
+	settingsManager: SettingsManager,
+	agentDir: string = getAgentDir(),
+): Promise<void> {
+	const ui = await createStartupTui(settingsManager, agentDir);
 	return new Promise((resolve) => {
 		let settled = false;
 		const finish = async (result: FirstTimeSetupResult | undefined) => {
@@ -208,8 +216,9 @@ export async function showStartupInput(
 	settingsManager: SettingsManager,
 	title: string,
 	placeholder?: string,
+	agentDir: string = getAgentDir(),
 ): Promise<string | undefined> {
-	const ui = await createStartupTui(settingsManager);
+	const ui = await createStartupTui(settingsManager, agentDir);
 	return new Promise((resolve) => {
 		let settled = false;
 		const finish = async (result: string | undefined) => {

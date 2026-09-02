@@ -45,16 +45,7 @@ import {
 } from "@earendil-works/pi-tui";
 import chalk from "chalk";
 import { spawn } from "child_process";
-import {
-	APP_NAME,
-	APP_TITLE,
-	CONFIG_DIR_NAME,
-	getAgentDir,
-	getAuthPath,
-	getDebugLogPath,
-	getDocsPath,
-	VERSION,
-} from "../../config.ts";
+import { APP_NAME, APP_TITLE, getDocsPath, VERSION } from "../../config.ts";
 import { type AgentSession, type AgentSessionEvent, parseSkillBlock } from "../../core/agent-session.ts";
 import { type AgentSessionRuntime, SessionImportFileNotFoundError } from "../../core/agent-session-runtime.ts";
 import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.ts";
@@ -94,7 +85,7 @@ import type { ResourceDiagnostic } from "../../core/resource-loader.ts";
 import { formatMissingSessionCwdPrompt, MissingSessionCwdError } from "../../core/session-cwd.ts";
 import { type SessionEntry, SessionManager, sessionEntryToContextMessages } from "../../core/session-manager.ts";
 import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
-import { BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
+import { BUILTIN_SLASH_COMMANDS, OVERRIDABLE_BUILTIN_SLASH_COMMANDS } from "../../core/slash-commands.ts";
 import type { SourceInfo } from "../../core/source-info.ts";
 import { isInstallTelemetryEnabled } from "../../core/telemetry.ts";
 import type { TruncationResult } from "../../core/tools/truncate.ts";
@@ -369,6 +360,18 @@ export interface InteractiveModeOptions {
 	tuiMode?: TuiMode;
 	/** Initial interactive theme setting for this invocation. */
 	initialThemeSetting?: string;
+	/** Changelog file to use for startup notices and /changelog. Defaults to the package changelog. */
+	changelogPath?: string;
+	/** Allow direct `!`/`!!` shell commands from the interactive editor. Defaults to true. */
+	allowUserBash?: boolean;
+	/** Ensure fd and ripgrep are available for path autocomplete and coding tools. Defaults to true. */
+	ensureManagedTools?: boolean;
+	/** Run version and package update checks at startup. Defaults to true. */
+	checkForUpdates?: boolean;
+	/** Send anonymous install telemetry when a changelog version is first seen. Defaults to true. */
+	sendInstallTelemetry?: boolean;
+	/** Allow uploading the current session to a remote sharing service. Defaults to true. */
+	enableSessionShare?: boolean;
 }
 
 interface InteractiveTuiOptions {
@@ -599,7 +602,7 @@ export class InteractiveMode {
 		this.renderer = createInteractiveTui({
 			tuiMode,
 			showHardwareCursor: this.settingsManager.getShowHardwareCursor(),
-			logDirectory: getAgentDir(),
+			logDirectory: this.runtimeHost.services.agentDir,
 			onRightClickPaste: this.onRightClickPaste,
 		});
 		this.ui = createInteractiveTuiReference(() => this.renderer);
@@ -643,6 +646,7 @@ export class InteractiveMode {
 			showError: (message) => this.showError(message),
 			onChanged: () => this.updateEditorBorderColor(),
 			initialThemeSetting: options.initialThemeSetting,
+			customThemesDir: path.join(this.runtimeHost.services.agentDir, "themes"),
 		});
 	}
 
@@ -683,7 +687,7 @@ export class InteractiveMode {
 		const builtinNames = new Set(BUILTIN_SLASH_COMMANDS.map((command) => command.name));
 		return extensionRunner
 			.getRegisteredCommands()
-			.filter((command) => builtinNames.has(command.name))
+			.filter((command) => builtinNames.has(command.name) && !OVERRIDABLE_BUILTIN_SLASH_COMMANDS.has(command.name))
 			.map((command) => ({
 				type: "warning" as const,
 				message:
@@ -696,7 +700,9 @@ export class InteractiveMode {
 
 	private createBaseAutocompleteProvider(): AutocompleteProvider {
 		// Define commands for autocomplete
-		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.map((command) => ({
+		const slashCommands: SlashCommand[] = BUILTIN_SLASH_COMMANDS.filter(
+			(command) => command.name !== "share" || this.options.enableSessionShare !== false,
+		).map((command) => ({
 			name: command.name,
 			description: command.description,
 			...(command.argumentHint && { argumentHint: command.argumentHint }),
@@ -882,7 +888,7 @@ export class InteractiveMode {
 		const nextUi = createInteractiveTui({
 			tuiMode: mode,
 			showHardwareCursor,
-			logDirectory: getAgentDir(),
+			logDirectory: this.runtimeHost.services.agentDir,
 			terminal,
 			onRightClickPaste: this.onRightClickPaste,
 		});
@@ -996,8 +1002,9 @@ export class InteractiveMode {
 				hint("app.thinking.toggle", "to expand thinking"),
 				hint("app.editor.external", "for external editor"),
 				rawKeyHint("/", "for commands"),
-				rawKeyHint("!", "to run bash"),
-				rawKeyHint("!!", "to run bash (no context)"),
+				...(this.options.allowUserBash === false
+					? []
+					: [rawKeyHint("!", "to run bash"), rawKeyHint("!!", "to run bash (no context)")]),
 				hint("app.message.followUp", "to queue follow-up"),
 				hint("app.message.dequeue", "to edit all queued messages"),
 				hint("app.clipboard.pasteImage", "to paste image (with text fallback)"),
@@ -1007,7 +1014,7 @@ export class InteractiveMode {
 				hint("app.interrupt", "interrupt"),
 				rawKeyHint(`${keyText("app.clear")}/${keyText("app.exit")}`, "clear/exit"),
 				rawKeyHint("/", "commands"),
-				rawKeyHint("!", "bash"),
+				...(this.options.allowUserBash === false ? [] : [rawKeyHint("!", "bash")]),
 				hint("app.tools.expand", "more"),
 			].join(theme.fg("muted", " · "));
 			const compactOnboarding = theme.fg(
@@ -1034,14 +1041,16 @@ export class InteractiveMode {
 		}
 		this.ui.requestRender();
 
-		// Ensure fd and rg are available after mounting the TUI (downloads if missing, adds to PATH via getBinDir)
-		// so slow downloads do not make startup appear frozen.
-		// Both are needed: fd for autocomplete, rg for grep tool and bash commands.
-		const [fdPath] = await Promise.all([
-			ensureTool("fd", (status) => this.showManagedToolStatus(status)),
-			ensureTool("rg", (status) => this.showManagedToolStatus(status)),
-		]);
-		this.fdPath = fdPath;
+		if (this.options.ensureManagedTools !== false) {
+			// Ensure fd and rg are available after mounting the TUI (downloads if missing, adds to PATH via getBinDir)
+			// so slow downloads do not make startup appear frozen.
+			// Both are needed: fd for autocomplete, rg for grep tool and bash commands.
+			const [fdPath] = await Promise.all([
+				ensureTool("fd", (status) => this.showManagedToolStatus(status)),
+				ensureTool("rg", (status) => this.showManagedToolStatus(status)),
+			]);
+			this.fdPath = fdPath;
+		}
 
 		// Enable the remaining input handlers only after managed-tool setup completes.
 		this.setupKeyHandlers();
@@ -1098,7 +1107,7 @@ export class InteractiveMode {
 	async run(): Promise<void> {
 		await this.init();
 
-		if (!process.env.PI_OFFLINE) {
+		if (this.session.modelRuntime.isModelNetworkEnabled() && !process.env.PI_OFFLINE) {
 			const controller = new AbortController();
 			const timeout = setTimeout(() => controller.abort(), 15_000);
 			void refreshModelCatalogs(this.session.modelRuntime, controller.signal)
@@ -1107,27 +1116,29 @@ export class InteractiveMode {
 				.finally(() => clearTimeout(timeout));
 		}
 
-		// Start version check asynchronously
-		checkForNewPiVersion(this.version).then((newRelease) => {
-			if (newRelease) {
-				this.showNewVersionNotification(newRelease);
-			}
-		});
-
-		// Start package update check asynchronously
-		this.checkForPackageUpdates()
-			.then((updates) => {
-				if (updates.length > 0) {
-					this.showPackageUpdateNotification(updates);
-				}
-			})
-			.finally(() => {
-				// On Windows, npm can overwrite the shared console title while checking
-				// extension package versions. Restore Pi's title after the startup check.
-				if (process.platform === "win32" && this.isInitialized) {
-					this.updateTerminalTitle();
+		if (this.options.checkForUpdates !== false) {
+			// Start version check asynchronously
+			checkForNewPiVersion(this.version).then((newRelease) => {
+				if (newRelease) {
+					this.showNewVersionNotification(newRelease);
 				}
 			});
+
+			// Start package update check asynchronously
+			this.checkForPackageUpdates()
+				.then((updates) => {
+					if (updates.length > 0) {
+						this.showPackageUpdateNotification(updates);
+					}
+				})
+				.finally(() => {
+					// On Windows, npm can overwrite the shared console title while checking
+					// extension package versions. Restore the application title after the startup check.
+					if (process.platform === "win32" && this.isInitialized) {
+						this.updateTerminalTitle();
+					}
+				});
+		}
 
 		// Check tmux keyboard setup asynchronously
 		this.checkTmuxKeyboardSetup().then((warning) => {
@@ -1212,7 +1223,7 @@ export class InteractiveMode {
 		try {
 			const packageManager = new DefaultPackageManager({
 				cwd: this.sessionManager.getCwd(),
-				agentDir: getAgentDir(),
+				agentDir: this.runtimeHost.services.agentDir,
 				settingsManager: this.settingsManager,
 			});
 			const updates = await packageManager.checkForAvailableUpdates();
@@ -1280,7 +1291,7 @@ export class InteractiveMode {
 		}
 
 		const lastVersion = this.settingsManager.getLastChangelogVersion();
-		const changelogPath = getChangelogPath();
+		const changelogPath = this.options.changelogPath ?? getChangelogPath();
 		const entries = parseChangelog(changelogPath);
 
 		if (!lastVersion) {
@@ -1301,7 +1312,7 @@ export class InteractiveMode {
 	}
 
 	private reportInstallTelemetry(version: string): void {
-		if (process.env.PI_OFFLINE) {
+		if (this.options.sendInstallTelemetry === false || process.env.PI_OFFLINE) {
 			return;
 		}
 
@@ -2920,7 +2931,7 @@ export class InteractiveMode {
 
 		this.defaultEditor.onChange = (text: string) => {
 			const wasBashMode = this.isBashMode;
-			this.isBashMode = text.trimStart().startsWith("!");
+			this.isBashMode = this.options.allowUserBash !== false && text.trimStart().startsWith("!");
 			if (wasBashMode !== this.isBashMode) {
 				this.updateEditorBorderColor();
 			}
@@ -2953,7 +2964,7 @@ export class InteractiveMode {
 			if (image) {
 				const tmpDir = os.tmpdir();
 				const ext = extensionForImageMimeType(image.mimeType) ?? "png";
-				const fileName = `pi-clipboard-${crypto.randomUUID()}.${ext}`;
+				const fileName = `${this.appName}-clipboard-${crypto.randomUUID()}.${ext}`;
 				const filePath = path.join(tmpDir, fileName);
 				fs.writeFileSync(filePath, Buffer.from(image.bytes));
 
@@ -2983,7 +2994,18 @@ export class InteractiveMode {
 			if (!text) return;
 
 			// Handle commands
+			if (text === "/tui-settings" || text === "/settings tui") {
+				this.showSettingsSelector();
+				this.editor.setText("");
+				return;
+			}
 			if (text === "/settings") {
+				if (this.session.extensionRunner.getCommand("settings")) {
+					this.editor.addToHistory?.(text);
+					this.editor.setText("");
+					await this.session.prompt("/settings");
+					return;
+				}
 				this.showSettingsSelector();
 				this.editor.setText("");
 				return;
@@ -3120,6 +3142,11 @@ export class InteractiveMode {
 
 			// Handle bash command (! for normal, !! for excluded from context)
 			if (text.startsWith("!")) {
+				if (this.options.allowUserBash === false) {
+					this.editor.setText("");
+					this.showWarning(`${this.appName} does not execute shell commands.`);
+					return;
+				}
 				const isExcluded = text.startsWith("!!");
 				const command = isExcluded ? text.slice(2).trim() : text.slice(1).trim();
 				if (command) {
@@ -3886,7 +3913,7 @@ export class InteractiveMode {
 			new Text(
 				theme.fg(
 					"warning",
-					`This project is not trusted. Project ${CONFIG_DIR_NAME} resources and packages are ignored. Use /trust to save a trust decision, then restart pi.`,
+					`This project is not trusted. Project ${this.settingsManager.getProjectConfigDirName()} resources and packages are ignored. Use /trust to save a trust decision, then restart ${this.appName}.`,
 				),
 				1,
 				0,
@@ -4857,6 +4884,9 @@ export class InteractiveMode {
 				: [...this.session.modelRuntime.getAvailableSnapshot()];
 		const cachedMatch = findExactModelReferenceMatch(searchTerm, cachedModels);
 		if (cachedMatch || this.session.scopedModels.length > 0) return cachedMatch;
+		if (!this.session.modelRuntime.isModelNetworkEnabled()) {
+			return undefined;
+		}
 
 		this.showStatus("Refreshing model catalogs…");
 		const controller = new AbortController();
@@ -5056,6 +5086,7 @@ export class InteractiveMode {
 		this.showSelector((done) => {
 			let disposed = false;
 			let timedOut = false;
+			const modelNetworkEnabled = this.session.modelRuntime.isModelNetworkEnabled();
 			const controller = new AbortController();
 			const timeout = setTimeout(() => {
 				timedOut = true;
@@ -5065,7 +5096,7 @@ export class InteractiveMode {
 				{
 					allModels: availableModels,
 					enabledModelIds: currentEnabledIds,
-					refreshStatus: "Refreshing model catalogs…",
+					refreshStatus: modelNetworkEnabled ? "Refreshing model catalogs…" : "Using cached model catalogs.",
 				},
 				{
 					onChange: (enabledIds) => {
@@ -5087,6 +5118,10 @@ export class InteractiveMode {
 					},
 				},
 			);
+			if (!modelNetworkEnabled) {
+				return { component: selector, focus: selector };
+			}
+
 			void refreshModelCatalogs(this.session.modelRuntime, controller.signal)
 				.then((result) => {
 					if (disposed) return;
@@ -5728,11 +5763,15 @@ export class InteractiveMode {
 		this.footer.invalidate();
 		this.updateEditorBorderColor();
 		if (selectedModel) {
-			this.showStatus(`${actionLabel}. Selected ${selectedModel.id}. Credentials saved to ${getAuthPath()}`);
+			this.showStatus(
+				`${actionLabel}. Selected ${selectedModel.id}. Credentials saved to ${path.join(this.runtimeHost.services.agentDir, "auth.json")}`,
+			);
 			void this.maybeWarnAboutAnthropicSubscriptionAuth(selectedModel);
 			this.checkDaxnutsEasterEgg(selectedModel);
 		} else {
-			this.showStatus(`${actionLabel}. Credentials saved to ${getAuthPath()}`);
+			this.showStatus(
+				`${actionLabel}. Credentials saved to ${path.join(this.runtimeHost.services.agentDir, "auth.json")}`,
+			);
 			if (selectionError) {
 				this.showError(selectionError);
 			} else {
@@ -5915,6 +5954,8 @@ export class InteractiveMode {
 	): Promise<void> {
 		await this.session.modelRuntime.login(providerId, method, {
 			signal: dialog.signal,
+			originator: this.runtimeHost.services.providerAttribution?.openaiCodexOriginator,
+			referrer: this.runtimeHost.services.providerAttribution?.xaiOAuthReferrer,
 			prompt: (prompt) => this.showAuthPrompt(dialog, prompt),
 			notify: (event) => this.notifyAuthDialog(dialog, event),
 		});
@@ -6138,8 +6179,14 @@ export class InteractiveMode {
 	}
 
 	private async handleShareCommand(): Promise<void> {
+		if (this.options.enableSessionShare === false) {
+			this.showWarning(`${this.appName} has disabled remote session sharing.`);
+			return;
+		}
+
 		await shareSession({
 			session: this.session,
+			shareTitle: `${this.appName} session`,
 			ui: this.ui,
 			editorContainer: this.editorContainer,
 			editor: this.editor,
@@ -6255,7 +6302,7 @@ export class InteractiveMode {
 	}
 
 	private handleChangelogCommand(): void {
-		const changelogPath = getChangelogPath();
+		const changelogPath = this.options.changelogPath ?? getChangelogPath();
 		const allEntries = parseChangelog(changelogPath);
 
 		const changelogMarkdown =
@@ -6376,9 +6423,13 @@ export class InteractiveMode {
 | \`${followUp}\` | Queue follow-up message |
 | \`${dequeue}\` | Restore queued messages |
 | \`${pasteImage}\` | Paste image or text from clipboard |
-| \`/\` | Slash commands |
+| \`/\` | Slash commands |${
+			this.options.allowUserBash === false
+				? ""
+				: `
 | \`!\` | Run bash command |
-| \`!!\` | Run bash command (excluded from context) |
+| \`!!\` | Run bash command (excluded from context) |`
+		}
 `;
 
 		// Add extension-registered shortcuts
@@ -6426,7 +6477,7 @@ export class InteractiveMode {
 		const height = this.ui.terminal.rows;
 		const allLines = this.ui.render(width);
 
-		const debugLogPath = getDebugLogPath();
+		const debugLogPath = path.join(this.runtimeHost.services.agentDir, `${this.appName}-debug.log`);
 		const debugData = [
 			`Debug output at ${new Date().toISOString()}`,
 			`Terminal: ${width}x${height}`,

@@ -4,7 +4,9 @@ import type { Model } from "@earendil-works/pi-ai";
 import { getAgentDir } from "../config.ts";
 import { resolvePath } from "../utils/paths.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
+import type { CreateModelRuntimeOptions } from "./model-runtime.ts";
 import { ModelRuntime } from "./model-runtime.ts";
+import type { ProviderAttribution } from "./provider-attribution.ts";
 import {
 	DefaultResourceLoader,
 	type DefaultResourceLoaderOptions,
@@ -45,7 +47,9 @@ export interface CreateAgentSessionServicesOptions {
 	agentDir?: string;
 	settingsManager?: SettingsManager;
 	modelRuntime?: ModelRuntime;
+	modelRuntimeOptions?: Pick<CreateModelRuntimeOptions, "enableModelNetwork">;
 	modelRuntimeSignal?: AbortSignal;
+	providerAttribution?: ProviderAttribution;
 	extensionFlagValues?: Map<string, boolean | string>;
 	resourceLoaderOptions?: AgentSessionResourceLoaderOptions;
 	resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
@@ -68,6 +72,7 @@ export interface CreateAgentSessionFromServicesOptions {
 	excludeTools?: CreateAgentSessionOptions["excludeTools"];
 	noTools?: CreateAgentSessionOptions["noTools"];
 	customTools?: ToolDefinition[];
+	providerAttribution?: ProviderAttribution;
 }
 
 /**
@@ -82,6 +87,7 @@ export interface AgentSessionServices {
 	modelRuntime: ModelRuntime;
 	settingsManager: SettingsManager;
 	resourceLoader: ResourceLoader;
+	providerAttribution?: ProviderAttribution;
 	diagnostics: AgentSessionRuntimeDiagnostic[];
 }
 
@@ -146,6 +152,7 @@ export async function createAgentSessionServices(
 	const modelRuntime =
 		options.modelRuntime ??
 		(await ModelRuntime.create({
+			...(options.modelRuntimeOptions ?? {}),
 			authPath: join(agentDir, "auth.json"),
 			modelsPath: join(agentDir, "models.json"),
 			signal: options.modelRuntimeSignal,
@@ -194,6 +201,7 @@ export async function createAgentSessionServices(
 		modelRuntime,
 		settingsManager,
 		resourceLoader,
+		providerAttribution: options.providerAttribution,
 		diagnostics,
 	};
 }
@@ -222,6 +230,7 @@ export async function createAgentSessionFromServices(
 		excludeTools: options.excludeTools,
 		noTools: options.noTools,
 		customTools: options.customTools,
+		providerAttribution: options.providerAttribution ?? options.services.providerAttribution,
 		sessionStartEvent: options.sessionStartEvent,
 	});
 }

@@ -33,6 +33,8 @@ export interface SettingsListTheme {
 
 export interface SettingsListOptions {
 	enableSearch?: boolean;
+	/** Override the footer hint. */
+	hint?: string;
 }
 
 export class SettingsList implements Component {
@@ -45,6 +47,7 @@ export class SettingsList implements Component {
 	private onCancel: () => void;
 	private searchInput?: Input;
 	private searchEnabled: boolean;
+	private hintText?: string;
 
 	// Submenu state
 	private submenuComponent: Component | null = null;
@@ -66,6 +69,7 @@ export class SettingsList implements Component {
 		this.onChange = onChange;
 		this.onCancel = onCancel;
 		this.searchEnabled = options.enableSearch ?? false;
+		this.hintText = options.hint;
 		if (this.searchEnabled) {
 			this.searchInput = new Input();
 		}
@@ -262,15 +266,11 @@ export class SettingsList implements Component {
 
 	private addHintLine(lines: string[], width: number): void {
 		lines.push("");
-		lines.push(
-			truncateToWidth(
-				this.theme.hint(
-					this.searchEnabled
-						? "  Type to search · Enter/Space to change · Esc to cancel"
-						: "  Enter/Space to change · Esc to cancel",
-				),
-				width,
-			),
-		);
+		const hint =
+			this.hintText ??
+			(this.searchEnabled
+				? "  Type to search · Enter/Space to change · Esc to cancel"
+				: "  Enter/Space to change · Esc to cancel");
+		lines.push(truncateToWidth(this.theme.hint(hint), width));
 	}
 }

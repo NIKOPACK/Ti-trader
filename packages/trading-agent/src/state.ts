@@ -1,19 +1,17 @@
+import {
+	type ExchangeCredentials,
+	type FuturesMarginType,
+	type FuturesPositionMode,
+	type MarketType,
+	type RiskLimits,
+	type TradingMode,
+	withFileLockSync,
+} from "@earendil-works/ti-trading-engine";
 import { KEYS_PATH, readJsonFile, TRADING_CONFIG_PATH, TRADING_STATE_PATH, writeJsonFile } from "./config.ts";
 
-export type TradingMode = "paper" | "live";
-export type TradingLanguage = "zh-CN" | "en-US";
-export type MarketType = "spot" | "usdm-futures" | "both";
-export type FuturesMarginType = "isolated" | "cross";
-export type FuturesPositionMode = "one-way" | "hedge";
+export type { ExchangeCredentials, FuturesMarginType, FuturesPositionMode, MarketType, RiskLimits, TradingMode };
 
-export interface RiskLimits {
-	/** Max notional (quote currency) per single order. */
-	maxOrderNotional: number;
-	/** Max cumulative notional (quote currency) per UTC day. */
-	maxDailyNotional: number;
-	/** Empty = all symbols allowed. Otherwise exact ccxt symbols, e.g. ["BTC/USDT"]. */
-	allowedSymbols: string[];
-}
+export type TradingLanguage = "zh-CN" | "en-US";
 
 export interface TradingConfig {
 	/** Language used by Ti's trading TUI and prompt. */
@@ -169,12 +167,6 @@ export function saveTradingConfig(config: TradingConfig): void {
 	writeJsonFile(TRADING_CONFIG_PATH, config);
 }
 
-export interface ExchangeCredentials {
-	apiKey: string;
-	secret: string;
-	password?: string;
-}
-
 export function loadExchangeKeys(): Record<string, ExchangeCredentials> {
 	const keys = readJsonFile<unknown>(KEYS_PATH) ?? {};
 	if (typeof keys !== "object" || keys === null || Array.isArray(keys))
@@ -205,10 +197,21 @@ export function saveExchangeKeys(keys: Record<string, ExchangeCredentials>): voi
 	writeJsonFile(KEYS_PATH, keys, 0o600);
 }
 
+export interface RiskReservationRecord {
+	id: string;
+	mode: TradingMode;
+	symbol: string;
+	notional: number;
+}
+
 export interface RiskUsageState {
 	/** UTC date (YYYY-MM-DD) the counters belong to. */
 	date: string;
 	usedDailyNotional: number;
+	/** Notional reserved by submissions that have not been settled yet. */
+	reservedDailyNotional?: number;
+	/** In-flight claims keyed by reservation id. Must round-trip with the risk ledger. */
+	reservations?: Record<string, RiskReservationRecord>;
 }
 
 /** Paper and live counters are isolated so mode switches cannot transfer quota. */
@@ -217,33 +220,77 @@ export interface TradingState {
 	live: RiskUsageState;
 }
 
+export type TradingStateMutator<T> = (state: TradingState) => T;
+
+/**
+ * Serialize a read/modify/write of the persisted risk state across Ti
+ * processes. The lock is deliberately scoped to the state file; configuration
+ * and paper-ledger writes have independent lifecycles and must not block risk
+ * accounting. A failed mutator or write leaves the previously loaded draft
+ * unpublished.
+ */
+export function transactTradingState<T>(mutator: TradingStateMutator<T>): T {
+	const lockPath = `${TRADING_STATE_PATH}.lock`;
+	return withStateLock(lockPath, () => {
+		// Decode directly while holding the lock. `loadTradingState()` also writes
+		// legacy migrations, which would publish a partial update before the
+		// caller's mutator has succeeded.
+		const draft = structuredClone(decodeTradingState(readJsonFile<unknown>(TRADING_STATE_PATH)).state);
+		const result = mutator(draft);
+		saveTradingState(draft);
+		return result;
+	});
+}
+
+/** Run one state-file operation while owning the lock for its complete read/write lifecycle. */
+function withStateLock<T>(lockPath: string, operation: () => T): T {
+	return withFileLockSync(lockPath, operation, {
+		timeoutMessage: (path) => `Timed out waiting for trading state lock ${path}`,
+	});
+}
+
 /**
  * Load the persisted risk counter as-is. Date rollover handling is the
  * runtime's responsibility: live mode resets daily, paper mode accumulates
  * until manually reset (/risk reset or /paper reset).
  */
 export function loadTradingState(): TradingState {
-	const today = new Date().toISOString().slice(0, 10);
-	const stored = readJsonFile<unknown>(TRADING_STATE_PATH);
+	// Migration is a read/modify/write operation too. Re-read under the lock so
+	// a concurrent risk transaction cannot be overwritten by a stale legacy copy.
+	return withStateLock(`${TRADING_STATE_PATH}.lock`, () => {
+		const decoded = decodeTradingState(readJsonFile<unknown>(TRADING_STATE_PATH));
+		if (decoded.migrated) {
+			// Legacy releases shared one counter. Preserve it in both modes during
+			// migration so an upgrade cannot silently restore trading capacity.
+			saveTradingState(decoded.state);
+		}
+		return decoded.state;
+	});
+}
+
+function decodeTradingState(stored: unknown): { state: TradingState; migrated: boolean } {
 	if (stored === undefined) {
+		const today = new Date().toISOString().slice(0, 10);
 		return {
-			paper: { date: today, usedDailyNotional: 0 },
-			live: { date: today, usedDailyNotional: 0 },
+			state: {
+				paper: { date: today, usedDailyNotional: 0 },
+				live: { date: today, usedDailyNotional: 0 },
+			},
+			migrated: false,
 		};
 	}
 	if (isRiskUsageState(stored)) {
-		// Legacy releases shared one counter. Preserve it in both modes during
-		// migration so an upgrade cannot silently restore trading capacity.
-		const migrated = { paper: { ...stored }, live: { ...stored } };
-		saveTradingState(migrated);
-		return migrated;
+		return {
+			state: { paper: { ...stored }, live: { ...stored } },
+			migrated: true,
+		};
 	}
 	if (!isTradingState(stored)) {
 		throw new Error(
 			`Invalid trading risk state in ${TRADING_STATE_PATH}; refusing to start with an untrusted daily counter`,
 		);
 	}
-	return stored;
+	return { state: structuredClone(stored), migrated: false };
 }
 
 export function saveTradingState(state: TradingState): void {
@@ -265,6 +312,32 @@ function isRiskUsageState(value: unknown): value is RiskUsageState {
 		/^\d{4}-\d{2}-\d{2}$/.test(candidate.date) &&
 		typeof candidate.usedDailyNotional === "number" &&
 		Number.isFinite(candidate.usedDailyNotional) &&
-		candidate.usedDailyNotional >= 0
+		candidate.usedDailyNotional >= 0 &&
+		(candidate.reservedDailyNotional === undefined ||
+			(typeof candidate.reservedDailyNotional === "number" &&
+				Number.isFinite(candidate.reservedDailyNotional) &&
+				candidate.reservedDailyNotional >= 0)) &&
+		isReservationMap(candidate.reservations)
 	);
+}
+
+function isReservationMap(value: unknown): boolean {
+	if (value === undefined) return true;
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
+	for (const [id, reservation] of Object.entries(value)) {
+		if (typeof reservation !== "object" || reservation === null || Array.isArray(reservation)) return false;
+		const candidate = reservation as Record<string, unknown>;
+		if (
+			candidate.id !== id ||
+			(candidate.mode !== "paper" && candidate.mode !== "live") ||
+			typeof candidate.symbol !== "string" ||
+			candidate.symbol.trim() === "" ||
+			typeof candidate.notional !== "number" ||
+			!Number.isFinite(candidate.notional) ||
+			candidate.notional <= 0
+		) {
+			return false;
+		}
+	}
+	return true;
 }

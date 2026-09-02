@@ -9,7 +9,8 @@ import { Type } from "typebox";
 const CHILD_TIMEOUT_MS = 60_000;
 const FORCE_KILL_DELAY_MS = 2_000;
 const MAX_OUTPUT_BYTES = 512 * 1024;
-const RESEARCH_TOOLS = "calculate_indicators,analyze_market_structure,generate_trade_signal";
+const RESEARCH_TOOLS =
+	"calculate_indicators,analyze_market_structure,generate_trade_signal,evaluate_strategy,screen_markets,simulate_rule";
 
 const parameters = Type.Object({
 	question: Type.String({ minLength: 1, maxLength: 2000, description: "Market research question" }),
@@ -22,7 +23,12 @@ const parameters = Type.Object({
 		}),
 	),
 	timeframe: Type.Optional(
-		Type.String({ minLength: 2, maxLength: 4, pattern: "^[1-9][0-9]*[mhdw]$", description: "Timeframe, for example 1h" }),
+		Type.String({
+			minLength: 2,
+			maxLength: 4,
+			pattern: "^[1-9][0-9]*[mhdw]$",
+			description: "Timeframe, for example 1h",
+		}),
 	),
 });
 type Params = { question: string; symbol?: string; timeframe?: string };
@@ -221,7 +227,8 @@ export default function marketResearchExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "market_research",
 		label: "Market Research",
-		description: "Delegate a safe, read-only market research question to an isolated subagent. No account or trading access.",
+		description:
+			"Delegate a safe, read-only market research question to an isolated subagent. No account or trading access.",
 		parameters,
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			return result(await invokeResearch(ctx, params, signal ?? new AbortController().signal));

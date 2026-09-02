@@ -1,6 +1,8 @@
 import type { FuturesPositionMode, MarketType } from "./client-types.ts";
+import { reduceSide } from "./protection.ts";
 import type {
 	MarketDataClient,
+	MarketInfo,
 	OrderSide,
 	PlaceOcoOrderInput,
 	PlaceOrderInput,
@@ -119,6 +121,98 @@ function freezePreparedOco(plan: PreparedOco): PreparedOco {
 export function isFuturesSymbol(symbol: string, quoteCurrency: string): boolean {
 	return symbol.endsWith(`/${quoteCurrency}:${quoteCurrency}`);
 }
+
+/** Fallback when `amountStep` is absent: integer = DECIMAL_PLACES; (0, 1) = tick size. */
+export function futuresContractLotStep(precision: number | undefined): number | undefined {
+	if (precision === undefined || !Number.isFinite(precision) || precision < 0) return undefined;
+	if (Number.isInteger(precision)) return 10 ** -precision;
+	if (precision > 0 && precision < 1) return precision;
+	return undefined;
+}
+
+/** Exchange contract lot step. `amountStep` wins because TICK_SIZE `1` is 1 contract, not 0.1. */
+export function futuresAmountStep(market: Pick<MarketInfo, "amountStep" | "amountPrecision">): number | undefined {
+	const step = market.amountStep;
+	if (step !== undefined && Number.isFinite(step) && step > 0) return step;
+	return futuresContractLotStep(market.amountPrecision);
+}
+
+function ceilToStep(value: number, step: number): number {
+	return Math.ceil(value / step - 1e-12) * step;
+}
+
+function isMultipleOfStep(value: number, step: number): boolean {
+	const units = value / step;
+	return Number.isFinite(units) && Math.abs(units - Math.round(units)) <= 1e-9;
+}
+
+function requireFuturesLot(market: MarketInfo): { contractSize: number; step: number } {
+	if (market.contract !== true || market.linear !== true || market.amountUnit === "base") {
+		rejectOrder(
+			"Futures market is not confirmed as a linear contract with contract-denominated amounts; refusing to guess the amount unit",
+		);
+	}
+	const contractSize = market.contractSize;
+	if (contractSize === undefined || !Number.isFinite(contractSize) || contractSize <= 0) {
+		rejectOrder("Futures contractSize is unavailable; refusing to guess the amount unit");
+	}
+	const step = futuresAmountStep(market);
+	if (step === undefined || !Number.isFinite(step) || step <= 0) {
+		rejectOrder("Futures amount precision is unavailable; refusing to guess a contract lot");
+	}
+	return { contractSize, step };
+}
+
+async function futuresMarketForQuoteAmount(trading: OrderPlanningContext, symbol: string): Promise<MarketInfo> {
+	try {
+		return await trading.exchange.getMarketInfo(symbol);
+	} catch (error) {
+		rejectOrder(`Futures market metadata unavailable: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+function snapQuoteAmountToFuturesLot(amount: number, market: MarketInfo, referencePrice: number): number {
+	const { contractSize, step } = requireFuturesLot(market);
+	let contracts = amount / contractSize;
+	if (!Number.isFinite(contracts) || contracts <= 0) rejectOrder("Order amount must be positive");
+	contracts = ceilToStep(contracts, step);
+	const minAmount = market.minAmount ?? market.limits?.amount?.min;
+	if (minAmount !== undefined && Number.isFinite(minAmount) && contracts < minAmount) {
+		contracts = ceilToStep(minAmount, step);
+	}
+	const minNotional = market.minNotional ?? market.limits?.cost?.min;
+	if (minNotional !== undefined && Number.isFinite(minNotional) && minNotional > 0) {
+		const minContracts = minNotional / (referencePrice * contractSize);
+		if (Number.isFinite(minContracts) && contracts < minContracts) contracts = ceilToStep(minContracts, step);
+	}
+	const snapped = contracts * contractSize;
+	if (!Number.isFinite(snapped) || snapped <= 0) rejectOrder("Order amount must be positive");
+	return snapped;
+}
+
+function assertFuturesAmountRepresentable(amount: number, market: MarketInfo): void {
+	const step = futuresAmountStep(market);
+	const contractSize = market.contractSize;
+	if (
+		market.contract !== true ||
+		market.linear !== true ||
+		market.amountUnit === "base" ||
+		contractSize === undefined ||
+		!Number.isFinite(contractSize) ||
+		contractSize <= 0 ||
+		step === undefined
+	) {
+		return;
+	}
+	const contracts = amount / contractSize;
+	const tolerance = Math.max(1e-12, Math.abs(amount) * 1e-9);
+	if (!isMultipleOfStep(contracts, step) || Math.abs(contracts * contractSize - amount) > tolerance) {
+		const precise = Math.round(contracts / step) * step;
+		rejectOrder(
+			`Amount ${amount} base units cannot be represented exactly as ${precise} contracts for ${market.symbol} (contractSize ${contractSize})`,
+		);
+	}
+}
 function validateSymbol(symbol: string, quoteCurrency: string, marketType: MarketType): boolean {
 	const parts = symbol.split("/");
 	if (parts.length !== 2 || !parts[0] || !parts[1]) rejectOrder(`Invalid market symbol ${symbol}`);
@@ -128,9 +222,6 @@ function validateSymbol(symbol: string, quoteCurrency: string, marketType: Marke
 	if (marketType === "spot" && futures) rejectOrder(`Futures markets are disabled in spot mode: ${symbol}`);
 	if (marketType === "usdm-futures" && !futures) rejectOrder(`Spot markets are disabled in futures mode: ${symbol}`);
 	return futures;
-}
-function reduceSide(position: Position): OrderSide {
-	return position.positionSide === "SHORT" || position.amount < 0 ? "buy" : "sell";
 }
 export function countsTowardsDailyLimit(trading: OrderPlanningContext, side: OrderSide, params: OrderIntent): boolean {
 	if (!isFuturesSymbol(params.symbol, trading.config.quoteCurrency)) return side === "buy";
@@ -315,6 +406,19 @@ export async function prepareOrder(
 		rejectOrder("Provide exactly one of amount (base currency) or quoteAmount (quote currency)");
 	}
 	if (!Number.isFinite(amount) || amount <= 0) rejectOrder("Order amount must be positive");
+	if (futuresOrder && !closePosition) {
+		if (params.quoteAmount !== undefined) {
+			const market = await futuresMarketForQuoteAmount(trading, params.symbol);
+			amount = snapQuoteAmountToFuturesLot(amount, market, referencePrice);
+		} else {
+			try {
+				const market = await trading.exchange.getMarketInfo(params.symbol);
+				assertFuturesAmountRepresentable(amount, market);
+			} catch (error) {
+				if (error instanceof OrderPreparationError) throw error;
+			}
+		}
+	}
 	if (params.reduceOnly && reducingPosition && amount > Math.abs(reducingPosition.amount))
 		rejectOrder(
 			`reduceOnly order amount ${amount} exceeds the open ${params.positionSide ? `${params.positionSide} ` : ""}position amount ${Math.abs(reducingPosition.amount)}`,
@@ -328,7 +432,7 @@ export async function prepareOrder(
 			notional = amount * referencePrice;
 		}
 	} else {
-		notional = params.quoteAmount !== undefined ? params.quoteAmount : amount * referencePrice;
+		notional = params.quoteAmount !== undefined && !futuresOrder ? params.quoteAmount : amount * referencePrice;
 	}
 	if (!Number.isFinite(notional) || notional <= 0) rejectOrder("Order notional must be positive and finite");
 	const countTowardsDailyLimit = countsTowardsDailyLimit(trading, side, params);

@@ -40,7 +40,8 @@ Type `/` in the editor to open command completion. Extensions can register custo
 | [`/llama`](llama-cpp.md) | Download, load, and unload llama.cpp router models |
 | `/model` | Switch models |
 | `/scoped-models` | Enable/disable models for Ctrl+P cycling |
-| `/settings` | Thinking level, theme, message delivery, transport |
+| `/settings` | Thinking level, theme, message delivery, transport. An extension may own this command. |
+| `/tui-settings` | Agent TUI settings. Also `/settings tui` when `/settings` is overridden. |
 | `/resume` | Pick from previous sessions |
 | `/new` | Start a new session |
 | `/name <name>` | Set session display name |

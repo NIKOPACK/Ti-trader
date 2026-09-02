@@ -1,7 +1,7 @@
 {
 	"name": "ti-trader",
-	"version": "0.1.5",
-	"description": "Ti — AI trading agent CLI built on the pi agent harness: native buy/sell tools, trading commands, paper & live crypto trading",
+	"version": "0.1.7",
+	"description": "Ti — AI trading agent CLI with native buy/sell tools, trading commands, and paper or live crypto trading",
 	"type": "module",
 	"piConfig": {
 		"configDir": ".ti-trader"
@@ -51,9 +51,10 @@
 		"prepublishOnly": "npm run build"
 	},
 	"dependencies": {
+		"@earendil-works/ti-trading-engine": "0.1.1",
+		"@earendil-works/ti-triggers": "0.1.0",
 		"@earendil-works/pi-coding-agent": "0.84.3",
 		"@earendil-works/pi-tui": "0.84.3",
-		"ccxt": "4.5.58",
 		"typebox": "1.3.7"
 	},
 	"devDependencies": {

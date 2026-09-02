@@ -7,21 +7,69 @@ export interface Candle {
 	volume: number;
 }
 
+export interface IndicatorPeriods {
+	emaFast: number;
+	emaSlow: number;
+	rsi: number;
+	atr: number;
+	macdFast: number;
+	macdSlow: number;
+	macdSignal: number;
+	bb: number;
+	volumeSma: number;
+}
+
+export const DEFAULT_INDICATOR_PERIODS: IndicatorPeriods = {
+	emaFast: 20,
+	emaSlow: 50,
+	rsi: 14,
+	atr: 14,
+	macdFast: 12,
+	macdSlow: 26,
+	macdSignal: 9,
+	bb: 20,
+	volumeSma: 20,
+};
+
 export interface IndicatorPoint {
 	timestamp: number;
 	close: number;
-	ema20?: number;
-	ema50?: number;
-	rsi14?: number;
-	atr14?: number;
+	emaFast?: number;
+	emaSlow?: number;
+	rsi?: number;
+	atr?: number;
 	macd?: number;
 	macdSignal?: number;
 	macdHistogram?: number;
 	bbMiddle?: number;
 	bbUpper?: number;
 	bbLower?: number;
-	volumeSma20?: number;
+	volumeSma?: number;
 	volumeRatio?: number;
+	ema20?: number;
+	ema50?: number;
+	rsi14?: number;
+	atr14?: number;
+	volumeSma20?: number;
+}
+
+const MIN_PERIOD = 2;
+const MAX_PERIOD = 200;
+
+export function resolveIndicatorPeriods(input?: Partial<IndicatorPeriods>): IndicatorPeriods {
+	const periods: IndicatorPeriods = { ...DEFAULT_INDICATOR_PERIODS };
+	if (input) {
+		for (const key of Object.keys(DEFAULT_INDICATOR_PERIODS) as Array<keyof IndicatorPeriods>) {
+			const value = input[key];
+			if (value !== undefined) periods[key] = value;
+		}
+	}
+	for (const [key, value] of Object.entries(periods)) {
+		if (!Number.isInteger(value) || value < MIN_PERIOD || value > MAX_PERIOD) {
+			throw new Error(`Invalid ${key} period`);
+		}
+	}
+	return periods;
 }
 
 function finite(value: number): number | undefined {
@@ -66,7 +114,11 @@ function atr(candles: Candle[], period: number): number | undefined {
 	if (candles.length <= period) return undefined;
 	const ranges = candles.slice(1).map((candle, index) => {
 		const previousClose = candles[index].close;
-		return Math.max(candle.high - candle.low, Math.abs(candle.high - previousClose), Math.abs(candle.low - previousClose));
+		return Math.max(
+			candle.high - candle.low,
+			Math.abs(candle.high - previousClose),
+			Math.abs(candle.low - previousClose),
+		);
 	});
 	return sma(ranges, period);
 }
@@ -79,7 +131,8 @@ function bollinger(values: number[], period: number): { middle?: number; upper?:
 	return { middle, upper: middle + deviation * 2, lower: middle - deviation * 2 };
 }
 
-export function calculateIndicators(candles: Candle[]): IndicatorPoint[] {
+export function calculateIndicators(candles: Candle[], periods?: Partial<IndicatorPeriods>): IndicatorPoint[] {
+	const p = resolveIndicatorPeriods(periods);
 	const closes: number[] = [];
 	const fastMacd: number[] = [];
 	const volumes: number[] = [];
@@ -88,34 +141,39 @@ export function calculateIndicators(candles: Candle[]): IndicatorPoint[] {
 	for (const candle of candles) {
 		closes.push(candle.close);
 		volumes.push(candle.volume);
-		const fast = ema(closes, 12);
-		const slow = ema(closes, 26);
-		const macd = fast !== undefined && slow !== undefined ? fast - slow : undefined;
+		const macdFast = ema(closes, p.macdFast);
+		const macdSlow = ema(closes, p.macdSlow);
+		const macd = macdFast !== undefined && macdSlow !== undefined ? macdFast - macdSlow : undefined;
 		if (macd !== undefined) fastMacd.push(macd);
-		const macdSignal = ema(fastMacd, 9);
+		const macdSignal = ema(fastMacd, p.macdSignal);
 		if (macdSignal !== undefined) previousMacdSignal = macdSignal;
-		const bands = bollinger(closes, 20);
-		const volumeSma20 = sma(volumes, 20);
+		const bands = bollinger(closes, p.bb);
+		const volumeSma = sma(volumes, p.volumeSma);
+		const emaFast = ema(closes, p.emaFast);
+		const emaSlow = ema(closes, p.emaSlow);
+		const rsiValue = rsi(closes, p.rsi);
+		const atrValue = atr(candles.slice(0, points.length + 1), p.atr);
 		points.push({
 			timestamp: candle.timestamp,
 			close: candle.close,
-			ema20: ema(closes, 20),
-			ema50: ema(closes, 50),
-			rsi14: rsi(closes, 14),
-			atr14: atr(candles.slice(0, points.length + 1), 14),
+			emaFast,
+			emaSlow,
+			rsi: rsiValue,
+			atr: atrValue,
 			macd,
 			macdSignal: macdSignal ?? previousMacdSignal,
 			macdHistogram: macd !== undefined && macdSignal !== undefined ? macd - macdSignal : undefined,
 			bbMiddle: bands.middle,
 			bbUpper: bands.upper,
 			bbLower: bands.lower,
-			volumeSma20,
-			volumeRatio: volumeSma20 !== undefined && volumeSma20 > 0 ? candle.volume / volumeSma20 : undefined,
+			volumeSma,
+			volumeRatio: volumeSma !== undefined && volumeSma > 0 ? candle.volume / volumeSma : undefined,
+			ema20: p.emaFast === DEFAULT_INDICATOR_PERIODS.emaFast ? emaFast : undefined,
+			ema50: p.emaSlow === DEFAULT_INDICATOR_PERIODS.emaSlow ? emaSlow : undefined,
+			rsi14: p.rsi === DEFAULT_INDICATOR_PERIODS.rsi ? rsiValue : undefined,
+			atr14: p.atr === DEFAULT_INDICATOR_PERIODS.atr ? atrValue : undefined,
+			volumeSma20: p.volumeSma === DEFAULT_INDICATOR_PERIODS.volumeSma ? volumeSma : undefined,
 		});
 	}
 	return points;
-}
-
-export function latestIndicators(candles: Candle[]): IndicatorPoint | undefined {
-	return calculateIndicators(candles).at(-1);
 }

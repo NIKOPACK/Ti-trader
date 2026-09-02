@@ -176,6 +176,13 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	}
 
 	private async refreshModels(): Promise<void> {
+		if (!this.modelRuntime.isModelNetworkEnabled()) {
+			this.refreshStatusMessage = "Using cached model catalogs.";
+			this.refreshStatusSuccess = false;
+			this.tui.requestRender();
+			return;
+		}
+
 		const timeoutMs = 15_000;
 		let timedOut = false;
 		this.refreshTimeout = setTimeout(() => {

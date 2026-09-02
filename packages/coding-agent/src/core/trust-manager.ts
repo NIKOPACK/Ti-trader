@@ -182,12 +182,15 @@ function withTrustFileLock<T>(path: string, fn: () => T): T {
  * exist. The user/global ~/.agents/skills directory is always treated as a
  * trusted user resource and is ignored here, even when cwd is $HOME.
  */
-export function hasTrustRequiringProjectResources(cwd: string): boolean {
+export function hasTrustRequiringProjectResources(
+	cwd: string,
+	options: { projectConfigDirName?: string } = {},
+): boolean {
 	const homeDir = canonicalizePath(resolvePath(process.env.HOME || homedir()));
 	const userAgentsSkillsDir = join(homeDir, ".agents", "skills");
 	let currentDir = canonicalizePath(resolvePath(cwd));
 
-	const configDir = join(currentDir, CONFIG_DIR_NAME);
+	const configDir = join(currentDir, options.projectConfigDirName ?? CONFIG_DIR_NAME);
 	if (TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES.some((entry) => existsSync(join(configDir, entry)))) {
 		return true;
 	}

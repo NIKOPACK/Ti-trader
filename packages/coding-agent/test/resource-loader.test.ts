@@ -1,4 +1,4 @@
-import { mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -505,6 +505,30 @@ Project skill content`,
 			expect(loader.getSkills().skills.some((skill) => skill.name === "project-skill")).toBe(false);
 			expect(loader.getPrompts().prompts.some((prompt) => prompt.name === "project")).toBe(false);
 			expect(loader.getThemes().themes.some((theme) => theme.name === "project-theme")).toBe(false);
+		});
+
+		it("should gate resources under a custom project config directory", async () => {
+			const projectConfigDirName = ".ti-trader";
+			const projectDir = join(cwd, projectConfigDirName);
+			const extensionPath = join(projectDir, "extensions", "project.ts");
+			const markerPath = join(tempDir, "project-extension-ran");
+			mkdirSync(join(projectDir, "extensions"), { recursive: true });
+			writeFileSync(
+				extensionPath,
+				`import { writeFileSync } from "node:fs";
+writeFileSync(${JSON.stringify(markerPath)}, "ran");
+export default function() {}`,
+			);
+
+			const settingsManager = SettingsManager.create(cwd, agentDir, {
+				projectTrusted: false,
+				projectConfigDirName,
+			});
+			const loader = new DefaultResourceLoader({ cwd, agentDir, settingsManager });
+			await loader.reload({ resolveProjectTrust: async () => false });
+
+			expect(existsSync(markerPath)).toBe(false);
+			expect(loader.getExtensions().extensions).toHaveLength(0);
 		});
 
 		it("should discover APPEND_SYSTEM.md", async () => {

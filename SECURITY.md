@@ -8,8 +8,8 @@ enabled, so please report security issues responsibly.
 
 Ti treats the local user account and files writable by that account as inside
 the same trust boundary as the Ti process itself. Exchange API keys are stored
-locally under `~/.ti/agent/keys.json` with mode 600; model provider credentials
-are stored under `~/.ti/agent/` via the upstream pi auth mechanism. Protecting
+locally under `~/.ti-trader/agent/keys.json` with mode 600; model provider credentials
+are stored under `~/.ti-trader/agent/` via the upstream pi auth mechanism. Protecting
 those files from other local users or processes is the operating system's job,
 not Ti's.
 

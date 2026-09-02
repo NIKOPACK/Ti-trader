@@ -1,24 +1,55 @@
-import { CcxtExchangeClient } from "./exchange/ccxt-client.ts";
-import { PaperExchangeClient } from "./exchange/paper-client.ts";
-import type { ExchangeClient } from "./exchange/types.ts";
 import {
+	CcxtExchangeClient,
+	createMarketDataView,
+	type ExchangeClient,
+	type MarketDataClient,
+	PaperExchangeClient,
+	type RiskStateStore,
+	TradingEngine,
+	type TradingEngineConfig,
+} from "@earendil-works/ti-trading-engine";
+import { PAPER_DIR } from "./config.ts";
+import {
+	type FuturesMarginType,
+	type FuturesPositionMode,
 	loadExchangeKeys,
 	loadTradingConfig,
 	loadTradingState,
 	type MarketType,
+	type RiskLimits,
 	saveTradingConfig,
 	saveTradingState,
 	type TradingConfig,
 	type TradingLanguage,
 	type TradingMode,
-	type TradingState,
+	transactTradingState,
 	validateTradingConfig,
 } from "./state.ts";
 
-export interface RiskReservation {
-	commit(): void;
-	release(): void;
+export interface TradingConfigPatch {
+	language?: TradingLanguage;
+	mode?: TradingMode;
+	marketType?: MarketType;
+	leverage?: number;
+	marginType?: FuturesMarginType;
+	positionMode?: FuturesPositionMode;
+	exchange?: string;
+	quoteCurrency?: string;
+	confirmLiveOrders?: boolean;
+	risk?: Partial<RiskLimits>;
+	paper?: Partial<TradingConfig["paper"]>;
+	monitor?: Partial<TradingConfig["monitor"]>;
 }
+
+type DeepReadonly<Value> = Value extends (...args: never[]) => unknown
+	? Value
+	: Value extends readonly (infer Item)[]
+		? readonly DeepReadonly<Item>[]
+		: Value extends object
+			? { readonly [Key in keyof Value]: DeepReadonly<Value[Key]> }
+			: Value;
+
+export type ReadonlyTradingConfig = DeepReadonly<TradingConfig>;
 
 /**
  * Process-wide trading runtime: the active exchange client, trading config and
@@ -26,14 +57,22 @@ export interface RiskReservation {
  * starts; tools and commands access it via getTrading().
  */
 export class TradingRuntime {
-	config: TradingConfig;
-	private state: TradingState;
+	private currentConfig: ReadonlyTradingConfig;
 	private client: ExchangeClient | undefined;
-	private readonly pendingNotional: Record<TradingMode, number> = { paper: 0, live: 0 };
+	private marketDataView: MarketDataClient | undefined;
+	private engine: TradingEngine | undefined;
+	private readonly stateStore: RiskStateStore = {
+		load: () => loadTradingState(),
+		save: (state) => saveTradingState(state),
+		transact: (mutator) => transactTradingState(mutator),
+	};
 
 	private constructor(config: TradingConfig) {
-		this.config = config;
-		this.state = loadTradingState();
+		this.currentConfig = freezeConfig(config);
+	}
+
+	get config(): ReadonlyTradingConfig {
+		return this.currentConfig;
 	}
 
 	static async init(overrides: { mode?: TradingMode; exchange?: string } = {}): Promise<TradingRuntime> {
@@ -43,191 +82,155 @@ export class TradingRuntime {
 		validateTradingConfig(config);
 		const runtime = new TradingRuntime(config);
 		runtime.client = await runtime.createClient();
+		runtime.marketDataView = createMarketDataView(runtime.client);
+		runtime.engine = new TradingEngine(toEngineConfig(config), runtime.client, runtime.stateStore);
 		return runtime;
 	}
 
-	get exchange(): ExchangeClient {
-		if (!this.client) throw new Error("Trading runtime not initialized");
-		return this.client;
+	/** Explicit read-only market-data boundary; trading operations go through tradingEngine. */
+	get marketData(): MarketDataClient {
+		if (!this.marketDataView) throw new Error("Trading runtime not initialized");
+		return this.marketDataView;
 	}
 
 	get mode(): TradingMode {
 		return this.config.mode;
 	}
 
+	get tradingEngine(): TradingEngine {
+		if (!this.engine) throw new Error("Trading runtime not initialized");
+		return this.engine;
+	}
+
 	setLanguage(language: TradingLanguage): void {
 		if (language !== "zh-CN" && language !== "en-US") throw new Error(`Invalid language: ${language}`);
-		this.config = { ...this.config, language };
-		saveTradingConfig(this.config);
+		const nextConfig: TradingConfig = {
+			...this.config,
+			language,
+			risk: { ...this.config.risk, allowedSymbols: [...this.config.risk.allowedSymbols] },
+		};
+		validateTradingConfig(nextConfig);
+		saveTradingConfig(nextConfig);
+		this.currentConfig = freezeConfig(nextConfig);
 	}
 
 	async setMode(mode: TradingMode): Promise<void> {
-		if (mode === this.config.mode) return;
-		const nextConfig = { ...this.config, mode };
-		await this.replaceClient(nextConfig);
+		await this.patchConfig({ mode });
 	}
 
 	async setExchange(id: string): Promise<void> {
 		const normalized = id.trim().toLowerCase();
 		if (!normalized) throw new Error("Exchange id must not be empty");
-		if (normalized === this.config.exchange) return;
-		const nextConfig = { ...this.config, exchange: normalized };
-		await this.replaceClient(nextConfig);
+		await this.patchConfig({ exchange: normalized });
 	}
 
 	async setMarketType(marketType: MarketType): Promise<void> {
 		if (!("spot" === marketType || "usdm-futures" === marketType || "both" === marketType))
 			throw new Error(`Invalid market type: ${marketType}`);
-		if (marketType === this.config.marketType) return;
-		const nextConfig = { ...this.config, marketType };
-		await this.replaceClient(nextConfig);
+		await this.patchConfig({ marketType });
 	}
 
-	/**
-	 * Validate an order against risk limits. Returns an error message, or null
-	 * when the order is within limits.
-	 */
-	checkRisk(symbol: string, notional: number, options: { countTowardsDailyLimit?: boolean } = {}): string | null {
-		const { mode, risk, quoteCurrency, marketType } = this.config;
-		const countTowardsDailyLimit = options.countTowardsDailyLimit ?? true;
-		const symbolParts = symbol.split("/");
-		const validSymbol =
-			symbolParts.length === 2 &&
-			(marketType === "both"
-				? symbolParts[1] === quoteCurrency || symbolParts[1] === `${quoteCurrency}:${quoteCurrency}`
-				: symbolParts[1] === (marketType === "usdm-futures" ? `${quoteCurrency}:${quoteCurrency}` : quoteCurrency));
-		if (!validSymbol) {
-			return `Symbol ${symbol} must use ${marketType === "both" ? `spot /${quoteCurrency} or futures /${quoteCurrency}:${quoteCurrency}` : marketType === "usdm-futures" ? `futures quote ${quoteCurrency} (for example BTC/${quoteCurrency}:${quoteCurrency})` : `quote currency ${quoteCurrency}`}`;
-		}
-		if (!Number.isFinite(notional) || notional <= 0) return "Order notional must be a positive finite number";
-		if (risk.allowedSymbols.length > 0 && !risk.allowedSymbols.includes(symbol)) {
-			return `Symbol ${symbol} is not in risk.allowedSymbols (${risk.allowedSymbols.join(", ")})`;
-		}
-		if (notional > risk.maxOrderNotional) {
-			return `Order notional ${notional.toFixed(2)} ${quoteCurrency} exceeds maxOrderNotional ${risk.maxOrderNotional}`;
-		}
-		// Protective exit orders (for example an OCO attached to an existing
-		// position) still obey the per-order cap, but must not consume the
-		// entry-notional quota. Otherwise adding protection can reject the very
-		// position it is meant to protect.
-		if (!countTowardsDailyLimit) return null;
-		this.refreshDailyCounter(mode);
-		const state = this.state[mode];
-		const reserved = this.pendingNotional[mode];
-		if (state.usedDailyNotional + reserved + notional > risk.maxDailyNotional) {
-			const used = state.usedDailyNotional.toFixed(2);
-			const pending = reserved > 0 ? ` plus ${reserved.toFixed(2)} reserved by in-flight orders` : "";
-			return (
-				`Order would exceed maxDailyNotional ${risk.maxDailyNotional} ${quoteCurrency} ` +
-				(this.config.mode === "paper"
-					? `(already used ${used} cumulatively${pending}; the quota only resets when the user runs /risk reset or /paper reset)`
-					: `(already used ${used} today${pending})`)
-			);
-		}
-		return null;
-	}
-
-	/** Atomically reserve quota before an asynchronous order submission. */
-	reserveRisk(symbol: string, notional: number, options: { countTowardsDailyLimit?: boolean } = {}): RiskReservation {
-		const countTowardsDailyLimit = options.countTowardsDailyLimit ?? true;
-		const error = this.checkRisk(symbol, notional, { countTowardsDailyLimit });
-		if (error) throw new Error(`Risk limit: ${error}`);
-		const mode = this.config.mode;
-		if (countTowardsDailyLimit) this.pendingNotional[mode] += notional;
-		let finalized = false;
-		const finalize = (): boolean => {
-			if (finalized) return false;
-			finalized = true;
-			if (countTowardsDailyLimit) this.pendingNotional[mode] -= notional;
-			return true;
-		};
-		return {
-			commit: () => {
-				if (!finalize() || !countTowardsDailyLimit) return;
-				this.refreshDailyCounter(mode);
-				this.state[mode].usedDailyNotional += notional;
-				saveTradingState(this.state);
+	async patchConfig(patch: TradingConfigPatch): Promise<void> {
+		const current = toMutableConfig(this.config);
+		const next: TradingConfig = {
+			...current,
+			...omitUndefined({
+				language: patch.language,
+				mode: patch.mode,
+				marketType: patch.marketType,
+				leverage: patch.leverage,
+				marginType: patch.marginType,
+				positionMode: patch.positionMode,
+				exchange: patch.exchange,
+				quoteCurrency: patch.quoteCurrency,
+				confirmLiveOrders: patch.confirmLiveOrders,
+			}),
+			risk: {
+				...current.risk,
+				...patch.risk,
+				allowedSymbols: patch.risk?.allowedSymbols
+					? [...patch.risk.allowedSymbols]
+					: [...current.risk.allowedSymbols],
 			},
-			release: () => {
-				finalize();
-			},
+			paper: { ...current.paper, ...patch.paper },
+			monitor: { ...current.monitor, ...patch.monitor },
 		};
-	}
-
-	/** Record entry/order notional against the daily limit. Protective exits are excluded. */
-	recordFill(notional: number, options: { countTowardsDailyLimit?: boolean } = {}): void {
-		if (options.countTowardsDailyLimit === false) return;
-		const mode = this.config.mode;
-		this.refreshDailyCounter(mode);
-		this.state[mode].usedDailyNotional += notional;
-		saveTradingState(this.state);
-	}
-
-	/** Manually reset the used-notional counter (paper quota is cumulative). */
-	resetRiskUsage(): void {
-		const mode = this.config.mode;
-		this.state[mode] = { date: new Date().toISOString().slice(0, 10), usedDailyNotional: 0 };
-		saveTradingState(this.state);
-	}
-
-	dailyUsage(): { date: string; used: number; reserved: number; limit: number; resetPolicy: "daily-auto" | "manual" } {
-		const mode = this.config.mode;
-		this.refreshDailyCounter(mode);
-		const state = this.state[mode];
-		return {
-			date: state.date,
-			used: state.usedDailyNotional,
-			reserved: this.pendingNotional[mode],
-			limit: this.config.risk.maxDailyNotional,
-			resetPolicy: this.config.mode === "paper" ? "manual" : "daily-auto",
-		};
+		if (configSnapshot(this.config) === configSnapshot(next)) return;
+		validateTradingConfig(next);
+		if (requiresClientReplace(this.config, next)) {
+			await this.replaceClient(next);
+			return;
+		}
+		saveTradingConfig(next);
+		this.currentConfig = freezeConfig(next);
 	}
 
 	async close(): Promise<void> {
-		await this.client?.close();
+		await this.engine?.close();
 	}
 
 	/**
 	 * Reset the simulated account, optionally changing (and persisting) the
 	 * starting quote balance. Paper mode only.
 	 */
-	resetPaperAccount(startQuote?: number): number {
+	async resetPaperAccount(startQuote?: number): Promise<number> {
 		if (this.config.mode !== "paper") throw new Error("Paper account reset is only available in paper mode");
-		const client = this.exchange;
+		const client = this.client;
+		if (!client) throw new Error("Trading runtime not initialized");
 		if (!(client instanceof PaperExchangeClient)) throw new Error("Active exchange client is not a paper client");
-		if (startQuote !== undefined) {
-			if (!Number.isFinite(startQuote) || startQuote <= 0) throw new Error("startQuote must be a positive number");
-			const nextConfig = { ...this.config, paper: { ...this.config.paper, startQuote } };
+		const risk = this.tradingEngine.risk;
+		// Check before mutating the paper ledger. A pending submission owns a
+		// durable claim; wiping the account first would strand that claim and make
+		// the next process observe an account/risk mismatch.
+		if (risk.usage().reserved > 0) {
+			throw new Error(
+				"Cannot reset the paper account while orders are being submitted; settle or cancel them first",
+			);
+		}
+		const targetStartQuote = startQuote ?? this.config.paper.startQuote;
+		if (!Number.isFinite(targetStartQuote) || targetStartQuote <= 0) {
+			throw new Error("startQuote must be a positive number");
+		}
+		const nextConfig: TradingConfig | undefined =
+			startQuote === undefined
+				? undefined
+				: {
+						...this.config,
+						risk: { ...this.config.risk, allowedSymbols: [...this.config.risk.allowedSymbols] },
+						paper: { ...this.config.paper, startQuote: targetStartQuote },
+					};
+		if (nextConfig) validateTradingConfig(nextConfig);
+		await client.resetAccount(targetStartQuote);
+		// The account reset is complete before quota reset. If persistence of the
+		// quota fails, the error remains visible and the old quota conservatively
+		// blocks further counted orders instead of silently granting capacity.
+		risk.reset();
+		if (nextConfig) {
 			saveTradingConfig(nextConfig);
-			this.config = nextConfig;
+			this.currentConfig = freezeConfig(nextConfig);
 		}
-		client.resetAccount(this.config.paper.startQuote);
-		this.resetRiskUsage();
-		return this.config.paper.startQuote;
-	}
-
-	/**
-	 * Live mode: the notional counter resets automatically on date rollover.
-	 * Paper mode: the quota is cumulative and only resets manually
-	 * (resetRiskUsage / resetPaperAccount), so the counter is kept as-is.
-	 */
-	private refreshDailyCounter(mode: TradingMode): void {
-		if (mode !== "live") return;
-		const today = new Date().toISOString().slice(0, 10);
-		if (this.state.live.date !== today) {
-			this.state.live = { date: today, usedDailyNotional: 0 };
-			saveTradingState(this.state);
-		}
+		return targetStartQuote;
 	}
 
 	private async replaceClient(nextConfig: TradingConfig): Promise<void> {
 		validateTradingConfig(nextConfig);
 		const nextClient = await this.createClient(nextConfig);
 		const old = this.client;
-		this.config = nextConfig;
-		saveTradingConfig(this.config);
+		try {
+			saveTradingConfig(nextConfig);
+		} catch (error) {
+			await nextClient.close();
+			throw error;
+		}
+		this.currentConfig = freezeConfig(nextConfig);
+		this.engine = new TradingEngine(toEngineConfig(nextConfig), nextClient, this.stateStore);
 		this.client = nextClient;
-		await old?.close().catch(() => {});
+		this.marketDataView = createMarketDataView(nextClient);
+		// The new runtime is fully installed (config saved, engine and client
+		// swapped) before the old client retires. A close failure must surface
+		// to the caller unchanged instead of being swallowed: the switch already
+		// happened, so the cleanup error is the only remaining observable signal.
+		await old?.close();
 	}
 
 	private async createClient(config = this.config): Promise<ExchangeClient> {
@@ -238,7 +241,7 @@ export class TradingRuntime {
 				quoteCurrency,
 				paper.startQuote,
 				paper.feeRate,
-				undefined,
+				PAPER_DIR,
 				config.marketType,
 				config.leverage,
 				config.marginType,
@@ -264,6 +267,69 @@ export class TradingRuntime {
 			config.positionMode,
 		);
 	}
+}
+
+function freezeConfig(config: TradingConfig): ReadonlyTradingConfig {
+	const risk = Object.freeze({ ...config.risk, allowedSymbols: Object.freeze([...config.risk.allowedSymbols]) });
+	const paper = Object.freeze({ ...config.paper });
+	const monitor = Object.freeze({ ...config.monitor });
+	return Object.freeze({ ...config, risk, paper, monitor }) as ReadonlyTradingConfig;
+}
+
+function toMutableConfig(config: ReadonlyTradingConfig): TradingConfig {
+	return {
+		...config,
+		risk: { ...config.risk, allowedSymbols: [...config.risk.allowedSymbols] },
+		paper: { ...config.paper },
+		monitor: { ...config.monitor },
+	};
+}
+
+function toEngineConfig(config: ReadonlyTradingConfig): TradingEngineConfig {
+	return {
+		mode: config.mode,
+		marketType: config.marketType,
+		positionMode: config.positionMode,
+		quoteCurrency: config.quoteCurrency,
+		risk: { ...config.risk, allowedSymbols: [...config.risk.allowedSymbols] },
+	};
+}
+
+function omitUndefined<T extends Record<string, unknown>>(value: T): Partial<T> {
+	const result: Partial<T> = {};
+	for (const [key, entry] of Object.entries(value)) {
+		if (entry !== undefined) result[key as keyof T] = entry as T[keyof T];
+	}
+	return result;
+}
+
+function configSnapshot(config: ReadonlyTradingConfig | TradingConfig): string {
+	return JSON.stringify({
+		language: config.language,
+		mode: config.mode,
+		marketType: config.marketType,
+		leverage: config.leverage,
+		marginType: config.marginType,
+		positionMode: config.positionMode,
+		exchange: config.exchange,
+		quoteCurrency: config.quoteCurrency,
+		confirmLiveOrders: config.confirmLiveOrders,
+		risk: { ...config.risk, allowedSymbols: [...config.risk.allowedSymbols] },
+		paper: { ...config.paper },
+		monitor: { ...config.monitor },
+	});
+}
+
+function requiresClientReplace(prev: ReadonlyTradingConfig, next: TradingConfig): boolean {
+	return (
+		prev.mode !== next.mode ||
+		prev.exchange !== next.exchange ||
+		prev.marketType !== next.marketType ||
+		prev.quoteCurrency !== next.quoteCurrency ||
+		prev.leverage !== next.leverage ||
+		prev.marginType !== next.marginType ||
+		prev.positionMode !== next.positionMode
+	);
 }
 
 let runtime: TradingRuntime | undefined;

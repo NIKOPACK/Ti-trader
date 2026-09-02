@@ -40,6 +40,19 @@ describe("SettingsList", () => {
 		assert.deepStrictEqual(changes, [{ id: "tui-mode", value: "fullscreen" }]);
 	});
 
+	it("renders a custom footer hint", () => {
+		const list = new SettingsList(
+			items.map((item) => ({ ...item })),
+			10,
+			testTheme,
+			() => {},
+			() => {},
+			{ hint: "  custom hint" },
+		);
+
+		assert.match(list.render(80).join("\n"), /custom hint/);
+	});
+
 	it("keeps Space as a change shortcut before a search query is entered", () => {
 		const changes: Array<{ id: string; value: string }> = [];
 		const list = new SettingsList(

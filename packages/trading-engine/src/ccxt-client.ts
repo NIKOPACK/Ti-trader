@@ -1,7 +1,32 @@
-import { randomBytes } from "node:crypto";
-import ccxt, { type Order as CcxtOrder, type Ticker as CcxtTicker, type Trade as CcxtTrade, type Exchange } from "ccxt";
+import ccxt, { type Order as CcxtOrder, type Exchange } from "ccxt";
 import { validateBinanceSpotFilters } from "./binance-spot-filters.ts";
+import {
+	binanceRawOrderToOrder,
+	binanceReportToOrder,
+	createBinanceSpotOco,
+	createBinanceSpotTrailingOrder,
+} from "./ccxt-binance-spot.ts";
+import {
+	finiteFundingRate,
+	finiteNonNegative,
+	finiteNumber,
+	finitePositive,
+	generateClientOrderId,
+	isOrderNotFound,
+	isUncertainSubmission,
+	normalizeExchangeError,
+	orderKey,
+	positionSideFromInfo,
+	submissionStatusUnknownError,
+	toOrder,
+	toOrderStatus,
+	toTicker,
+	validateBinanceClientOrderId,
+} from "./ccxt-map.ts";
+import { amountStepFromCcxtPrecision } from "./ccxt-precision.ts";
+import { getSpotCostBasis } from "./ccxt-spot-cost-basis.ts";
 import type { ExchangeCredentials, FuturesMarginType, FuturesPositionMode, MarketType } from "./client-types.ts";
+import { contractSizeForMarket } from "./contract-size.ts";
 import {
 	type Balance,
 	type ContractStats,
@@ -12,8 +37,6 @@ import {
 	type Order,
 	type OrderBook,
 	type OrderList,
-	type OrderStatus,
-	type OrderType,
 	type PlaceOcoOrderInput,
 	type PlaceOcoOrderResult,
 	type PlaceOrderInput,
@@ -22,285 +45,6 @@ import {
 	type Ticker,
 	timeframeDurationMs,
 } from "./types.ts";
-
-function toTicker(t: CcxtTicker): Ticker {
-	return {
-		symbol: t.symbol,
-		last: t.last ?? undefined,
-		bid: t.bid ?? undefined,
-		ask: t.ask ?? undefined,
-		high24h: t.high,
-		low24h: t.low,
-		changePct24h: t.percentage,
-		volume24h: t.baseVolume,
-		quoteVolume24h: t.quoteVolume,
-		timestamp: validTimestamp(t.timestamp),
-	};
-}
-
-function optionalBoolean(value: unknown): boolean | undefined {
-	if (typeof value === "boolean") return value;
-	if (value === "true" || value === "1" || value === 1) return true;
-	if (value === "false" || value === "0" || value === 0) return false;
-	return undefined;
-}
-
-function toOrderStatus(status: unknown): OrderStatus {
-	const normalized = String(status ?? "").toLowerCase();
-	if (normalized === "open" || normalized === "new" || normalized === "partially_filled") return "open";
-	if (normalized === "closed" || normalized === "filled") return "closed";
-	if (normalized === "canceled" || normalized === "cancelled") return "canceled";
-	if (normalized === "rejected" || normalized === "reject") return "rejected";
-	if (normalized === "expired" || normalized === "expired_in_match") return "expired";
-	return "unknown";
-}
-
-function toOrderType(o: CcxtOrder): OrderType {
-	const info = (o.info ?? {}) as Record<string, unknown>;
-	const normalize = (value: unknown): string =>
-		String(value ?? "")
-			.toLowerCase()
-			.replaceAll("-", "_");
-	const unifiedType = normalize(o.type);
-	const known = new Set<OrderType>([
-		"market",
-		"limit",
-		"stop",
-		"stop_market",
-		"take_profit",
-		"take_profit_market",
-		"trailing_stop_market",
-		"oco",
-	]);
-	if (known.has(unifiedType as OrderType) && unifiedType !== "market" && unifiedType !== "limit") {
-		return unifiedType as OrderType;
-	}
-
-	// CCXT collapses Binance trigger orders to their execution type (market or
-	// limit), while retaining the actual order type only in the raw response.
-	const rawTypes = [info.ordType, info.strategyType, info.orderType, info.type].map(normalize).filter(Boolean);
-	const types = [...rawTypes, unifiedType];
-	const limitExecution =
-		unifiedType === "limit" ||
-		types.some((type) => type.includes("limit")) ||
-		[info.ordPx, info.slOrdPx, info.tpOrdPx].some((value) => {
-			const price = Number(value);
-			return Number.isFinite(price) && price > 0;
-		});
-	if (types.some((type) => type.includes("trailing") || type === "move_order_stop")) {
-		return "trailing_stop_market";
-	}
-	if (types.includes("oco")) return "oco";
-	if (types.some((type) => type.includes("take_profit"))) {
-		return limitExecution ? "take_profit" : "take_profit_market";
-	}
-	if (types.some((type) => type === "stop" || type.startsWith("stop_") || type.includes("stop_loss"))) {
-		return limitExecution ? "stop" : "stop_market";
-	}
-	if (types.some((type) => type === "conditional" || type === "trigger")) {
-		if (o.takeProfitPrice !== undefined && o.stopLossPrice === undefined) {
-			return limitExecution ? "take_profit" : "take_profit_market";
-		}
-		return limitExecution ? "stop" : "stop_market";
-	}
-	if (known.has(unifiedType as OrderType)) return unifiedType as OrderType;
-	return "unknown";
-}
-
-function positionSideFromInfo(info: Record<string, unknown>): Order["positionSide"] {
-	const value = String(info.positionSide ?? info.posSide ?? "").toUpperCase();
-	if (value === "LONG") return "LONG";
-	if (value === "SHORT") return "SHORT";
-	if (value === "BOTH" || value === "NET") return "BOTH";
-	return undefined;
-}
-
-function validTimestamp(timestamp: number | undefined): number {
-	return timestamp !== undefined && Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : Date.now();
-}
-
-function generateClientOrderId(): string {
-	return `ti-${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`.slice(0, 36);
-}
-
-function isUncertainSubmission(error: unknown): boolean {
-	const message = error instanceof Error ? `${error.name} ${error.message}` : String(error);
-	return /timeout|network|5\d\d|temporarily unavailable|connection reset|fetch failed/i.test(message);
-}
-
-function isOrderNotFound(error: unknown): boolean {
-	const message = error instanceof Error ? `${error.name} ${error.message}` : String(error);
-	return /-2013\b|-2011\b|order not found|unknown order/i.test(message);
-}
-
-function errorDescription(error: unknown): string {
-	return error instanceof Error ? `${error.name}: ${error.message}` : String(error);
-}
-
-function submissionStatusUnknownError(
-	exchangeId: string,
-	symbol: string,
-	identifierName: "clientOrderId" | "listClientOrderId",
-	identifier: string,
-	operation: string,
-	submissionError: unknown,
-	lookupError: unknown,
-): AggregateError {
-	return new AggregateError(
-		[submissionError, lookupError],
-		`Submission status unknown [errorCategory=SUBMISSION_STATUS_UNKNOWN] exchange=${exchangeId} symbol=${symbol} ${identifierName}=${identifier}. Submission error: ${errorDescription(submissionError)}. Lookup error: ${errorDescription(lookupError)}. Do not retry; manually verify ${operation} on ${exchangeId}`,
-	);
-}
-
-type ExchangeErrorCategory =
-	| "INVALID_ORDER"
-	| "INSUFFICIENT_FUNDS"
-	| "AUTHENTICATION"
-	| "RATE_LIMIT"
-	| "NETWORK"
-	| "ORDER_NOT_FOUND"
-	| "EXCHANGE_ERROR";
-
-function normalizeExchangeError(error: unknown, operation: string): Error {
-	const value = error as { code?: unknown; response?: unknown };
-	const response =
-		value !== null && typeof value === "object" && value.response && typeof value.response === "object"
-			? (value.response as { code?: unknown; msg?: unknown; message?: unknown; body?: unknown })
-			: undefined;
-	const responseBody =
-		response?.body && typeof response.body === "object" ? (response.body as Record<string, unknown>) : undefined;
-	const message = error instanceof Error ? error.message : String(error);
-	const codeValue = value?.code ?? response?.code ?? responseBody?.code;
-	const code =
-		typeof codeValue === "number" || typeof codeValue === "string"
-			? String(codeValue)
-			: message.match(/-\d{3,5}\b/)?.[0];
-	const text = `${code ?? ""} ${message}`.toLowerCase();
-	let category: ExchangeErrorCategory;
-	if (error instanceof ccxt.OrderNotFound || /-2013\b|-2011\b|order not found|unknown order/i.test(text)) {
-		category = "ORDER_NOT_FOUND";
-	} else if (
-		error instanceof ccxt.InsufficientFunds ||
-		/-2010\b|insufficient|not enough balance|balance is insufficient/i.test(text)
-	) {
-		category = "INSUFFICIENT_FUNDS";
-	} else if (
-		error instanceof ccxt.AuthenticationError ||
-		/-2015\b|-2014\b|authentication|api[- ]?key|signature/i.test(text)
-	) {
-		category = "AUTHENTICATION";
-	} else if (error instanceof ccxt.RateLimitExceeded || /-1003\b|rate limit|too many requests/i.test(text)) {
-		category = "RATE_LIMIT";
-	} else if (
-		error instanceof ccxt.InvalidOrder ||
-		/-1013\b|invalid order|filter failure|precision|quantity|price/i.test(text)
-	) {
-		category = "INVALID_ORDER";
-	} else if (error instanceof ccxt.NetworkError || /network|timeout|connection|fetch failed|\b5\d\d\b/i.test(text)) {
-		category = "NETWORK";
-	} else {
-		category = "EXCHANGE_ERROR";
-	}
-	return new Error(`${operation} failed [errorCategory=${category}]${code ? ` [code=${code}]` : ""}: ${message}`);
-}
-
-function orderKey(order: { id: string; symbol: string }): string {
-	return `${order.symbol}:${order.id}`;
-}
-
-function finiteNumber(value: unknown): number | undefined {
-	if (typeof value !== "number" && typeof value !== "string") return undefined;
-	if (typeof value === "string" && value.trim() === "") return undefined;
-	const number = Number(value);
-	return Number.isFinite(number) ? number : undefined;
-}
-
-function finiteFundingRate(value: unknown): number | undefined {
-	return finiteNumber(value);
-}
-
-function finiteNonNegative(value: unknown): number | undefined {
-	const number = finiteNumber(value);
-	return number !== undefined && number >= 0 ? number : undefined;
-}
-
-function finitePositive(value: unknown): number | undefined {
-	const number = finiteNumber(value);
-	return number !== undefined && number > 0 ? number : undefined;
-}
-
-/**
- * Prefer a positive normalized metric, but fall back to raw exchange fields
- * when a parser uses zero as a placeholder (common for trigger orders).
- * A real zero is retained only when no positive source is available.
- */
-function orderMetric(normalized: unknown, rawValues: unknown[]): number {
-	const normalizedValue = finiteNonNegative(normalized);
-	if (normalizedValue !== undefined && normalizedValue > 0) return normalizedValue;
-	for (const raw of rawValues) {
-		const value = finiteNonNegative(raw);
-		if (value !== undefined && value > 0) return value;
-	}
-	return normalizedValue ?? rawValues.map(finiteNonNegative).find((value) => value !== undefined) ?? 0;
-}
-
-function toOrder(o: CcxtOrder, contractSize: number, contractMarket: boolean): Order {
-	const info = (o.info ?? {}) as Record<string, unknown>;
-	const trailingDelta = Number(info.trailingDelta);
-	const callbackRate = Number(info.callbackRate ?? info.trailingPercent);
-	const type = toOrderType(o);
-	const rawGroup = info.orderListId ?? (type === "oco" ? (info.algoId ?? info.algoClOrdId) : undefined);
-	if (!Number.isFinite(contractSize) || contractSize <= 0) {
-		throw new Error(`Invalid contractSize ${contractSize} while mapping order ${o.id}`);
-	}
-	// CCXT's normalized amount for contract markets is already a number of
-	// contracts. Binance Spot's raw order parser can leave `amount` at zero,
-	// while the original quantity is still available in `info.origQty`.
-	// Select the source according to the market family so a futures raw
-	// quantity is never multiplied by contractSize twice.
-	const originalAmount = contractMarket
-		? orderMetric(o.amount, [info.contracts, info.amount, info.origQty, info.quantity])
-		: orderMetric(info.origQty ?? info.quantity, [o.amount]);
-	const filled = orderMetric(o.filled, [info.executedQty, info.filled]);
-	const remaining = orderMetric(o.remaining, [info.remainingQty, info.remaining]);
-	const normalizedRemaining =
-		finiteNonNegative(o.remaining) === undefined &&
-		finiteNonNegative(info.remainingQty ?? info.remaining) === undefined
-			? Math.max(0, originalAmount - filled)
-			: remaining;
-	const scale = contractMarket ? contractSize : 1;
-	const clientOrderId = [o.clientOrderId, info.clientOrderId, info.clientAlgoId, info.clOrdId, info.algoClOrdId].find(
-		(value): value is string => typeof value === "string" && value.length > 0,
-	);
-	return {
-		id: o.id,
-		clientOrderId,
-		listClientOrderId: typeof info.listClientOrderId === "string" ? info.listClientOrderId : undefined,
-		symbol: o.symbol,
-		side: o.side as Order["side"],
-		type,
-		price: o.price,
-		stopPrice: o.triggerPrice ?? o.stopPrice ?? o.stopLossPrice ?? o.takeProfitPrice,
-		trailingPercent: Number.isFinite(callbackRate)
-			? callbackRate
-			: Number.isFinite(trailingDelta)
-				? trailingDelta / 100
-				: undefined,
-		ocoGroup: rawGroup !== undefined && String(rawGroup) !== "-1" ? String(rawGroup) : undefined,
-		orderListId: rawGroup !== undefined && String(rawGroup) !== "-1" ? String(rawGroup) : undefined,
-		listOrderStatus: typeof info.listOrderStatus === "string" ? info.listOrderStatus : undefined,
-		positionSide: positionSideFromInfo(info),
-		reduceOnly: o.reduceOnly ?? optionalBoolean(info.reduceOnly),
-		closePosition: optionalBoolean(info.closePosition),
-		amount: originalAmount * scale,
-		filled: filled * scale,
-		remaining: normalizedRemaining * scale,
-		average: o.average,
-		cost: o.cost ?? 0,
-		status: toOrderStatus(o.status ?? info.status ?? info.state),
-		timestamp: validTimestamp(o.timestamp),
-	};
-}
 
 /** Live trading client backed by a ccxt exchange instance with API credentials. */
 export class CcxtExchangeClient implements ExchangeClient {
@@ -321,24 +65,9 @@ export class CcxtExchangeClient implements ExchangeClient {
 	private readonly knownSymbols = new Set<string>();
 	private readonly knownOrderListIds = new Set<string>();
 
-	private contractSizeForMarket(
-		market: { contract?: boolean; linear?: boolean; inverse?: boolean; contractSize?: number } | undefined,
-	): number {
-		if (!market) throw new Error("Exchange market metadata is unavailable; refusing to guess the amount unit");
-		if (!market.contract) return 1;
-		if (market.linear !== true || market.inverse === true) {
-			throw new Error("Only linear USDⓈ-M contracts are supported; inverse or unidentified contracts are rejected");
-		}
-		const contractSize = market.contractSize;
-		if (contractSize === undefined || !Number.isFinite(contractSize) || contractSize <= 0) {
-			throw new Error("Futures market contractSize is unavailable; refusing to guess the amount unit");
-		}
-		return contractSize;
-	}
-
 	private contractSizeForSymbol(symbol: string): number {
 		if (!this.marketsLoaded) throw new Error("Exchange markets are not loaded; cannot resolve contractSize");
-		return this.contractSizeForMarket(
+		return contractSizeForMarket(
 			this.exchange.markets[symbol] as {
 				contract?: boolean;
 				linear?: boolean;
@@ -355,12 +84,25 @@ export class CcxtExchangeClient implements ExchangeClient {
 		return toOrder(order, this.contractSizeForSymbol(order.symbol), market?.contract === true);
 	}
 
+	private async refreshIncompleteFill(order: Order, symbol: string): Promise<Order> {
+		if (!(order.filled > 0 && order.cost === 0)) return order;
+		try {
+			const fetched = await this.getOrder(order.id, symbol);
+			if (fetched.cost > 0 || finitePositive(fetched.average) !== undefined) {
+				return { ...fetched, clientOrderId: fetched.clientOrderId ?? order.clientOrderId };
+			}
+		} catch {
+			// Keep the submission snapshot when a follow-up lookup is unavailable.
+		}
+		return order;
+	}
+
 	private baseAmountToContracts(
 		symbol: string,
 		amount: number,
 		market: { contract?: boolean; linear?: boolean; contractSize?: number },
 	): number {
-		const contractSize = this.contractSizeForMarket(market);
+		const contractSize = contractSizeForMarket(market);
 		if (!market.contract) return amount;
 		const contracts = amount / contractSize;
 		if (!Number.isFinite(contracts) || contracts <= 0) {
@@ -392,7 +134,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 		amount: number,
 		market: { contract?: boolean; linear?: boolean; contractSize?: number; limits?: { amount?: { min?: number } } },
 	): number {
-		const contractSize = this.contractSizeForMarket(market);
+		const contractSize = contractSizeForMarket(market);
 		const requestedContracts = market.contract ? amount / contractSize : amount;
 		if (!Number.isFinite(requestedContracts) || requestedContracts <= 0) {
 			throw new Error(`Amount ${amount} cannot produce a positive close-all placeholder for ${symbol}`);
@@ -414,125 +156,6 @@ export class CcxtExchangeClient implements ExchangeClient {
 		this.marketsLoaded = true;
 	}
 
-	private async getSpotCostBasis(
-		symbol: string,
-		balance: number,
-	): Promise<
-		Pick<Position, "avgEntryPrice" | "unrealizedPnl" | "unrealizedPnlPct" | "costBasisStatus" | "costBasisReason">
-	> {
-		if (!this.exchange.has.fetchMyTrades || typeof this.exchange.fetchMyTrades !== "function")
-			return { costBasisStatus: "unavailable", costBasisReason: "fetchMyTrades is unsupported" };
-		let trades: CcxtTrade[];
-		try {
-			// A bounded request is deliberate: an unbounded account-history query can
-			// stall position polling and still cannot prove coverage of transfers.
-			trades = await this.exchange.fetchMyTrades(symbol, undefined, 1000);
-		} catch {
-			return { costBasisStatus: "unavailable", costBasisReason: "fetchMyTrades failed or is not permitted" };
-		}
-		if (!Number.isFinite(balance) || balance <= 0) {
-			return { costBasisStatus: "unavailable", costBasisReason: "Balance is not a finite positive value" };
-		}
-		const seen = new Set<string>();
-		const ordered = trades
-			.filter((trade) => trade.side === "buy" || trade.side === "sell")
-			.filter((trade) => {
-				const fallback = `${trade.order ?? ""}:${trade.timestamp ?? 0}:${trade.price ?? 0}:${trade.amount}`;
-				const key = trade.id || fallback;
-				if (seen.has(key)) return false;
-				seen.add(key);
-				return true;
-			})
-			.sort((a, b) => (a.timestamp ?? 0) - (b.timestamp ?? 0));
-		let quantity = 0;
-		let cost = 0;
-		let incomplete = false;
-		const baseAsset = symbol.split("/")[0];
-		const tolerance = Math.max(1e-8, Math.abs(balance) * 1e-6);
-		const saleTolerance = Math.max(1e-10, balance * 1e-8);
-		if (!Number.isFinite(tolerance) || !Number.isFinite(saleTolerance)) {
-			return { costBasisStatus: "partial", costBasisReason: "Cost basis reconciliation tolerance overflowed" };
-		}
-		for (const trade of ordered) {
-			const amount = Number(trade.amount);
-			const price = Number(trade.price);
-			if (!Number.isFinite(amount) || amount <= 0 || !Number.isFinite(price) || price < 0) {
-				incomplete = true;
-				continue;
-			}
-			const notional = Number(trade.cost ?? amount * price);
-			if (!Number.isFinite(notional) || notional < 0) {
-				incomplete = true;
-				continue;
-			}
-			const fee = trade.fee;
-			const feeCost = fee ? Number(fee.cost) : NaN;
-			const feeCurrency = fee?.currency?.toUpperCase();
-			if (
-				!fee ||
-				!Number.isFinite(feeCost) ||
-				feeCost < 0 ||
-				(feeCurrency !== this.quoteCurrency && feeCurrency !== symbol.split("/")[0])
-			)
-				incomplete = true;
-			let nextQuantity: number;
-			let nextCost: number;
-			if (trade.side === "buy") {
-				nextQuantity = quantity + amount;
-				nextCost = cost + notional;
-				if (feeCurrency === this.quoteCurrency && Number.isFinite(feeCost)) nextCost += feeCost;
-				if (feeCurrency === baseAsset && Number.isFinite(feeCost)) nextQuantity -= feeCost;
-			} else {
-				const inventoryBeforeSale = quantity;
-				if (amount > inventoryBeforeSale + saleTolerance) {
-					incomplete = true;
-					continue;
-				}
-				const ratio = inventoryBeforeSale > 0 ? amount / inventoryBeforeSale : 0;
-				const removedCost = inventoryBeforeSale > 0 ? cost * ratio : 0;
-				nextQuantity = quantity - amount;
-				if (feeCurrency === baseAsset && Number.isFinite(feeCost)) nextQuantity -= feeCost;
-				nextCost = cost - removedCost;
-			}
-			if (!Number.isFinite(nextQuantity) || !Number.isFinite(nextCost)) {
-				return { costBasisStatus: "partial", costBasisReason: "Cost basis arithmetic overflowed" };
-			}
-			quantity = nextQuantity;
-			cost = nextCost;
-		}
-		if (Math.abs(quantity - balance) > tolerance) incomplete = true;
-		if (!Number.isFinite(quantity) || !Number.isFinite(cost) || incomplete || quantity <= tolerance || cost <= 0)
-			return {
-				costBasisStatus: incomplete ? "partial" : "unavailable",
-				costBasisReason: incomplete ? "Trade history or fees do not reconcile balance" : "No cost basis available",
-			};
-		const avgEntryPrice = cost / quantity;
-		if (!Number.isFinite(avgEntryPrice) || avgEntryPrice <= 0) {
-			return { costBasisStatus: "partial", costBasisReason: "Average entry price is not finite" };
-		}
-		let last: number | undefined;
-		try {
-			const tickerLast = (await this.exchange.fetchTicker(symbol)).last;
-			if (tickerLast !== undefined && Number.isFinite(tickerLast) && tickerLast > 0) last = tickerLast;
-		} catch {
-			// Cost basis remains useful even when the latest public mark is unavailable.
-		}
-		const unrealizedPnl = last === undefined ? undefined : (last - avgEntryPrice) * balance;
-		const unrealizedPnlPct = unrealizedPnl === undefined ? undefined : (unrealizedPnl / cost) * 100;
-		if (
-			(unrealizedPnl !== undefined && !Number.isFinite(unrealizedPnl)) ||
-			(unrealizedPnlPct !== undefined && !Number.isFinite(unrealizedPnlPct))
-		) {
-			return { costBasisStatus: "partial", costBasisReason: "Unrealized PnL arithmetic overflowed" };
-		}
-		return {
-			avgEntryPrice,
-			unrealizedPnl,
-			unrealizedPnlPct,
-			costBasisStatus: "complete",
-		};
-	}
-
 	constructor(
 		id: string,
 		quoteCurrency: string,
@@ -542,6 +165,11 @@ export class CcxtExchangeClient implements ExchangeClient {
 		marginType: FuturesMarginType = "isolated",
 		positionMode: FuturesPositionMode = "one-way",
 	) {
+		if (!Number.isInteger(leverage) || leverage < 1 || leverage > 125) throw new Error("Invalid leverage");
+		if (marginType !== "isolated" && marginType !== "cross") throw new Error("Invalid margin mode");
+		if (positionMode !== "one-way" && positionMode !== "hedge") throw new Error("Invalid position mode");
+		if (typeof quoteCurrency !== "string" || !/^[A-Z0-9_-]+$/.test(quoteCurrency))
+			throw new Error("quoteCurrency must contain only uppercase letters, numbers, '_' or '-'");
 		this.id = id;
 		this.quoteCurrency = quoteCurrency;
 		this.marketType = marketType;
@@ -573,6 +201,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 	}
 
 	async getOrderBook(symbol: string, limit = 20): Promise<OrderBook> {
+		if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer");
 		await this.ensureMarket(symbol);
 		const book = await this.exchange.fetchOrderBook(symbol, limit);
 		const bids = book.bids.flatMap(([price, amount]) =>
@@ -633,6 +262,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 			contractSize: market.contractSize,
 			pricePrecision: market.precision?.price,
 			amountPrecision: market.precision?.amount,
+			amountStep: amountStepFromCcxtPrecision(market.precision?.amount, this.exchange.precisionMode),
 			minAmount: market.limits?.amount?.min,
 			minNotional: market.limits?.cost?.min,
 			limits: market.limits,
@@ -689,6 +319,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 	}
 
 	async getKlines(symbol: string, timeframe: string, limit: number): Promise<Kline[]> {
+		if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer");
 		await this.ensureMarket(symbol);
 		const ohlcv = await this.exchange.fetchOHLCV(symbol, timeframe, undefined, limit);
 		const duration = timeframeDurationMs(timeframe);
@@ -850,7 +481,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 			if (b.asset === this.quoteCurrency || (b.quoteValue !== undefined && b.quoteValue <= 1)) continue;
 			const symbol = `${b.asset}/${this.quoteCurrency}`;
 			this.knownSymbols.add(symbol);
-			const basis = await this.getSpotCostBasis(symbol, b.total);
+			const basis = await getSpotCostBasis(this.exchange, symbol, b.total, this.quoteCurrency);
 			const valuation =
 				b.quoteValue !== undefined && Number.isFinite(b.quoteValue)
 					? { valuationStatus: "complete" as const }
@@ -896,6 +527,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 	}
 
 	async getOrderHistory(symbol?: string, limit = 50): Promise<Order[]> {
+		if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer");
 		if (symbol) await this.ensureMarket(symbol);
 		else await this.ensureMarketsLoaded();
 		if (symbol) this.knownSymbols.add(symbol);
@@ -991,6 +623,8 @@ export class CcxtExchangeClient implements ExchangeClient {
 	}
 
 	async getOrderByClientId(clientOrderId: string, symbol: string, conditional?: boolean): Promise<Order> {
+		if (typeof clientOrderId !== "string" || clientOrderId.length === 0) throw new Error("clientOrderId is required");
+		if (this.id === "binance") validateBinanceClientOrderId(clientOrderId, "clientOrderId");
 		await this.ensureMarket(symbol);
 		if (this.id !== "binance") {
 			const capability = this.exchange.has.fetchOrderWithClientOrderId;
@@ -1034,9 +668,16 @@ export class CcxtExchangeClient implements ExchangeClient {
 						: { origClientOrderId: clientOrderId }
 					: { origClientOrderId: clientOrderId }),
 			});
-			return this.toDomainOrder(
+			const normalized = this.toDomainOrder(
 				this.exchange.parseOrder(raw as Record<string, unknown>, this.exchange.markets[symbol]),
 			);
+			if (normalized.symbol !== symbol)
+				throw new Error(`Client id lookup on binance returned ${normalized.symbol} while ${symbol} was requested`);
+			if (normalized.clientOrderId !== undefined && normalized.clientOrderId !== clientOrderId)
+				throw new Error(
+					`Client id lookup on binance returned clientOrderId=${normalized.clientOrderId} while ${clientOrderId} was requested`,
+				);
+			return { ...normalized, clientOrderId };
 		};
 		if (!isFutures || conditional === true) return lookup(conditional === true);
 		try {
@@ -1118,6 +759,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 
 	async placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResult> {
 		const clientOrderId = input.clientOrderId ?? generateClientOrderId();
+		if (this.id === "binance") validateBinanceClientOrderId(clientOrderId, "clientOrderId");
 		input = { ...input, clientOrderId };
 		const market = await this.ensureMarket(input.symbol);
 		const isLimitExec = input.type === "limit" || input.type === "stop" || input.type === "take_profit";
@@ -1237,7 +879,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 		if (!Number.isFinite(numericAmount) || numericAmount <= 0) {
 			throw new Error(`Amount ${input.amount} rounds to zero for ${input.symbol}`);
 		}
-		const contractSize = this.contractSizeForMarket(market);
+		const contractSize = contractSizeForMarket(market);
 		const representedBaseAmount = numericAmount * contractSize;
 		const price =
 			isLimitExec && input.price !== undefined
@@ -1282,7 +924,8 @@ export class CcxtExchangeClient implements ExchangeClient {
 		// trailingPercent parameter to Spot orders.
 		if (this.id === "binance" && this.marketType === "spot" && input.type === "trailing_stop_market") {
 			try {
-				const raw = await this.createBinanceSpotTrailingOrder(
+				const raw = await createBinanceSpotTrailingOrder(
+					this.exchange,
 					input.symbol,
 					input.side,
 					numericAmount,
@@ -1291,7 +934,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 					clientOrderId,
 				);
 				return {
-					order: this.binanceRawOrderToOrder(
+					order: binanceRawOrderToOrder(
 						raw,
 						input.symbol,
 						input.side,
@@ -1363,7 +1006,8 @@ export class CcxtExchangeClient implements ExchangeClient {
 				numericPrice,
 				params,
 			);
-			return { order: { ...this.toDomainOrder(order), clientOrderId } };
+			const mapped = { ...this.toDomainOrder(order), clientOrderId };
+			return { order: await this.refreshIncompleteFill(mapped, input.symbol) };
 		} catch (error) {
 			if (!isUncertainSubmission(error)) throw normalizeExchangeError(error, "Order submission");
 			try {
@@ -1408,8 +1052,13 @@ export class CcxtExchangeClient implements ExchangeClient {
 		if (!Number.isFinite(amount) || amount <= 0)
 			throw new Error(`Amount ${input.amount} rounds to zero for ${input.symbol}`);
 		const listClientOrderId = input.listClientOrderId ?? generateClientOrderId();
+		if (this.id === "binance") validateBinanceClientOrderId(listClientOrderId, "listClientOrderId");
 		const aboveClientOrderId = input.aboveClientOrderId ?? generateClientOrderId();
 		const belowClientOrderId = input.belowClientOrderId ?? generateClientOrderId();
+		if (this.id === "binance") {
+			validateBinanceClientOrderId(aboveClientOrderId, "aboveClientOrderId");
+			validateBinanceClientOrderId(belowClientOrderId, "belowClientOrderId");
+		}
 		const stopLossPrice = Number(this.exchange.priceToPrecision(input.symbol, input.stopLossPrice));
 		const takeProfitPrice = Number(this.exchange.priceToPrecision(input.symbol, input.takeProfitPrice));
 		const last = (await this.getTicker(input.symbol)).last;
@@ -1438,7 +1087,8 @@ export class CcxtExchangeClient implements ExchangeClient {
 			if (this.id === "binance" && this.marketType === "spot") {
 				// Binance spot has one balance reservation for both legs. Use its
 				// atomic order-list endpoint; submitting two independent sells is not safe.
-				const raw = await this.createBinanceSpotOco(
+				const raw = await createBinanceSpotOco(
+					this.exchange,
 					input.symbol,
 					input.side,
 					amount,
@@ -1461,7 +1111,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 				const listStatus = typeof raw?.listOrderStatus === "string" ? raw.listOrderStatus : undefined;
 				return {
 					orders: reports.map((report) =>
-						this.binanceReportToOrder(report, input.symbol, input.side, amount, ocoGroup, listStatus),
+						binanceReportToOrder(report, input.symbol, input.side, amount, ocoGroup, listStatus),
 					),
 				};
 			}
@@ -1491,175 +1141,6 @@ export class CcxtExchangeClient implements ExchangeClient {
 			}
 			throw normalizeExchangeError(error, "OCO order");
 		}
-	}
-
-	private async createBinanceSpotOco(
-		symbol: string,
-		side: "buy" | "sell",
-		amount: number,
-		stopLossPrice: number,
-		takeProfitPrice: number,
-		listClientOrderId: string,
-		aboveClientOrderId: string,
-		belowClientOrderId: string,
-	): Promise<Record<string, unknown>> {
-		const methods = this.exchange as unknown as Record<string, unknown>;
-		// ccxt renamed the Spot endpoint from order/oco to orderList/oco.
-		// Prefer the current method, but support older ccxt releases as well.
-		const currentEndpoint = typeof methods.privatePostOrderListOco === "function";
-		const endpoint = currentEndpoint ? methods.privatePostOrderListOco : methods.privatePostOrderOco;
-		if (typeof endpoint !== "function")
-			throw new Error("Binance ccxt adapter does not expose a Spot order-list OCO endpoint");
-		const market = this.exchange.markets[symbol];
-		const params: Record<string, string> = currentEndpoint
-			? {
-					symbol: market.id,
-					side: side.toUpperCase(),
-					quantity: this.exchange.amountToPrecision(symbol, amount),
-					aboveType: "LIMIT_MAKER",
-					abovePrice: this.exchange.priceToPrecision(symbol, takeProfitPrice),
-					belowType: "STOP_LOSS_LIMIT",
-					belowPrice: this.exchange.priceToPrecision(symbol, stopLossPrice),
-					belowStopPrice: this.exchange.priceToPrecision(symbol, stopLossPrice),
-					belowTimeInForce: "GTC",
-					listClientOrderId,
-					aboveClientOrderId,
-					belowClientOrderId,
-				}
-			: {
-					symbol: market.id,
-					side: side.toUpperCase(),
-					quantity: this.exchange.amountToPrecision(symbol, amount),
-					price: this.exchange.priceToPrecision(symbol, takeProfitPrice),
-					stopPrice: this.exchange.priceToPrecision(symbol, stopLossPrice),
-					stopLimitPrice: this.exchange.priceToPrecision(symbol, stopLossPrice),
-					stopLimitTimeInForce: "GTC",
-					// The legacy /order/oco API uses listClientOrderId and
-					// per-leg client ids; newClientOrderId is a single-order field.
-					listClientOrderId,
-					limitClientOrderId: aboveClientOrderId,
-					stopClientOrderId: belowClientOrderId,
-				};
-		return (await (endpoint as (params: Record<string, string>) => Promise<unknown>).call(
-			this.exchange,
-			params,
-		)) as Record<string, unknown>;
-	}
-
-	private async createBinanceSpotTrailingOrder(
-		symbol: string,
-		side: "buy" | "sell",
-		amount: number,
-		trailingPercent: number,
-		stopPrice?: number,
-		clientOrderId?: string,
-	): Promise<Record<string, unknown>> {
-		const endpoint = (this.exchange as unknown as Record<string, unknown>).privatePostOrder;
-		if (typeof endpoint !== "function")
-			throw new Error("Binance ccxt adapter does not expose the spot order endpoint");
-		const exchangeMarket = this.exchange.markets[symbol];
-		const trailingDelta = trailingPercent * 100;
-		if (!Number.isInteger(trailingDelta))
-			throw new Error("Binance Spot trailingPercent must convert to a whole number of BIPS");
-		if (trailingDelta < 1 || trailingDelta > 10_000)
-			throw new Error("Binance Spot trailingPercent must convert to trailingDelta between 1 and 10000 BIPS");
-		const filters = Array.isArray((exchangeMarket.info as Record<string, unknown> | undefined)?.filters)
-			? ((exchangeMarket.info as Record<string, unknown>).filters as unknown[])
-			: [];
-		const filter = filters.find((item) => (item as Record<string, unknown>).filterType === "TRAILING_DELTA") as
-			| Record<string, unknown>
-			| undefined;
-		if (!filter) throw new Error(`Binance Spot ${symbol} market has no TRAILING_DELTA filter`);
-		// Binance selects the TRAILING_DELTA range from the submitted order
-		// type, not from the optional activation price's relation to the market:
-		// STOP_LOSS uses the below range and TAKE_PROFIT uses the above range.
-		const above = side === "buy";
-		const boundary = above ? "Above" : "Below";
-		const min = Number(filter[`minTrailing${boundary}Delta`]);
-		const max = Number(filter[`maxTrailing${boundary}Delta`]);
-		if (!Number.isFinite(min) || !Number.isFinite(max))
-			throw new Error(`Binance Spot TRAILING_DELTA filter has invalid ${above ? "above" : "below"} bounds`);
-		if (trailingDelta < min || trailingDelta > max)
-			throw new Error(
-				`Binance Spot trailingDelta ${trailingDelta} is outside ${above ? "above" : "below"} range ${min}-${max}`,
-			);
-		const params: Record<string, string> = {
-			symbol: exchangeMarket.id,
-			side: side.toUpperCase(),
-			type: side === "sell" ? "STOP_LOSS" : "TAKE_PROFIT",
-			quantity: this.exchange.amountToPrecision(symbol, amount),
-			trailingDelta: String(trailingDelta),
-			...(clientOrderId ? { newClientOrderId: clientOrderId } : {}),
-		};
-		if (stopPrice !== undefined) params.stopPrice = this.exchange.priceToPrecision(symbol, stopPrice);
-		return (await (endpoint as (params: Record<string, string>) => Promise<unknown>).call(
-			this.exchange,
-			params,
-		)) as Record<string, unknown>;
-	}
-
-	private binanceRawOrderToOrder(
-		raw: unknown,
-		symbol: string,
-		side: "buy" | "sell",
-		amount: number,
-		trailingPercent: number,
-		clientOrderId?: string,
-	): Order {
-		const r = (raw && typeof raw === "object" ? raw : {}) as Record<string, unknown>;
-		const filled = Number(r.executedQty) || 0;
-		return {
-			id: String(r.orderId ?? r.clientOrderId ?? "unknown"),
-			clientOrderId: typeof r.clientOrderId === "string" ? r.clientOrderId : clientOrderId,
-			symbol,
-			side,
-			type: "trailing_stop_market",
-			stopPrice: Number(r.stopPrice) || undefined,
-			trailingPercent,
-			positionSide: positionSideFromInfo(r),
-			reduceOnly: optionalBoolean(r.reduceOnly),
-			closePosition: optionalBoolean(r.closePosition),
-			amount,
-			filled,
-			remaining: Math.max(0, amount - filled),
-			cost: Number(r.cummulativeQuoteQty) || 0,
-			status: toOrderStatus(r.status),
-			timestamp: validTimestamp(Number(r.transactTime ?? Date.now())),
-		};
-	}
-
-	private binanceReportToOrder(
-		report: unknown,
-		symbol: string,
-		side: "buy" | "sell",
-		amount: number,
-		ocoGroup?: string,
-		listStatus?: string,
-	): Order {
-		const r = (report && typeof report === "object" ? report : {}) as Record<string, unknown>;
-		const rawType = String(r.type ?? "").toUpperCase();
-		const filled = Number(r.executedQty) || 0;
-		return {
-			id: String(r.orderId ?? r.clientOrderId ?? "unknown"),
-			symbol,
-			side,
-			type: rawType.includes("STOP") ? (rawType.includes("LIMIT") ? "stop" : "stop_market") : "limit",
-			price: Number(r.price) || undefined,
-			stopPrice: Number(r.stopPrice) || undefined,
-			ocoGroup:
-				ocoGroup ??
-				(r.orderListId !== undefined && String(r.orderListId) !== "-1" ? String(r.orderListId) : undefined),
-			orderListId:
-				ocoGroup ??
-				(r.orderListId !== undefined && String(r.orderListId) !== "-1" ? String(r.orderListId) : undefined),
-			listOrderStatus: listStatus,
-			amount,
-			filled,
-			remaining: Math.max(0, amount - filled),
-			cost: Number(r.cummulativeQuoteQty) || 0,
-			status: toOrderStatus(r.status ?? listStatus),
-			timestamp: validTimestamp(Number(r.transactTime ?? Date.now())),
-		};
 	}
 
 	async cancelOrder(id: string, symbol: string): Promise<void> {
@@ -1704,6 +1185,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 	}
 
 	async getTopMarkets(limit: number): Promise<Ticker[]> {
+		if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer");
 		const tickers = await this.exchange.fetchTickers();
 		const suffix =
 			this.marketType === "usdm-futures" ? `/${this.quoteCurrency}:${this.quoteCurrency}` : `/${this.quoteCurrency}`;
@@ -1715,14 +1197,11 @@ export class CcxtExchangeClient implements ExchangeClient {
 	}
 
 	async getFundingRateHistory(symbol: string, limit = 20): Promise<FundingRateRecord[]> {
+		if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer");
 		if (this.marketType !== "usdm-futures")
 			throw new Error("Funding rates are available only in USDⓈ-M futures mode");
 		await this.ensureMarket(symbol);
-		const records = await this.exchange.fetchFundingRateHistory(
-			symbol,
-			undefined,
-			Math.min(Math.max(Math.floor(limit), 1), 100),
-		);
+		const records = await this.exchange.fetchFundingRateHistory(symbol, undefined, Math.min(limit, 100));
 		return records.map((record) => {
 			const info = record.info as Record<string, unknown> | undefined;
 			const rate =
@@ -1838,7 +1317,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 		if (!market || market.quote !== this.quoteCurrency || !validMarket || market.active === false) {
 			throw new Error(`Unsupported ${this.marketType} market or quote currency: ${symbol}`);
 		}
-		if (this.marketType === "usdm-futures") this.contractSizeForMarket(market);
+		if (this.marketType === "usdm-futures") contractSizeForMarket(market);
 		this.knownSymbols.add(symbol);
 		return market;
 	}

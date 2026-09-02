@@ -7,7 +7,7 @@ Pi uses JSON settings files with project settings overriding global settings.
 | `~/.pi/agent/settings.json` | Global (all projects) |
 | `.pi/settings.json` | Project (current directory) |
 
-Edit directly or use `/settings` for common options.
+Edit directly or use `/settings` for common options. If an extension owns `/settings`, open the agent TUI settings with `/tui-settings` or `/settings tui`.
 
 ## Project Trust
 

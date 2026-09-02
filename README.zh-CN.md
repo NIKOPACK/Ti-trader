@@ -16,15 +16,15 @@ ti                         # 交互模式，默认使用模拟盘
 ti -p "分析 BTC 1h 走势"    # 一次性无头模式
 ```
 
-首次运行使用 `/login` 配置模型供应商。模型认证信息、交易所密钥和会话状态保存在 `~/.ti/agent/`，与 Pi coding agent 的 `~/.pi` 完全隔离。
+首次运行使用 `/login` 配置模型供应商，并使用 `/exchange-login` 配置交易所凭证。模型认证信息、交易所密钥和会话状态保存在 `~/.ti-trader/agent/`，与 Pi coding agent 的 `~/.pi` 完全隔离。
 
 ## 功能
 
 - **模拟盘**：无需 API key，模拟成交、持仓、手续费和盈亏
 - **实盘交易**：支持 ccxt 支持的交易所；API key 保存在本地，文件权限为 600
 - **原生交易工具**：向 LLM 提供行情、账户、下单和撤单工具
-- **风控限制**：单笔名义金额、每日名义金额、交易币种白名单和实盘订单确认
-- **条件单**：止损、止盈、移动止损和 OCO 括号单
+- **风控限制**：单笔名义金额、每日名义金额、交易币种白名单和实盘订单确认。提交后未结算的额度占用显示在 `/risk`，用 `/risk reconcile <id> commit|release` 对账；先核对交易所订单，不要重试原提交。
+- **条件单**：Paper 现货和支持这些类型的实盘市场提供止损、止盈、移动止损和 OCO 括号单；Paper 合约目前仅支持市价单
 - **后台监控**：监控挂单成交、未保护仓位和浮亏，并可唤醒 agent
 - **Binance USDⓈ-M 合约**：支持杠杆、保证金模式、持仓模式和 reduceOnly 等参数
 - **编码工具禁用**：Ti 不提供 Pi coding agent 的文件读写、Shell 和代码编辑工具
@@ -36,15 +36,16 @@ ti -p "分析 BTC 1h 走势"    # 一次性无头模式
 - `/orders [symbol]`：查看当前挂单
 - `/trades [symbol]`：查看历史成交
 - `/markets [limit]`：查看高交易量市场
-- `/mode [paper|live]`：切换交易模式
+- `/mode [paper|live]`：切换交易模式（切 live 需要 API key 和交互确认；配置持久化后下次启动不再确认）
 - `/exchange [id]`：切换交易所
-- `/risk`：查看风控限制和当日用量
-- `/keys <exchange>`：交互配置交易所 API key
+- `/risk`：查看风控限制和用量；`/risk reconcile <id> commit|release` 结算卡住的额度占用
+- `/trigger`：实验性内存条件监控（paper 可通知或唤醒；live 只通知、不自动拉起交易回合）
+- `/exchange-login <exchange>`：交互配置交易所 API key
 - `/monitor [on|off]`：开关后台监控
 
 ## 配置
 
-配置文件位于 `~/.ti/agent/trading.json`：
+配置文件位于 `~/.ti-trader/agent/trading.json`：
 
 ```json
 {
@@ -61,7 +62,7 @@ ti -p "分析 BTC 1h 走势"    # 一次性无头模式
 }
 ```
 
-实盘 API key 可通过 `/keys okx` 交互录入，也可以编辑 `~/.ti/agent/keys.json`。只授予必要的交易权限，禁止提现权限；不要将 key、token 或账户敏感信息提交到仓库、issue、PR 或日志。
+实盘 API key 可通过 `/exchange-login okx` 交互录入，也可以编辑 `~/.ti-trader/agent/keys.json`。只授予必要的交易权限，禁止提现权限；不要将 key、token 或账户敏感信息提交到仓库、issue、PR 或日志。
 
 ## 构建和验证
 
@@ -70,12 +71,12 @@ ti -p "分析 BTC 1h 走势"    # 一次性无头模式
 ```bash
 npm install --ignore-scripts
 cd packages/coding-agent && npm run build:unbundled && cd ../..
-npm run build:trading
+npm run build:trading  # 先构建 triggers、trading-risk、trading-engine，再构建 trading-agent
 npm run check
 ./test.sh
 ```
 
-`npm run smoke` 会执行依赖检查和模拟盘 E2E 测试，其中行情测试需要网络连接，但不会提交真实订单。
+`npm --prefix packages/trading-agent run smoke` 会执行运行时检查和模拟盘 E2E 测试，其中行情测试需要网络连接，但不会提交真实订单。构建顺序由 `npm run build:trading` 固定为先构建 triggers 与 trading-risk，再构建 trading-engine，最后构建 trading-agent。`ti-trader` 会注册实验性 `/trigger` 监控：只在内存中求值，不会下单；live 下 `wake_agent` 只通知，不自动拉起交易回合。
 
 ## 参与贡献
 

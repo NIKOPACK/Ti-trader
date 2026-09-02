@@ -16,8 +16,12 @@ export interface BuiltinSlashCommand {
 	argumentHint?: string;
 }
 
+/** Built-in commands that an extension may handle instead of the interactive default. */
+export const OVERRIDABLE_BUILTIN_SLASH_COMMANDS = new Set(["settings"]);
+
 export const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand> = [
 	{ name: "settings", description: "Open settings menu" },
+	{ name: "tui-settings", description: "Open agent TUI settings" },
 	{ name: "model", description: "Select model (opens selector UI)", argumentHint: "<provider/model>" },
 	{ name: "tree", description: "Navigate session tree (switch branches)" },
 	{ name: "thinking", description: "Set thinking level", argumentHint: "<level>" },

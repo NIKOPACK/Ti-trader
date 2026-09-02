@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- SettingsList accepts an optional `hint` to replace the default footer help line.
+
 ## [0.84.3] - 2026-08-24
 
 ### Fixed

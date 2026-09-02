@@ -56,6 +56,8 @@ export interface MarketInfo {
 	contractSize?: number;
 	pricePrecision?: number;
 	amountPrecision?: number;
+	/** Lot step in exchange amount units. Prefer this over interpreting `amountPrecision`. */
+	amountStep?: number;
 	minAmount?: number;
 	minNotional?: number;
 	limits?: { amount?: { min?: number; max?: number }; cost?: { min?: number; max?: number } };
@@ -309,22 +311,22 @@ export function createMarketDataView(client: ExchangeClient): MarketDataClient {
 		id: client.id,
 		mode: client.mode,
 		quoteCurrency: client.quoteCurrency,
-		getTicker: client.getTicker.bind(client),
-		getOrderBook: client.getOrderBook.bind(client),
-		getMarketInfo: client.getMarketInfo.bind(client),
-		getContractStats: client.getContractStats.bind(client),
-		getKlines: client.getKlines.bind(client),
-		getBalances: client.getBalances.bind(client),
-		getPositions: client.getPositions.bind(client),
-		getOpenOrders: client.getOpenOrders.bind(client),
-		getOrderHistory: client.getOrderHistory.bind(client),
-		getOrder: client.getOrder.bind(client),
-		getOrderByClientId: client.getOrderByClientId.bind(client),
-		getOrderList: client.getOrderList.bind(client),
-		getOrderListByClientId: client.getOrderListByClientId.bind(client),
-		getTopMarkets: client.getTopMarkets.bind(client),
-		getFundingRate: client.getFundingRate.bind(client),
-		getFundingRateHistory: client.getFundingRateHistory.bind(client),
+		getTicker: (symbol) => client.getTicker(symbol),
+		getOrderBook: (symbol, limit) => client.getOrderBook(symbol, limit),
+		getMarketInfo: (symbol) => client.getMarketInfo(symbol),
+		getContractStats: (symbol) => client.getContractStats(symbol),
+		getKlines: (symbol, timeframe, limit) => client.getKlines(symbol, timeframe, limit),
+		getBalances: () => client.getBalances(),
+		getPositions: () => client.getPositions(),
+		getOpenOrders: (symbol) => client.getOpenOrders(symbol),
+		getOrderHistory: (symbol, limit) => client.getOrderHistory(symbol, limit),
+		getOrder: (id, symbol) => client.getOrder(id, symbol),
+		getOrderByClientId: (clientOrderId, symbol) => client.getOrderByClientId(clientOrderId, symbol),
+		getOrderList: (orderListId) => client.getOrderList(orderListId),
+		getOrderListByClientId: (listClientOrderId) => client.getOrderListByClientId(listClientOrderId),
+		getTopMarkets: (limit) => client.getTopMarkets(limit),
+		getFundingRate: (symbol) => client.getFundingRate(symbol),
+		getFundingRateHistory: (symbol, limit) => client.getFundingRateHistory(symbol, limit),
 	};
 	return Object.freeze(view);
 }

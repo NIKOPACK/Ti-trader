@@ -14,6 +14,7 @@ export type AppMode = "interactive" | "print" | "json" | "rpc";
 export interface ResolveProjectTrustedOptions {
 	cwd: string;
 	trustStore: ProjectTrustStore;
+	projectConfigDirName?: string;
 	trustOverride?: boolean;
 	defaultProjectTrust?: DefaultProjectTrust;
 	extensionsResult?: LoadExtensionsResult;
@@ -21,17 +22,18 @@ export interface ResolveProjectTrustedOptions {
 	onExtensionError?: (message: string) => void;
 }
 
-function formatProjectTrustPrompt(cwd: string): string {
-	return `Trust project folder?\n${cwd}\n\nThis allows ${APP_NAME} to load ${CONFIG_DIR_NAME} settings and resources, install missing project packages, and execute project extensions.`;
+function formatProjectTrustPrompt(cwd: string, projectConfigDirName: string): string {
+	return `Trust project folder?\n${cwd}\n\nThis allows ${APP_NAME} to load ${projectConfigDirName} settings and resources, install missing project packages, and execute project extensions.`;
 }
 
 async function selectProjectTrustOption(
 	cwd: string,
 	ctx: ProjectTrustContext,
+	projectConfigDirName: string,
 ): Promise<ProjectTrustOption | undefined> {
 	const options = getProjectTrustOptions(cwd, { includeSessionOnly: true });
 	const selected = await ctx.ui.select(
-		formatProjectTrustPrompt(cwd),
+		formatProjectTrustPrompt(cwd, projectConfigDirName),
 		options.map((option) => option.label),
 	);
 	return options.find((option) => option.label === selected);
@@ -47,7 +49,11 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 	if (options.trustOverride !== undefined) {
 		return options.trustOverride;
 	}
-	if (!hasTrustRequiringProjectResources(options.cwd)) {
+	if (
+		!hasTrustRequiringProjectResources(options.cwd, {
+			projectConfigDirName: options.projectConfigDirName,
+		})
+	) {
 		return true;
 	}
 
@@ -87,7 +93,11 @@ export async function resolveProjectTrusted(options: ResolveProjectTrustedOption
 		return false;
 	}
 
-	const selected = await selectProjectTrustOption(options.cwd, options.projectTrustContext);
+	const selected = await selectProjectTrustOption(
+		options.cwd,
+		options.projectTrustContext,
+		options.projectConfigDirName ?? CONFIG_DIR_NAME,
+	);
 	if (selected !== undefined) {
 		saveProjectTrustPromptResult(options.trustStore, selected);
 		return selected.trusted;

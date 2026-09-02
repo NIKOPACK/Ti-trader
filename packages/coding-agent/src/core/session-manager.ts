@@ -1,3 +1,4 @@
+import { StringDecoder } from "node:string_decoder";
 import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import { type ImageContent, type Message, type TextContent, type Usage, uuidv7 } from "@earendil-works/pi-ai";
 import { randomUUID } from "crypto";
@@ -16,7 +17,6 @@ import {
 import { readdir, stat } from "fs/promises";
 import { join, resolve } from "path";
 import { createInterface } from "readline";
-import { StringDecoder } from "string_decoder";
 import { APP_NAME, getAgentDir as getDefaultAgentDir, getSessionsDir } from "../config.ts";
 import { normalizePath, resolvePath } from "../utils/paths.ts";
 import {

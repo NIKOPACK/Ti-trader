@@ -61,6 +61,9 @@ class StubExchange {
 	trailingResponse: Record<string, unknown> = { orderId: 9, status: "NEW", executedQty: "0", transactTime: 1 };
 	trailingError: Error | undefined;
 	createOrderError: Error | undefined;
+	createOrderOverrides: Partial<RawOrder> = {};
+	fetchOrderResponse: RawOrder | undefined;
+	readonly orderFetchCalls: Array<{ id: string; symbol: string; params: Record<string, unknown> }> = [];
 	ocoError: Error | undefined;
 	orderQueryError: Error | undefined;
 	futuresOrderQueryError: Error | undefined;
@@ -401,7 +404,13 @@ class StubExchange {
 			cost: 0,
 			timestamp: 1,
 			info: params,
+			...this.createOrderOverrides,
 		};
+	}
+
+	async fetchOrder(id: string, symbol: string, params: Record<string, unknown> = {}): Promise<RawOrder> {
+		this.orderFetchCalls.push({ id, symbol, params });
+		return this.fetchOrderResponse ?? this.orderQueryResponse;
 	}
 
 	async setPositionMode(hedged: boolean): Promise<void> {
@@ -1372,6 +1381,47 @@ describe("Binance futures adapter", () => {
 		expect(result.order).toMatchObject({ symbol, amount: 20, filled: 0, remaining: 20 });
 	});
 
+	it("maps fill cost from submission raw fields without a follow-up lookup", async () => {
+		const stub = new StubExchange();
+		configureFuturesMarket(stub, { contractSize: 10, minContracts: 1, maxContracts: 3 });
+		stub.has.fetchOrder = true;
+		stub.createOrderOverrides = {
+			status: "closed",
+			amount: 2,
+			filled: 2,
+			remaining: 0,
+			cost: 0,
+			info: { executedQty: "2", cumQuote: "1000", avgPrice: "50" },
+		};
+		const client = newClient("binance", stub, "usdm-futures");
+
+		const result = await client.placeOrder({ symbol, side: "buy", type: "market", amount: 20 });
+
+		expect(result.order).toMatchObject({ filled: 20, cost: 1000, average: 50, status: "closed" });
+		expect(stub.orderFetchCalls).toHaveLength(0);
+	});
+
+	it("re-fetches a filled order when submission cost is still zero", async () => {
+		const stub = new StubExchange();
+		configureFuturesMarket(stub, { contractSize: 10, minContracts: 1, maxContracts: 3 });
+		stub.has.fetchOrder = true;
+		stub.createOrderOverrides = { status: "closed", amount: 2, filled: 2, remaining: 0, cost: 0 };
+		stub.fetchOrderResponse = rawOrder("created-1", "closed", {
+			symbol,
+			amount: 2,
+			filled: 2,
+			remaining: 0,
+			cost: 1000,
+			average: 50,
+		});
+		const client = newClient("binance", stub, "usdm-futures");
+
+		const result = await client.placeOrder({ symbol, side: "buy", type: "market", amount: 20 });
+
+		expect(result.order).toMatchObject({ filled: 20, cost: 1000, average: 50, status: "closed" });
+		expect(stub.orderFetchCalls).toEqual([{ id: "created-1", symbol, params: {} }]);
+	});
+
 	it("applies futures amount limits in contracts, not user-facing base units", async () => {
 		const stub = new StubExchange();
 		configureFuturesMarket(stub, { contractSize: 10, minContracts: 3, maxContracts: 4 });
@@ -1684,6 +1734,22 @@ describe("Binance futures adapter", () => {
 		expect(order).toMatchObject({ id: "conditional", amount: 20, remaining: 20, type: "stop_market" });
 		expect(stub.futuresGetAlgoOrderRawCalls).toEqual([{ symbol: "BTCUSDT", clientAlgoId: "conditional-id" }]);
 		expect(stub.futuresGetOrderRawCalls).toHaveLength(0);
+	});
+
+	it("rejects a mismatched Binance conditional client id", async () => {
+		const stub = new StubExchange();
+		configureFuturesMarket(stub, { contractSize: 10 });
+		stub.orderQueryResponse = rawOrder("conditional", "NEW", {
+			symbol,
+			amount: 1,
+			remaining: 1,
+			info: { clientAlgoId: "different-id", ordType: "STOP_MARKET" },
+		});
+		const client = newClient("binance", stub, "usdm-futures");
+
+		await expect(client.getOrderByClientId("expected-id", symbol, true)).rejects.toThrow(
+			/clientOrderId=different-id.*expected-id/,
+		);
 	});
 
 	it("falls back to the Binance futures Algo endpoint only after a definitive not-found", async () => {

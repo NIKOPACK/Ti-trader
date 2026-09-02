@@ -2,6 +2,7 @@
 
 export { type Args, parseArgs } from "./cli/args.ts";
 
+export { createProjectTrustContext } from "./cli/project-trust.ts";
 // Config paths
 export {
 	CONFIG_DIR_NAME,
@@ -196,6 +197,12 @@ export type {
 } from "./core/package-manager.ts";
 export { DefaultPackageManager } from "./core/package-manager.ts";
 export type { ManifestFlavor, PiManifest, TiManifest } from "./core/pi-manifest.ts";
+export {
+	type AppMode,
+	type ResolveProjectTrustedOptions,
+	resolveProjectTrusted,
+} from "./core/project-trust.ts";
+export type { ProviderAttribution } from "./core/provider-attribution.ts";
 export type {
 	DefaultResourceLoaderOptions,
 	ResourceCollision,

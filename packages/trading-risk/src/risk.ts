@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import type { FuturesPositionMode, MarketType } from "./client-types.ts";
+
+export type MarketType = "spot" | "usdm-futures" | "both";
 
 export type TradingMode = "paper" | "live";
 
@@ -9,10 +10,9 @@ export interface RiskLimits {
 	allowedSymbols: string[];
 }
 
-export interface TradingEngineConfig {
+export interface RiskConfig {
 	mode: TradingMode;
 	marketType: MarketType;
-	positionMode: FuturesPositionMode;
 	quoteCurrency: string;
 	risk: RiskLimits;
 }
@@ -52,7 +52,7 @@ export interface RiskStateStore {
 	transact?<T>(mutator: RiskStateMutator<T>): T;
 }
 
-export interface EngineClock {
+export interface RiskClock {
 	now(): Date;
 }
 
@@ -140,11 +140,10 @@ export class RiskReservationStateError extends Error {
 	}
 }
 
-const systemClock: EngineClock = { now: () => new Date() };
+const systemClock: RiskClock = { now: () => new Date() };
 const STATE_ERROR_ID = "<state>";
 const EPSILON_MULTIPLIER = 8;
 const MARKET_TYPES: readonly MarketType[] = ["spot", "usdm-futures", "both"];
-const POSITION_MODES: readonly FuturesPositionMode[] = ["one-way", "hedge"];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -292,14 +291,24 @@ function copyStateInto(target: TradingRiskState, source: TradingRiskState): void
 	target.live = cloneUsage(source.live);
 }
 
-function validateConfig(config: TradingEngineConfig): TradingEngineConfig {
-	if (!isRecord(config)) throw new Error("Invalid trading engine config");
+function validateSymbol(symbol: string, marketType: MarketType, quoteCurrency: string): string | null {
+	if (typeof symbol !== "string") return "Order symbol must be a string";
+	const parts = symbol.split("/");
+	const valid =
+		parts.length === 2 &&
+		parts[0].length > 0 &&
+		(marketType === "both"
+			? parts[1] === quoteCurrency || parts[1] === `${quoteCurrency}:${quoteCurrency}`
+			: parts[1] === (marketType === "usdm-futures" ? `${quoteCurrency}:${quoteCurrency}` : quoteCurrency));
+	if (valid) return null;
+	return `Symbol ${symbol} must use ${marketType === "both" ? `spot /${quoteCurrency} or futures /${quoteCurrency}:${quoteCurrency}` : marketType === "usdm-futures" ? `futures quote ${quoteCurrency} (for example BTC/${quoteCurrency}:${quoteCurrency})` : `quote currency ${quoteCurrency}`}`;
+}
+
+function validateConfig(config: RiskConfig): RiskConfig {
+	if (!isRecord(config)) throw new Error("Invalid risk config");
 	if (config.mode !== "paper" && config.mode !== "live") throw new Error("mode must be paper or live");
 	if (!MARKET_TYPES.includes(config.marketType)) {
 		throw new Error("marketType must be spot, usdm-futures, or both");
-	}
-	if (!POSITION_MODES.includes(config.positionMode)) {
-		throw new Error("positionMode must be one-way or hedge");
 	}
 	if (typeof config.quoteCurrency !== "string" || !/^[A-Z0-9_-]+$/.test(config.quoteCurrency)) {
 		throw new Error("quoteCurrency must contain only uppercase letters, numbers, '_' or '-'");
@@ -322,8 +331,17 @@ function validateConfig(config: TradingEngineConfig): TradingEngineConfig {
 	) {
 		throw new Error("risk.allowedSymbols must be an array of strings");
 	}
+	if (
+		config.risk.allowedSymbols.some(
+			(symbol) => validateSymbol(symbol, config.marketType, config.quoteCurrency) !== null,
+		)
+	) {
+		throw new Error(`risk.allowedSymbols must contain ${config.quoteCurrency} symbols`);
+	}
 	return {
-		...config,
+		mode: config.mode,
+		marketType: config.marketType,
+		quoteCurrency: config.quoteCurrency,
 		risk: { ...config.risk, allowedSymbols: [...config.risk.allowedSymbols] },
 	};
 }
@@ -334,14 +352,30 @@ function validateRecordNotional(notional: number): void {
 	}
 }
 
+function dailyNotionalExceededMessage(
+	usage: RiskUsageState,
+	mode: TradingMode,
+	quoteCurrency: string,
+	maxDailyNotional: number,
+): string {
+	const reserved = usage.reservedDailyNotional ?? 0;
+	const pending = reserved > 0 ? ` plus ${reserved.toFixed(2)} reserved by in-flight orders` : "";
+	return (
+		`Order would exceed maxDailyNotional ${maxDailyNotional} ${quoteCurrency} ` +
+		(mode === "paper"
+			? `(already used ${usage.usedDailyNotional.toFixed(2)} cumulatively${pending}; paper quota only resets via reset())`
+			: `(already used ${usage.usedDailyNotional.toFixed(2)} today${pending})`)
+	);
+}
+
 /** Risk quota and in-flight reservation accounting, independent of UI and persistence format. */
 export class RiskLedger {
-	private config: TradingEngineConfig;
+	private config: RiskConfig;
 	private state: TradingRiskState;
-	private readonly clock: EngineClock;
+	private readonly clock: RiskClock;
 	private readonly store: RiskStateStore;
 
-	constructor(config: TradingEngineConfig, store: RiskStateStore, clock: EngineClock = systemClock) {
+	constructor(config: RiskConfig, store: RiskStateStore, clock: RiskClock = systemClock) {
 		this.config = validateConfig(config);
 		if (typeof store.transact !== "function") {
 			throw new Error("RiskStateStore must implement transact() for atomic risk accounting");
@@ -351,17 +385,14 @@ export class RiskLedger {
 		this.clock = clock;
 	}
 
-	setConfig(config: TradingEngineConfig): void {
+	setConfig(config: RiskConfig): void {
 		const next = validateConfig(config);
 		if (
 			next.mode !== this.config.mode ||
 			next.marketType !== this.config.marketType ||
-			next.positionMode !== this.config.positionMode ||
 			next.quoteCurrency !== this.config.quoteCurrency
 		) {
-			throw new Error(
-				"Risk ledger identity cannot change while it is attached to an exchange client; create a new trading engine",
-			);
+			throw new Error("Risk ledger identity cannot change; create a new ledger");
 		}
 		this.config = next;
 	}
@@ -381,14 +412,7 @@ export class RiskLedger {
 			"risk daily usage",
 		);
 		if (total > risk.maxDailyNotional) {
-			const reserved = usage.reservedDailyNotional ?? 0;
-			const pending = reserved > 0 ? ` plus ${reserved.toFixed(2)} reserved by in-flight orders` : "";
-			return (
-				`Order would exceed maxDailyNotional ${risk.maxDailyNotional} ${quoteCurrency} ` +
-				(mode === "paper"
-					? `(already used ${usage.usedDailyNotional.toFixed(2)} cumulatively${pending}; the quota only resets when the user runs /risk reset or /paper reset)`
-					: `(already used ${usage.usedDailyNotional.toFixed(2)} today${pending})`)
-			);
+			return dailyNotionalExceededMessage(usage, mode, quoteCurrency, risk.maxDailyNotional);
 		}
 		return null;
 	}
@@ -411,12 +435,8 @@ export class RiskLedger {
 					"risk daily usage",
 				);
 				if (total > risk.maxDailyNotional) {
-					const pending = reserved > 0 ? ` plus ${reserved.toFixed(2)} reserved by in-flight orders` : "";
 					throw new Error(
-						`Risk limit: Order would exceed maxDailyNotional ${risk.maxDailyNotional} ${quoteCurrency} ` +
-							(mode === "paper"
-								? `(already used ${usage.usedDailyNotional.toFixed(2)} cumulatively${pending}; the quota only resets when the user runs /risk reset or /paper reset)`
-								: `(already used ${usage.usedDailyNotional.toFixed(2)} today${pending})`),
+						`Risk limit: ${dailyNotionalExceededMessage(usage, mode, quoteCurrency, risk.maxDailyNotional)}`,
 					);
 				}
 				const reservations = usage.reservations ?? {};
@@ -520,7 +540,7 @@ export class RiskLedger {
 
 	private validateOrder(symbol: string, notional: number): string | null {
 		const { risk, quoteCurrency, marketType } = this.config;
-		const symbolError = this.validateSymbol(symbol, marketType, quoteCurrency);
+		const symbolError = validateSymbol(symbol, marketType, quoteCurrency);
 		if (symbolError) return symbolError;
 		if (!Number.isFinite(notional) || notional <= 0) return "Order notional must be a positive finite number";
 		if (risk.allowedSymbols.length > 0 && !risk.allowedSymbols.includes(symbol)) {
@@ -572,19 +592,6 @@ export class RiskLedger {
 				finalized = true;
 			},
 		};
-	}
-
-	private validateSymbol(symbol: string, marketType: MarketType, quoteCurrency: string): string | null {
-		if (typeof symbol !== "string") return "Order symbol must be a string";
-		const parts = symbol.split("/");
-		const valid =
-			parts.length === 2 &&
-			parts[0].length > 0 &&
-			(marketType === "both"
-				? parts[1] === quoteCurrency || parts[1] === `${quoteCurrency}:${quoteCurrency}`
-				: parts[1] === (marketType === "usdm-futures" ? `${quoteCurrency}:${quoteCurrency}` : quoteCurrency));
-		if (valid) return null;
-		return `Symbol ${symbol} must use ${marketType === "both" ? `spot /${quoteCurrency} or futures /${quoteCurrency}:${quoteCurrency}` : marketType === "usdm-futures" ? `futures quote ${quoteCurrency} (for example BTC/${quoteCurrency}:${quoteCurrency})` : `quote currency ${quoteCurrency}`}`;
 	}
 
 	private loadLatest(): TradingRiskState {
@@ -650,8 +657,7 @@ export class RiskLedger {
 
 	private today(): string {
 		const now = this.clock.now();
-		if (!(now instanceof Date) || Number.isNaN(now.getTime()))
-			throw new Error("Engine clock returned an invalid date");
+		if (!(now instanceof Date) || Number.isNaN(now.getTime())) throw new Error("Risk clock returned an invalid date");
 		return now.toISOString().slice(0, 10);
 	}
 }

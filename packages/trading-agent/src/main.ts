@@ -1,25 +1,62 @@
-import { existsSync, mkdirSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
 	type CreateAgentSessionRuntimeFactory,
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
+	createProjectTrustContext,
+	hasTrustRequiringProjectResources,
 	InteractiveMode,
 	initTheme,
+	ProjectTrustStore,
+	resolveProjectTrusted,
 	runPrintMode,
 	SessionManager,
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { parseTradingArgs, printHelp } from "./args.ts";
+import { resolveBundledMarketLabExtension } from "./bundled-extensions.ts";
 import { createTradingExtension } from "./commands.ts";
-import { AGENT_DIR, APP_NAME, ensureAgentDir } from "./config.ts";
+import { AGENT_DIR, APP_NAME, CONFIG_DIR_NAME, ensureAgentDir } from "./config.ts";
 import { getTrading, initTrading } from "./context.ts";
 import { createOrderMonitorExtension } from "./monitor.ts";
 import { buildTradingPrompt } from "./prompt.ts";
 import { createTradingTools } from "./tools/index.ts";
+import { createTriggerMonitorExtension } from "./trigger-monitor.ts";
 
-const VERSION = "0.1.5";
+function readPackageVersion(): string {
+	const pkgPath = fileURLToPath(new URL("../package.json", import.meta.url));
+	const pkg: unknown = JSON.parse(readFileSync(pkgPath, "utf8"));
+	if (
+		typeof pkg !== "object" ||
+		pkg === null ||
+		!("version" in pkg) ||
+		typeof pkg.version !== "string" ||
+		pkg.version.length === 0
+	) {
+		throw new Error(`Invalid version in ${pkgPath}`);
+	}
+	return pkg.version;
+}
+
+const VERSION = readPackageVersion();
+const CHANGELOG_PATH = fileURLToPath(new URL("../CHANGELOG.md", import.meta.url));
+
+const TI_ATTRIBUTION = {
+	userAgent: `ti/${VERSION}`,
+	openRouter: {
+		referer: "https://github.com/NIKOPACK/Ti",
+		title: "Ti",
+		categories: "cli-agent",
+	},
+	nvidiaBillingOrigin: "Ti",
+	cloudflareUserAgent: "ti-trader",
+	openCodeClient: "ti",
+	openaiCodexOriginator: "ti",
+	xaiOAuthReferrer: "ti",
+};
 
 /** Mirror pi's session-dir encoding, rooted at our own agent dir. */
 function getTradingSessionDir(cwd: string, agentDir: string): string {
@@ -46,11 +83,18 @@ export async function main(argv: string[]): Promise<void> {
 	ensureAgentDir();
 	const cwd = process.cwd();
 	const agentDir = AGENT_DIR;
+	// Start from an untrusted project state. Project-local settings and extensions
+	// are loaded only after the trust resolver has made an explicit decision.
+	const startupSettingsManager = SettingsManager.create(cwd, agentDir, {
+		projectTrusted: false,
+		projectConfigDirName: CONFIG_DIR_NAME,
+	});
+	const trustStore = new ProjectTrustStore(agentDir);
+	const projectTrustByCwd = new Map<string, boolean>();
 
 	// Trading runtime: config + exchange client (paper by default, live needs keys).
 	const trading = await initTrading({ mode: parsed.mode, exchange: parsed.exchange });
 
-	const settingsManager = SettingsManager.create(cwd, agentDir);
 	const sessionManager = SessionManager.create(cwd, getTradingSessionDir(cwd, agentDir));
 
 	const createRuntime: CreateAgentSessionRuntimeFactory = async ({
@@ -58,26 +102,77 @@ export async function main(argv: string[]): Promise<void> {
 		agentDir: runtimeAgentDir,
 		sessionManager: runtimeSessionManager,
 		sessionStartEvent,
+		projectTrustContext,
 	}) => {
+		const isInitialRuntime = sessionStartEvent === undefined;
+		const cachedProjectTrust = projectTrustByCwd.get(runtimeCwd);
+		const hasTrustRequiringResources = hasTrustRequiringProjectResources(runtimeCwd, {
+			projectConfigDirName: CONFIG_DIR_NAME,
+		});
+		const shouldResolveProjectTrust = cachedProjectTrust === undefined && hasTrustRequiringResources;
+		const projectTrusted = shouldResolveProjectTrust
+			? false
+			: (cachedProjectTrust ?? (!hasTrustRequiringResources || trustStore.get(runtimeCwd) === true));
+		const runtimeSettingsManager = SettingsManager.create(runtimeCwd, runtimeAgentDir, {
+			projectTrusted,
+			projectConfigDirName: CONFIG_DIR_NAME,
+		});
+		const projectTrustDiagnostics: Array<{ type: "warning"; message: string }> = [];
 		const services = await createAgentSessionServices({
 			cwd: runtimeCwd,
 			agentDir: runtimeAgentDir,
-			settingsManager,
+			settingsManager: runtimeSettingsManager,
+			modelRuntimeOptions: {
+				enableModelNetwork: false,
+			},
+			providerAttribution: TI_ATTRIBUTION,
+			resourceLoaderReloadOptions: shouldResolveProjectTrust
+				? {
+						resolveProjectTrust: async ({ extensionsResult }) => {
+							const trusted = await resolveProjectTrusted({
+								cwd: runtimeCwd,
+								trustStore,
+								projectConfigDirName: CONFIG_DIR_NAME,
+								extensionsResult,
+								defaultProjectTrust: startupSettingsManager.getDefaultProjectTrust(),
+								projectTrustContext:
+									projectTrustContext ??
+									createProjectTrustContext({
+										cwd: runtimeCwd,
+										mode: isInitialRuntime ? (parsed.print ? "print" : "interactive") : "interactive",
+										settingsManager: startupSettingsManager,
+										hasUI: isInitialRuntime && !parsed.print,
+										agentDir: runtimeAgentDir,
+									}),
+								onExtensionError: (message) => projectTrustDiagnostics.push({ type: "warning", message }),
+							});
+							projectTrustByCwd.set(runtimeCwd, trusted);
+							return trusted;
+						},
+					}
+				: undefined,
 			resourceLoaderOptions: {
 				manifestFlavor: "ti",
 				noContextFiles: true,
 				noSkills: true,
+				noPromptTemplates: true,
 				noExtensions: parsed.noExtensions,
-				additionalExtensionPaths: parsed.extensions,
+				// Bundled by path so trading-agent's build rootDir stays src/.
+				additionalExtensionPaths: [...parsed.extensions, resolveBundledMarketLabExtension()],
 				systemPrompt: buildTradingPrompt(trading.config),
 				extensionFactories: [
-					(pi) => {
-						pi.on("before_agent_start", async () => ({
-							systemPrompt: buildTradingPrompt(getTrading().config),
-						}));
+					{
+						name: "ti-system",
+						hidden: true,
+						factory: (pi) => {
+							pi.on("before_agent_start", async () => ({
+								systemPrompt: buildTradingPrompt(getTrading().config),
+							}));
+						},
 					},
-					createTradingExtension(),
-					createOrderMonitorExtension(),
+					{ name: "ti-trading", hidden: true, factory: createTradingExtension() },
+					{ name: "ti-order-monitor", hidden: true, factory: createOrderMonitorExtension() },
+					{ name: "ti-trigger-monitor", hidden: true, factory: createTriggerMonitorExtension() },
 				],
 			},
 		});
@@ -89,8 +184,9 @@ export async function main(argv: string[]): Promise<void> {
 			// the agent only gets the native trading tools.
 			noTools: "builtin",
 			customTools: createTradingTools(),
+			providerAttribution: TI_ATTRIBUTION,
 		});
-		return { ...created, services, diagnostics: services.diagnostics };
+		return { ...created, services, diagnostics: [...projectTrustDiagnostics, ...services.diagnostics] };
 	};
 
 	const runtime = await createAgentSessionRuntime(createRuntime, {
@@ -99,7 +195,7 @@ export async function main(argv: string[]): Promise<void> {
 		sessionManager,
 	});
 
-	initTheme(runtime.session.settingsManager.getTheme(), !parsed.print);
+	initTheme(runtime.session.settingsManager.getTheme(), !parsed.print, join(agentDir, "themes"));
 
 	if (parsed.print) {
 		if (!runtime.session.model) {
@@ -119,6 +215,12 @@ export async function main(argv: string[]): Promise<void> {
 	const interactiveMode = new InteractiveMode(runtime, {
 		initialMessage: parsed.message,
 		verbose: parsed.verbose,
+		changelogPath: CHANGELOG_PATH,
+		allowUserBash: false,
+		ensureManagedTools: false,
+		checkForUpdates: false,
+		sendInstallTelemetry: false,
+		enableSessionShare: false,
 		branding: {
 			appName: APP_NAME,
 			appTitle: APP_NAME,

@@ -1,6 +1,9 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { type Order, type Position, protectionCoverage, reduceSide } from "@earendil-works/ti-trading-engine";
 import { getTrading } from "./context.ts";
-import type { Order, Position } from "./exchange/types.ts";
+import { openTradingSettings } from "./settings-menu.ts";
+
+export { isProtection, protectionCoverage, reduceSide } from "@earendil-works/ti-trading-engine";
 
 const MAX_MISSING_HISTORY_CHECKS = 3;
 
@@ -23,7 +26,11 @@ function describePosition(p: Position): string {
 				(p.unrealizedPnl !== undefined ? ` (${p.unrealizedPnl.toFixed(2)})` : "")
 			: "";
 	const entry = p.avgEntryPrice !== undefined ? ` entry ${p.avgEntryPrice}` : "";
-	return `${p.symbol}${p.positionSide ? ` ${p.positionSide}` : ""} ${p.amount} (~${p.quoteValue.toFixed(2)} quote)${entry}${pnl}`;
+	const valuation =
+		p.quoteValue !== undefined && Number.isFinite(p.quoteValue)
+			? `~${p.quoteValue.toFixed(2)} quote`
+			: `quote valuation unavailable${p.valuationReason ? ` (${p.valuationReason})` : ""}`;
+	return `${p.symbol}${p.positionSide ? ` ${p.positionSide}` : ""} ${p.amount} (${valuation})${entry}${pnl}`;
 }
 
 function positionIdentity(position: Position): string {
@@ -32,46 +39,6 @@ function positionIdentity(position: Position): string {
 
 function orderIdentity(order: Order): string {
 	return `${order.symbol}:${order.id}`;
-}
-
-/** Reduce direction for a position: the side that closes it. */
-export function reduceSide(p: Position): "buy" | "sell" {
-	return p.positionSide === "SHORT" || p.amount < 0 ? "buy" : "sell";
-}
-
-function hasStopComponent(order: Order): boolean {
-	return order.type === "oco" || order.type.includes("stop");
-}
-
-/** Stop-loss style protection: a reduce-direction resting order with a stop component. */
-export function isProtection(
-	order: Order,
-	p: Position,
-	coveragePct = 95,
-	positionMode: "one-way" | "hedge" = "one-way",
-): boolean {
-	if (positionMode === "hedge" && order.positionSide !== p.positionSide) return false;
-	if (order.symbol !== p.symbol || order.side !== reduceSide(p) || !hasStopComponent(order)) return false;
-	const positionAmount = Math.abs(p.amount);
-	return (
-		positionAmount > 0 &&
-		(order.closePosition === true || Math.abs(order.amount) >= positionAmount * (coveragePct / 100))
-	);
-}
-
-export function protectionCoverage(
-	order: Order,
-	p: Position,
-	coveragePct = 95,
-	positionMode: "one-way" | "hedge" = "one-way",
-): "protected" | "partial" | "none" {
-	if (positionMode === "hedge" && order.positionSide !== p.positionSide) return "none";
-	if (order.symbol !== p.symbol || order.side !== reduceSide(p) || !hasStopComponent(order)) return "none";
-	const positionAmount = Math.abs(p.amount);
-	if (positionAmount <= 0) return "none";
-	if (order.closePosition === true) return "protected";
-	if (Math.abs(order.amount) <= 0) return "none";
-	return Math.abs(order.amount) >= positionAmount * (coveragePct / 100) ? "protected" : "partial";
 }
 
 /**
@@ -90,7 +57,7 @@ export function createOrderMonitorExtension() {
 		let known = new Map<string, Order>();
 		let seeded = false;
 		let polling = false;
-		let enabled = true;
+		let lastPollAt = 0;
 		let lastError: { message: string; reportedAt: number } | undefined;
 		const missingHistoryChecks = new Map<string, number>();
 		/** Guard alert state per `${symbol}:{unprotected|drawdown}` key. */
@@ -128,7 +95,7 @@ export function createOrderMonitorExtension() {
 			for (const symbol of symbols) {
 				let history: Order[];
 				try {
-					history = await trading.exchange.getOrderHistory(symbol, 50);
+					history = await trading.tradingEngine.getOrderHistory(symbol, 50);
 				} catch (error) {
 					reportError(ctx, `history query failed for ${symbol}`, error);
 					for (const gone of disappeared.filter((order) => order.symbol === symbol)) {
@@ -163,7 +130,7 @@ export function createOrderMonitorExtension() {
 					} else if (final.status === "open" || final.status === "unknown") {
 						missingHistoryChecks.delete(id);
 						nextKnown.set(id, gone);
-						if (final?.status === "unknown") {
+						if (final.status === "unknown") {
 							reportError(ctx, `unknown final status for order ${gone.id}`, final.status);
 						}
 					} else {
@@ -194,18 +161,18 @@ export function createOrderMonitorExtension() {
 
 		const guardPositions = async (trading: Trading, open: Order[], ctx: ExtensionContext): Promise<void> => {
 			const cfg = trading.config.monitor;
-			const positions = await trading.exchange.getPositions();
+			const positions = await trading.tradingEngine.getPositions();
 			const now = Date.now();
 			const alerts: string[] = [];
 			const unprotectedKeys = new Set<string>();
 
 			for (const p of positions) {
-				const protections = open.filter((o) =>
-					isProtection(o, p, cfg.protectionCoveragePct, trading.config.positionMode),
-				);
-				const partialProtections = open.filter(
-					(o) => protectionCoverage(o, p, cfg.protectionCoveragePct, trading.config.positionMode) === "partial",
-				);
+				const coverages = open.map((order) => ({
+					order,
+					coverage: protectionCoverage(order, p, cfg.protectionCoveragePct, trading.config.positionMode),
+				}));
+				const protections = coverages.filter((item) => item.coverage === "protected").map((item) => item.order);
+				const partiallyProtected = coverages.some((item) => item.coverage === "partial");
 				const cooldownMs = cfg.alertCooldownSec * 1000;
 
 				if (protections.length === 0) {
@@ -220,8 +187,8 @@ export function createOrderMonitorExtension() {
 					if (now - st.firstSeenAt >= grace && cooled) {
 						st.lastAlertAt = now;
 						alerts.push(
-							`${partialProtections.length > 0 ? "PARTIALLY PROTECTED" : "UNPROTECTED"}: ${describePosition(p)} has ` +
-								(partialProtections.length > 0
+							`${partiallyProtected ? "PARTIALLY PROTECTED" : "UNPROTECTED"}: ${describePosition(p)} has ` +
+								(partiallyProtected
 									? "stop-loss coverage below the configured threshold. "
 									: "no stop-loss order. ") +
 								`Place protection (place_oco, or a ${reduceSide(p)} stop_market at your invalidation level) ` +
@@ -271,11 +238,17 @@ export function createOrderMonitorExtension() {
 		};
 
 		const poll = async (ctx: ExtensionContext): Promise<void> => {
-			if (polling || !enabled) return;
+			if (polling) return;
+			const trading = getTrading();
+			const cfg = trading.config.monitor;
+			if (!cfg.enabled) return;
+			const intervalMs = Math.max(5, cfg.intervalSec) * 1000;
+			const now = Date.now();
+			if (lastPollAt !== 0 && now - lastPollAt < intervalMs) return;
 			polling = true;
+			lastPollAt = now;
 			try {
-				const trading = getTrading();
-				const open = await trading.exchange.getOpenOrders();
+				const open = await trading.tradingEngine.getOpenOrders();
 				await reportFills(trading, open, ctx);
 				if (trading.config.monitor.guardPositions) await guardPositions(trading, open, ctx);
 			} catch (error) {
@@ -288,29 +261,20 @@ export function createOrderMonitorExtension() {
 		pi.registerCommand("monitor", {
 			description: "Order fill monitor & position guard: /monitor [on|off]",
 			handler: async (args, ctx) => {
-				let arg = args?.trim();
+				const arg = args?.trim();
 				if (!arg) {
-					const english = getTrading().config.language === "en-US";
-					const choice = await ctx.ui.select(
-						english ? "Order monitor" : "后台监控",
-						english
-							? ["Enable monitor", "Disable monitor", "Show status", "Cancel"]
-							: ["开启监控", "关闭监控", "查看状态", "取消"],
-					);
-					if (!choice || choice === "取消" || choice === "Cancel") return;
-					if (choice === "开启监控" || choice === "Enable monitor") arg = "on";
-					else if (choice === "关闭监控" || choice === "Disable monitor") arg = "off";
-					else arg = "status";
-				}
-				if (arg === "on") enabled = true;
-				else if (arg === "off") enabled = false;
-				else if (arg !== "status") {
-					ctx.ui.notify("Usage: /monitor [on|off]", "warning");
+					await openTradingSettings(ctx, () => {});
 					return;
 				}
 				const trading = getTrading();
+				if (arg === "on" || arg === "off") {
+					await trading.patchConfig({ monitor: { enabled: arg === "on" } });
+				} else if (arg !== "status") {
+					ctx.ui.notify("Usage: /monitor [on|off]", "warning");
+					return;
+				}
 				const cfg = trading.config.monitor;
-				const status = enabled ? "on" : "off";
+				const status = cfg.enabled ? "on" : "off";
 				ctx.ui.notify(
 					`Order monitor ${status} (interval ${cfg.intervalSec}s, wakeAgent ${cfg.wakeAgent}, watching ${known.size} open orders; ` +
 						`position guard ${cfg.guardPositions ? "on" : "off"}, loss alert -${cfg.alertLossPct}%, cooldown ${cfg.alertCooldownSec}s)`,
@@ -320,14 +284,8 @@ export function createOrderMonitorExtension() {
 		});
 
 		pi.on("session_start", async (_event, ctx) => {
-			const trading = getTrading();
-			if (!trading.config.monitor.enabled) {
-				enabled = false;
-				return;
-			}
-			const intervalMs = Math.max(5, trading.config.monitor.intervalSec) * 1000;
-			await poll(ctx); // seed the open-order snapshot
-			timer = setInterval(() => void poll(ctx), intervalMs);
+			await poll(ctx); // seed the open-order snapshot when enabled
+			timer = setInterval(() => void poll(ctx), 5_000);
 			// Never keep the process alive just for the monitor (print mode).
 			timer.unref?.();
 		});

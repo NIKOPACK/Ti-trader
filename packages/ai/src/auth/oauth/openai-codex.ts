@@ -443,7 +443,7 @@ async function loginOpenAICodexDeviceCode(interaction: ProviderAuthInteraction):
 }
 
 async function loginOpenAICodex(interaction: ProviderAuthInteraction): Promise<OAuthCredential> {
-	const { verifier, state, url } = await createAuthorizationFlow();
+	const { verifier, state, url } = await createAuthorizationFlow(interaction.originator);
 	const server = await startLocalOAuthServer(state);
 	const manualAbort = new AbortController();
 	const onAbort = () => server.cancelWait();

@@ -179,6 +179,8 @@ export interface LoadPromptTemplatesOptions {
 	cwd: string;
 	/** Agent config directory for global templates. */
 	agentDir: string;
+	/** Project-local configuration directory name. Defaults to `.pi`. */
+	projectConfigDirName?: string;
 	/** Explicit prompt template paths (files or directories). */
 	promptPaths: string[];
 	/** Include default prompt directories. */
@@ -194,13 +196,14 @@ export interface LoadPromptTemplatesOptions {
 export function loadPromptTemplates(options: LoadPromptTemplatesOptions): PromptTemplate[] {
 	const resolvedCwd = resolvePath(options.cwd);
 	const resolvedAgentDir = resolvePath(options.agentDir);
+	const projectConfigDirName = options.projectConfigDirName ?? CONFIG_DIR_NAME;
 	const promptPaths = options.promptPaths;
 	const includeDefaults = options.includeDefaults;
 
 	const templates: PromptTemplate[] = [];
 
 	const globalPromptsDir = join(resolvedAgentDir, "prompts");
-	const projectPromptsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "prompts");
+	const projectPromptsDir = resolve(resolvedCwd, projectConfigDirName, "prompts");
 
 	const isUnderPath = (target: string, root: string): boolean => {
 		const normalizedRoot = resolve(root);

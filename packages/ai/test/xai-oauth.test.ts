@@ -53,9 +53,11 @@ type DeviceCodeInfo = {
 function loginXaiForTest(options: {
 	onDeviceCode: (info: DeviceCodeInfo) => void;
 	signal?: AbortSignal;
+	referrer?: string;
 }): Promise<OAuthCredential> {
 	return xaiOAuth.login({
 		signal: options.signal ?? neverAbortedSignal,
+		referrer: options.referrer,
 		prompt: () => {
 			throw new Error("Unexpected prompt");
 		},
@@ -153,6 +155,24 @@ describe("xAI OAuth device flow", () => {
 			refresh: "refresh-token",
 			expires: startTime.getTime() + 20_000 + 21_600_000 - 300_000,
 		});
+	});
+
+	it("uses a caller-provided OAuth referrer", async () => {
+		vi.useFakeTimers();
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (input: unknown, init?: RequestInit) => {
+				if (requestUrl(input) === "https://auth.x.ai/oauth2/device/code") {
+					expect(requestForm(init).get("referrer")).toBe("ti");
+					return jsonResponse(deviceCodeResponse({ interval: 1 }));
+				}
+				return jsonResponse(tokenResponse());
+			}),
+		);
+
+		const loginPromise = loginXaiForTest({ onDeviceCode: () => {}, referrer: "ti" });
+		await vi.advanceTimersByTimeAsync(1000);
+		await expect(loginPromise).resolves.toMatchObject({ access: "access-token" });
 	});
 
 	it("falls back to the default poll interval when the response reports interval 0", async () => {

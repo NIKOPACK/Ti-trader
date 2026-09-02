@@ -9,6 +9,6 @@
     "inlineSources": false,
     "inlineSourceMap": false
   },
-  "include": ["index.ts", "indicators.ts"],
+  "include": ["index.ts", "indicators.ts", "strategies.ts"],
   "exclude": ["dist", "node_modules"]
 }

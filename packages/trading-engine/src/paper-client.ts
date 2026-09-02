@@ -1,20 +1,44 @@
-import {
-	closeSync,
-	existsSync,
-	fstatSync,
-	mkdirSync,
-	openSync,
-	readFileSync,
-	renameSync,
-	statSync,
-	unlinkSync,
-	utimesSync,
-	writeFileSync,
-} from "node:fs";
-import { homedir } from "node:os";
-import { dirname, join } from "node:path";
+import { existsSync, unlinkSync } from "node:fs";
+import { join } from "node:path";
 import ccxt, { type Ticker as CcxtTicker, type Exchange } from "ccxt";
+import { toTicker } from "./ccxt-map.ts";
+import { amountStepFromCcxtPrecision } from "./ccxt-precision.ts";
 import type { FuturesPositionMode } from "./client-types.ts";
+import { contractSizeForMarket } from "./contract-size.ts";
+import {
+	type AccountTransaction,
+	type FuturesEntry,
+	type FuturesLot,
+	freshFuturesAccount,
+	freshSpotAccount,
+	isRecord,
+	maxPersistedOrderId,
+	type PaperAccount,
+	type PaperOrder,
+	parsePaperAccount,
+} from "./paper-account.ts";
+import {
+	advanceCheckedAt,
+	baseAsset,
+	buildMarketPath,
+	evaluatePath,
+	isFinitePositive,
+	isTriggerType,
+	type PathFire,
+	type PriceLookup,
+	toOrder,
+	trailingStopLevel,
+	triggerFires,
+} from "./paper-path.ts";
+import {
+	acquireFileLock as acquireAccountLock,
+	acquireFileLockSync as acquireAccountLockSync,
+	DEFAULT_FILE_LOCK,
+	readJsonFile,
+	releaseFileLock as releaseAccountLock,
+	touchFileLock as touchAccountLock,
+	writeJsonFile,
+} from "./persist.ts";
 import {
 	type Balance,
 	type ContractStats,
@@ -35,365 +59,9 @@ import {
 	timeframeDurationMs,
 } from "./types.ts";
 
-const PAPER_DIR = join(homedir(), ".ti-trader", "agent", "paper");
-const ACCOUNT_LOCK_TIMEOUT_MS = 10_000;
-const ACCOUNT_LOCK_STALE_MS = 60_000;
-const ACCOUNT_LOCK_RETRY_MS = 10;
-
-function readJsonFile<T>(path: string): T | undefined {
-	if (!existsSync(path)) return undefined;
-	return JSON.parse(readFileSync(path, "utf8")) as T;
-}
-
-function writeJsonFile(path: string, data: unknown): void {
-	mkdirSync(dirname(path), { recursive: true });
-	const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-	writeFileSync(temporaryPath, `${JSON.stringify(data, null, "\t")}\n`, "utf8");
-	renameSync(temporaryPath, path);
-}
-
-interface PaperOrder {
-	id: string;
-	symbol: string;
-	side: "buy" | "sell";
-	type: OrderType;
-	price?: number;
-	/** Trigger price for stop / take-profit orders. */
-	stopPrice?: number;
-	/** Trailing distance in percent for trailing stops. */
-	trailingPercent?: number;
-	/** Peak (sell) or trough (buy) price observed since placement (trailing stops). */
-	trailingExtreme?: number;
-	/** Set once a stop/take_profit limit order's trigger has fired and it rests as a limit order. */
-	triggered?: boolean;
-	/** Unit price used to reserve quote funds for resting buy orders. */
-	reservePrice?: number;
-	/** Last time this order's trigger was evaluated against the market. */
-	lastCheckedAt?: number;
-	/** Orders sharing an ocoGroup form a one-cancels-the-other pair with a single shared reservation. */
-	ocoGroup?: string;
-	clientOrderId?: string;
-	listClientOrderId?: string;
-	positionSide?: "BOTH" | "LONG" | "SHORT";
-	reduceOnly?: boolean;
-	closePosition?: boolean;
-	amount: number;
-	filled: number;
-	average?: number;
-	cost: number;
-	status: "open" | "closed" | "canceled";
-	timestamp: number;
-}
-
-interface FuturesLot {
-	amount: number;
-	price: number;
-	leverage: number;
-	marginType: "isolated" | "cross";
-}
-
-interface FuturesEntry {
-	amount: number;
-	cost: number;
-	/** Futures setting captured when this position entry was opened. */
-	leverage?: number;
-	marginType?: "isolated" | "cross";
-	/** FIFO opening lots; absent only in legacy persisted entries. */
-	lots?: FuturesLot[];
-}
-
-interface PaperAccount {
-	quote: string;
-	/** asset -> free amount */
-	balances: Record<string, number>;
-	/** asset -> { amount, cost } for average-entry PnL */
-	entries: Record<string, FuturesEntry>;
-	orders: PaperOrder[];
-	trades: Array<{
-		id: string;
-		symbol: string;
-		side: "buy" | "sell";
-		price: number;
-		amount: number;
-		cost: number;
-		fee: number;
-		realizedPnl?: number;
-		positionSide?: "BOTH" | "LONG" | "SHORT";
-		timestamp: number;
-	}>;
-	realizedPnl: number;
-	leverage?: number;
-	marginType?: "isolated" | "cross";
-	/** New futures settings are scoped by the canonical futures symbol. */
-	leverageBySymbol?: Record<string, number>;
-	marginTypeBySymbol?: Record<string, "isolated" | "cross">;
-	positionMode?: FuturesPositionMode;
-	createdAt: number;
-}
-
-interface AccountLock {
-	fd: number;
-	path: string;
-	device: number;
-	inode: number;
-}
-
-interface AccountTransaction {
-	version: 1;
-	account: PaperAccount;
-	futuresAccount: PaperAccount;
-}
-
-function baseAsset(symbol: string, quote: string): string {
-	const suffix = `/${quote}`;
-	if (!symbol.endsWith(suffix)) {
-		throw new Error(`Symbol "${symbol}" is not a ${quote} market`);
-	}
-	return symbol.slice(0, -suffix.length);
-}
-
-const TRIGGER_TYPES = ["stop", "stop_market", "take_profit", "take_profit_market"] as const;
-type TriggerType = (typeof TRIGGER_TYPES)[number];
-
-function isTriggerType(type: OrderType): type is TriggerType {
-	return (TRIGGER_TYPES as readonly string[]).includes(type);
-}
-
-/**
- * Whether a stop/take-profit trigger fires at the given price.
- * stop: fires when the price moves against the position (sell: fall to trigger,
- * buy: rise to trigger). take_profit: fires when the price moves favourably
- * (sell: rise to trigger, buy: fall to trigger).
- */
-function triggerFires(type: TriggerType, side: "buy" | "sell", price: number, stopPrice: number): boolean {
-	const fallTo = type.startsWith("stop") ? side === "sell" : side === "buy";
-	return fallTo ? price <= stopPrice : price >= stopPrice;
-}
-
-/** Current stop level of a trailing stop given its extreme price. */
-function trailingStopLevel(side: "buy" | "sell", extreme: number, trailingPercent: number): number {
-	return side === "sell" ? extreme * (1 - trailingPercent / 100) : extreme * (1 + trailingPercent / 100);
-}
-
-/**
- * A price-range segment of the market path since an order was last checked:
- * one kline (high/low) or the final ticker reading (a single point).
- */
-interface PathSegment {
-	high: number;
-	low: number;
-	/** True for the final single-price ticker segment. */
-	tick?: boolean;
-}
-
-interface MarketPath {
-	segments: PathSegment[];
-	/** Latest timestamp through which the returned path is known to cover. */
-	checkedAt: number;
-}
-
-/** Where along a path an order fired, and the price it fills at. */
-interface PathFire {
-	index: number;
-	price: number;
-}
-
-type PriceLookup = { price: number } | { reason: string };
-
-function isFinitePositive(value: number | undefined): value is number {
-	return value !== undefined && Number.isFinite(value) && value > 0;
-}
-
-function fsErrorCode(error: unknown): string | undefined {
-	if (typeof error !== "object" || error === null) return undefined;
-	const code = (error as { code?: unknown }).code;
-	return typeof code === "string" ? code : undefined;
-}
-
-function isStaleAccountLock(path: string): boolean {
-	try {
-		return Date.now() - statSync(path).mtimeMs > ACCOUNT_LOCK_STALE_MS;
-	} catch (error) {
-		if (fsErrorCode(error) === "ENOENT") return false;
-		throw error;
-	}
-}
-
-function acquireAccountLockSync(path: string): AccountLock {
-	mkdirSync(dirname(path), { recursive: true });
-	const deadline = Date.now() + ACCOUNT_LOCK_TIMEOUT_MS;
-	for (;;) {
-		try {
-			const fd = openSync(path, "wx", 0o600);
-			try {
-				const stats = fstatSync(fd);
-				return { fd, path, device: stats.dev, inode: stats.ino };
-			} catch (error) {
-				try {
-					closeSync(fd);
-				} finally {
-					try {
-						unlinkSync(path);
-					} catch {
-						// Preserve the original fstat failure.
-					}
-				}
-				throw error;
-			}
-		} catch (error) {
-			if (fsErrorCode(error) !== "EEXIST") throw error;
-			if (isStaleAccountLock(path)) {
-				try {
-					unlinkSync(path);
-				} catch (unlinkError) {
-					if (fsErrorCode(unlinkError) !== "ENOENT") throw unlinkError;
-				}
-				continue;
-			}
-			if (Date.now() >= deadline) throw new Error(`Timed out waiting for paper account lock ${path}`);
-			const signal = new Int32Array(new SharedArrayBuffer(4));
-			Atomics.wait(signal, 0, 0, ACCOUNT_LOCK_RETRY_MS);
-		}
-	}
-}
-
-async function acquireAccountLock(path: string): Promise<AccountLock> {
-	mkdirSync(dirname(path), { recursive: true });
-	const deadline = Date.now() + ACCOUNT_LOCK_TIMEOUT_MS;
-	for (;;) {
-		try {
-			const fd = openSync(path, "wx", 0o600);
-			try {
-				const stats = fstatSync(fd);
-				return { fd, path, device: stats.dev, inode: stats.ino };
-			} catch (error) {
-				try {
-					closeSync(fd);
-				} finally {
-					try {
-						unlinkSync(path);
-					} catch {
-						// Preserve the original fstat failure.
-					}
-				}
-				throw error;
-			}
-		} catch (error) {
-			if (fsErrorCode(error) !== "EEXIST") throw error;
-			if (isStaleAccountLock(path)) {
-				try {
-					unlinkSync(path);
-				} catch (unlinkError) {
-					if (fsErrorCode(unlinkError) !== "ENOENT") throw unlinkError;
-				}
-				continue;
-			}
-			if (Date.now() >= deadline) throw new Error(`Timed out waiting for paper account lock ${path}`);
-			await new Promise<void>((resolve) => setTimeout(resolve, ACCOUNT_LOCK_RETRY_MS));
-		}
-	}
-}
-
-function releaseAccountLock(lock: AccountLock): void {
-	let failure: unknown;
-	try {
-		closeSync(lock.fd);
-	} catch (error) {
-		failure = error;
-	}
-	try {
-		const stats = statSync(lock.path);
-		if (stats.dev === lock.device && stats.ino === lock.inode) unlinkSync(lock.path);
-	} catch (error) {
-		if (fsErrorCode(error) !== "ENOENT" && failure === undefined) failure = error;
-	}
-	if (failure !== undefined) throw failure;
-}
-
-function touchAccountLock(lock: AccountLock): void {
-	try {
-		const stats = statSync(lock.path);
-		if (stats.dev !== lock.device || stats.ino !== lock.inode) return;
-		const now = new Date();
-		utimesSync(lock.path, now, now);
-	} catch {
-		// The owner check in releaseAccountLock prevents deleting a lock that was
-		// replaced by another process. A failed heartbeat is therefore handled by
-		// the normal operation/release error path.
-	}
-}
-
-function isRecord(value: unknown): value is Record<string, unknown> {
-	return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-function parsePaperAccount(value: unknown, path: string): PaperAccount {
-	if (!isRecord(value)) throw new Error(`Invalid paper account in ${path}: expected an object`);
-	if (typeof value.quote !== "string" || value.quote.length === 0) {
-		throw new Error(`Invalid paper account in ${path}: quote is missing`);
-	}
-	if (
-		!isRecord(value.balances) ||
-		Object.values(value.balances).some((amount) => typeof amount !== "number" || !Number.isFinite(amount))
-	) {
-		throw new Error(`Invalid paper account in ${path}: balances must contain finite numbers`);
-	}
-	if (!isRecord(value.entries) || !Array.isArray(value.orders) || !Array.isArray(value.trades)) {
-		throw new Error(`Invalid paper account in ${path}: entries, orders and trades are required`);
-	}
-	if (typeof value.realizedPnl !== "number" || !Number.isFinite(value.realizedPnl)) {
-		throw new Error(`Invalid paper account in ${path}: realizedPnl must be finite`);
-	}
-	if (typeof value.createdAt !== "number" || !Number.isFinite(value.createdAt)) {
-		throw new Error(`Invalid paper account in ${path}: createdAt must be finite`);
-	}
-	return structuredClone(value) as unknown as PaperAccount;
-}
-
-function freshSpotAccount(quote: string, startQuote: number): PaperAccount {
-	return {
-		quote,
-		balances: { [quote]: startQuote },
-		entries: {},
-		orders: [],
-		trades: [],
-		realizedPnl: 0,
-		createdAt: Date.now(),
-	};
-}
-
-function freshFuturesAccount(
-	quote: string,
-	startQuote: number,
-	leverage: number,
-	marginType: "isolated" | "cross",
-	positionMode: FuturesPositionMode,
-): PaperAccount {
-	return {
-		quote,
-		balances: { [quote]: startQuote },
-		entries: {},
-		orders: [],
-		trades: [],
-		realizedPnl: 0,
-		leverage,
-		marginType,
-		positionMode,
-		createdAt: Date.now(),
-	};
-}
-
-function maxPersistedOrderId(accounts: PaperAccount[]): number {
-	let max = 0;
-	for (const account of accounts) {
-		for (const record of [...account.orders, ...account.trades]) {
-			const id = typeof record.id === "string" ? Number(record.id) : NaN;
-			if (!Number.isFinite(id) || !Number.isSafeInteger(id) || id < 0) continue;
-			max = Math.max(max, id);
-		}
-	}
-	return max + 1;
-}
+const PAPER_LOCK_OPTIONS = {
+	timeoutMessage: (path: string) => `Timed out waiting for paper account lock ${path}`,
+};
 
 /**
  * Simulated spot account backed by live public market data.
@@ -421,6 +89,8 @@ export class PaperExchangeClient implements ExchangeClient {
 	private futuresLeverage = 1;
 	private futuresMarginType: "isolated" | "cross" = "isolated";
 	private readonly positionMode: FuturesPositionMode;
+	/** Maintenance margin rate used by the deliberately conservative paper liquidation boundary. */
+	private readonly maintenanceMarginRate: number;
 	/**
 	 * Account reads and writes share one queue so lazy settlement cannot run
 	 * concurrently with another operation in this client. A file lock below
@@ -433,17 +103,32 @@ export class PaperExchangeClient implements ExchangeClient {
 		quoteCurrency: string,
 		startQuote: number,
 		feeRate: number,
-		accountDir: string = PAPER_DIR,
+		accountDir: string,
 		marketType: "spot" | "usdm-futures" | "both" = "spot",
 		leverage = 1,
 		marginType: "isolated" | "cross" = "isolated",
 		positionMode: FuturesPositionMode = "one-way",
+		maintenanceMarginRate = 0.005,
 	) {
+		if (typeof id !== "string" || id.length === 0) throw new Error("Exchange id is required");
+		if (typeof quoteCurrency !== "string" || !/^[A-Z0-9_-]+$/.test(quoteCurrency))
+			throw new Error("quoteCurrency must contain only uppercase letters, numbers, '_' or '-'");
+		if (!Number.isFinite(startQuote) || startQuote < 0) throw new Error("startQuote must be finite and non-negative");
+		if (!Number.isFinite(feeRate) || feeRate < 0 || feeRate >= 1) throw new Error("feeRate must be finite in [0, 1)");
+		if (marketType !== "spot" && marketType !== "usdm-futures" && marketType !== "both")
+			throw new Error("Invalid market type");
+		if (!Number.isInteger(leverage) || leverage < 1 || leverage > 125) throw new Error("Invalid leverage");
+		if (marginType !== "isolated" && marginType !== "cross") throw new Error("Invalid margin mode");
+		if (positionMode !== "one-way" && positionMode !== "hedge") throw new Error("Invalid position mode");
 		this.id = id;
 		this.quoteCurrency = quoteCurrency;
 		this.feeRate = feeRate;
 		this.marketType = marketType;
+		if (!Number.isFinite(maintenanceMarginRate) || maintenanceMarginRate <= 0 || maintenanceMarginRate >= 1) {
+			throw new Error("maintenanceMarginRate must be a finite number between 0 and 1");
+		}
 		this.positionMode = positionMode;
+		this.maintenanceMarginRate = maintenanceMarginRate;
 		this.initialStartQuote = startQuote;
 		this.futuresLeverage = leverage;
 		this.futuresMarginType = marginType;
@@ -458,10 +143,10 @@ export class PaperExchangeClient implements ExchangeClient {
 		this.accountLockPath = join(accountDir, `${id}-${quoteCurrency}.lock`);
 		this.transactionPath = join(accountDir, `${id}-${quoteCurrency}.transaction.json`);
 
-		const lock = acquireAccountLockSync(this.accountLockPath);
+		const lock = acquireAccountLockSync(this.accountLockPath, PAPER_LOCK_OPTIONS);
 		try {
 			this.recoverTransactionUnlocked();
-			const stored = readJsonFile<unknown>(this.accountPath);
+			const stored = readJsonFile(this.accountPath);
 			const storedAccount = stored === undefined ? undefined : parsePaperAccount(stored, this.accountPath);
 			// A file containing another quote belongs to a different account. Leave it
 			// untouched until an explicit mutation chooses to replace it; startup must
@@ -472,7 +157,7 @@ export class PaperExchangeClient implements ExchangeClient {
 
 			// A mismatched futures file is treated as absent and left untouched at
 			// startup. It cannot be safely adopted under the configured quote.
-			const storedFutures = readJsonFile<unknown>(this.futuresAccountPath);
+			const storedFutures = readJsonFile(this.futuresAccountPath);
 			const parsedFutures =
 				storedFutures === undefined ? undefined : parsePaperAccount(storedFutures, this.futuresAccountPath);
 			const futuresNeedsPersist = parsedFutures === undefined || parsedFutures.quote !== quoteCurrency;
@@ -547,7 +232,7 @@ export class PaperExchangeClient implements ExchangeClient {
 
 	private reloadAccountsUnlocked(): void {
 		this.recoverTransactionUnlocked();
-		const stored = readJsonFile<unknown>(this.accountPath);
+		const stored = readJsonFile(this.accountPath);
 		if (stored === undefined) throw new Error(`Paper account state is missing: ${this.accountPath}`);
 		const account = parsePaperAccount(stored, this.accountPath);
 		if (account.quote !== this.quoteCurrency) {
@@ -555,7 +240,7 @@ export class PaperExchangeClient implements ExchangeClient {
 			this.nextOrderId = maxPersistedOrderId([this.account, this.futuresAccount]);
 			return;
 		}
-		const storedFutures = readJsonFile<unknown>(this.futuresAccountPath);
+		const storedFutures = readJsonFile(this.futuresAccountPath);
 		if (storedFutures === undefined) {
 			if (this.marketType !== "spot") {
 				this.futuresAccount = freshFuturesAccount(
@@ -595,7 +280,7 @@ export class PaperExchangeClient implements ExchangeClient {
 
 	private recoverTransactionUnlocked(): void {
 		if (!existsSync(this.transactionPath)) return;
-		const raw = readJsonFile<unknown>(this.transactionPath);
+		const raw = readJsonFile(this.transactionPath);
 		if (!isRecord(raw) || raw.version !== 1) {
 			throw new Error(`Invalid paper account transaction in ${this.transactionPath}; manual recovery is required`);
 		}
@@ -637,8 +322,8 @@ export class PaperExchangeClient implements ExchangeClient {
 
 	private runAccountOperation<T>(operation: () => Promise<T> | T): Promise<T> {
 		const result = this.accountOperationQueue.then(async () => {
-			const lock = await acquireAccountLock(this.accountLockPath);
-			const heartbeat = setInterval(() => touchAccountLock(lock), ACCOUNT_LOCK_STALE_MS / 3);
+			const lock = await acquireAccountLock(this.accountLockPath, PAPER_LOCK_OPTIONS);
+			const heartbeat = setInterval(() => touchAccountLock(lock), DEFAULT_FILE_LOCK.staleMs / 3);
 			let operationResult: { completed: true; value: T } | { completed: false; error: unknown };
 			try {
 				this.reloadAccountsUnlocked();
@@ -688,7 +373,7 @@ export class PaperExchangeClient implements ExchangeClient {
 		) {
 			throw new Error(`Unsupported futures market: ${symbol}`);
 		}
-		this.contractSizeForMarket(market);
+		contractSizeForMarket(market);
 	}
 
 	private legacyFuturesSettings(): { leverage: number; marginType: "isolated" | "cross" } {
@@ -745,26 +430,13 @@ export class PaperExchangeClient implements ExchangeClient {
 		};
 	}
 
-	private contractSizeForMarket(
-		market: { contract?: boolean; linear?: boolean; contractSize?: number } | undefined,
-	): number {
-		if (!market?.contract) return 1;
-		if (market.linear !== true) {
-			throw new Error("Paper futures support only linear USDⓈ-M contracts");
-		}
-		const contractSize = market.contractSize;
-		if (contractSize === undefined || !Number.isFinite(contractSize) || contractSize <= 0) {
-			throw new Error("Futures market contractSize is unavailable; refusing to guess the amount unit");
-		}
-		return contractSize;
-	}
 	private baseAmountToContracts(
 		symbol: string,
 		amount: number,
 		market: { contract?: boolean; linear?: boolean; contractSize?: number },
 		exchange: Exchange,
 	): { contracts: number; baseAmount: number } {
-		const contractSize = this.contractSizeForMarket(market);
+		const contractSize = contractSizeForMarket(market);
 		if (!market.contract) return { contracts: amount, baseAmount: amount };
 		const contracts = amount / contractSize;
 		if (!Number.isFinite(contracts) || contracts <= 0) {
@@ -789,17 +461,24 @@ export class PaperExchangeClient implements ExchangeClient {
 
 	private async normalizeOrderInput(input: PlaceOrderInput): Promise<PlaceOrderInput> {
 		const exchange = this.exchangeFor(input.symbol);
+		if (!Number.isFinite(input.amount) || input.amount <= 0) throw new Error("Amount must be finite and positive");
 		await exchange.loadMarkets();
 		const market = exchange.markets[input.symbol];
 		const futures = this.isFuturesSymbol(input.symbol);
 		if (
 			!market ||
 			market.quote !== this.quoteCurrency ||
-			(futures ? market.swap !== true : market.spot !== true) ||
-			market.active === false
+			(futures
+				? market.settle !== this.quoteCurrency ||
+					market.swap !== true ||
+					market.contract !== true ||
+					market.active !== true
+				: market.spot !== true || market.swap === true || market.active === false)
 		) {
 			throw new Error(`Unsupported ${futures ? "futures" : "spot"} market: ${input.symbol}`);
 		}
+		if (futures && (market.linear !== true || market.inverse === true))
+			throw new Error(`Paper futures support only linear USDⓈ-M contracts: ${input.symbol}`);
 		if (futures && market.contract !== true)
 			throw new Error(`Futures market metadata is not a contract: ${input.symbol}`);
 		const converted = futures
@@ -858,6 +537,7 @@ export class PaperExchangeClient implements ExchangeClient {
 	}
 
 	async getOrderBook(symbol: string, limit = 20): Promise<OrderBook> {
+		if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer");
 		const book = await this.exchangeFor(symbol).fetchOrderBook(symbol, limit);
 		const bids = book.bids.flatMap(([price, amount]) =>
 			price !== undefined && amount !== undefined ? [{ price, amount }] : [],
@@ -890,12 +570,19 @@ export class PaperExchangeClient implements ExchangeClient {
 			(this.marketType === "usdm-futures" && !futures) ||
 			!market ||
 			market.quote !== this.quoteCurrency ||
-			(futures ? market.swap !== true : market.swap === true)
+			(futures
+				? market.settle !== this.quoteCurrency ||
+					market.swap !== true ||
+					market.contract !== true ||
+					market.linear !== true ||
+					market.inverse === true ||
+					market.active !== true
+				: market.spot !== true || market.swap === true || market.active === false)
 		)
 			throw new Error(`Unsupported market: ${symbol}`);
 		if (futures) {
 			if (market.contract !== true) throw new Error(`Futures market metadata is not a contract: ${symbol}`);
-			this.contractSizeForMarket(market);
+			contractSizeForMarket(market);
 		}
 		return {
 			symbol: market.symbol,
@@ -911,6 +598,7 @@ export class PaperExchangeClient implements ExchangeClient {
 			contractSize: market.contractSize,
 			pricePrecision: market.precision?.price,
 			amountPrecision: market.precision?.amount,
+			amountStep: amountStepFromCcxtPrecision(market.precision?.amount, exchange.precisionMode),
 			minAmount: market.limits?.amount?.min,
 			minNotional: market.limits?.cost?.min,
 			limits: market.limits,
@@ -923,10 +611,20 @@ export class PaperExchangeClient implements ExchangeClient {
 		const exchange = this.futuresExchange;
 		await exchange.loadMarkets();
 		const market = exchange.markets[symbol];
-		if (!market || market.contract !== true || market.swap !== true) {
+		if (
+			!market ||
+			market.quote !== this.quoteCurrency ||
+			market.settle !== this.quoteCurrency ||
+			market.swap !== true ||
+			market.contract !== true ||
+			market.active !== true
+		) {
 			throw new Error(`Unsupported futures market: ${symbol}`);
 		}
-		this.contractSizeForMarket(market);
+		if (market.linear !== true || market.inverse === true) {
+			throw new Error(`Paper futures support only linear USDⓈ-M contracts: ${symbol}`);
+		}
+		contractSizeForMarket(market);
 		const ticker = await this.futuresExchange.fetchTicker(symbol);
 		const info = ticker.info as Record<string, unknown> | undefined;
 		const markPrice = Number(info?.markPrice ?? NaN);
@@ -940,6 +638,7 @@ export class PaperExchangeClient implements ExchangeClient {
 	}
 
 	async getKlines(symbol: string, timeframe: string, limit: number): Promise<Kline[]> {
+		if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer");
 		const ohlcv = await this.exchangeFor(symbol).fetchOHLCV(symbol, timeframe, undefined, limit);
 		const duration = timeframeDurationMs(timeframe);
 		return ohlcv.map((k) => ({
@@ -1048,6 +747,7 @@ export class PaperExchangeClient implements ExchangeClient {
 	}
 
 	async getOrderHistory(symbol?: string, limit = 50): Promise<Order[]> {
+		if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer");
 		return this.runAccountOperation(async () => {
 			const account = symbol === undefined ? undefined : this.accountForSymbol(symbol);
 			await this.settleOpenOrdersUnlocked();
@@ -1437,18 +1137,27 @@ export class PaperExchangeClient implements ExchangeClient {
 		});
 	}
 
-	async getFundingRateHistory(symbol: string, _limit = 20): Promise<FundingRateRecord[]> {
+	/**
+	 * Paper Futures does not simulate funding payments. Keep the shared API
+	 * shape, but omit the rate instead of reporting a fabricated zero.
+	 */
+	async getFundingRate(symbol: string): Promise<{ symbol: string; rate?: number; nextFundingTime?: number }> {
 		if (!this.isFuturesSymbol(symbol) || this.marketType === "spot")
 			throw new Error("Paper futures funding requires a futures symbol");
-		this.accountForSymbol(symbol);
-		return [];
+		await this.validateFuturesMarket(symbol);
+		return { symbol };
 	}
 
-	async getFundingRate(symbol: string): Promise<{ symbol: string; rate: number; nextFundingTime?: number }> {
+	/**
+	 * Paper Futures has no funding-rate clock or payment history. An empty
+	 * history therefore means unavailable, not that the funding rate was zero.
+	 */
+	async getFundingRateHistory(symbol: string, limit = 20): Promise<FundingRateRecord[]> {
 		if (!this.isFuturesSymbol(symbol) || this.marketType === "spot")
 			throw new Error("Paper futures funding requires a futures symbol");
-		this.accountForSymbol(symbol);
-		return { symbol, rate: 0, nextFundingTime: undefined };
+		if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer");
+		await this.validateFuturesMarket(symbol);
+		return [];
 	}
 
 	async setLeverage(symbol: string, leverage: number): Promise<void> {
@@ -1474,6 +1183,7 @@ export class PaperExchangeClient implements ExchangeClient {
 	}
 
 	async getTopMarkets(limit: number): Promise<Ticker[]> {
+		if (!Number.isInteger(limit) || limit <= 0) throw new Error("limit must be a positive integer");
 		const fetchFamily = async (exchange: Exchange, futures: boolean): Promise<Ticker[]> => {
 			const tickers = await exchange.fetchTickers();
 			const suffix = futures ? `/${this.quoteCurrency}:${this.quoteCurrency}` : `/${this.quoteCurrency}`;
@@ -1533,12 +1243,148 @@ export class PaperExchangeClient implements ExchangeClient {
 
 	// --- internals -----------------------------------------------------------
 
-	private futuresBalances(): Promise<Balance[]> {
+	private async futuresBalances(): Promise<Balance[]> {
+		await this.settleFuturesLiquidationsUnlocked();
 		const free = this.futuresAccount.balances[this.quoteCurrency] ?? 0;
-		return Promise.resolve([{ asset: this.quoteCurrency, free, used: 0, total: free, quoteValue: free }]);
+		return [{ asset: this.quoteCurrency, free, used: 0, total: free, quoteValue: free }];
+	}
+
+	/** Close paper futures positions whose equity no longer covers maintenance margin. */
+	private async settleFuturesLiquidationsUnlocked(): Promise<void> {
+		await this.futuresExchange.loadMarkets();
+		let dirty = false;
+		let crossEquity = this.futuresAccount.balances[this.quoteCurrency] ?? 0;
+		let crossMaintenance = 0;
+		let crossMetricsValid = Number.isFinite(crossEquity);
+		const crossPrices = new Map<string, number>();
+		const crossSymbols = new Set<string>();
+		for (const entryKey of Object.keys(this.futuresAccount.entries)) {
+			const asset =
+				this.positionMode === "hedge" && entryKey.includes(":")
+					? entryKey.slice(0, entryKey.lastIndexOf(":"))
+					: entryKey;
+			const symbol = `${asset}/${this.quoteCurrency}:${this.quoteCurrency}`;
+			if ((this.futuresAccount.marginTypeBySymbol?.[symbol] ?? this.futuresAccount.marginType) === "cross")
+				crossSymbols.add(symbol);
+		}
+		if (crossSymbols.size > 0) {
+			for (const [entryKey, entry] of Object.entries(this.futuresAccount.entries)) {
+				if (entry.amount === 0) continue;
+				const asset =
+					this.positionMode === "hedge" && entryKey.includes(":")
+						? entryKey.slice(0, entryKey.lastIndexOf(":"))
+						: entryKey;
+				const symbol = `${asset}/${this.quoteCurrency}:${this.quoteCurrency}`;
+				try {
+					const price = (await this.futuresExchange.fetchTicker(symbol)).last;
+					if (!isFinitePositive(price)) {
+						crossMetricsValid = false;
+						continue;
+					}
+					const amount = Math.abs(entry.amount);
+					const pnl = (price - entry.cost / amount) * entry.amount;
+					const margin = this.snapshotFuturesLots(entry).reduce(
+						(sum, lot) => sum + (lot.amount * lot.price) / lot.leverage,
+						0,
+					);
+					const maintenance = amount * price * this.maintenanceMarginRate;
+					if (![pnl, margin, maintenance].every(Number.isFinite)) {
+						crossMetricsValid = false;
+						continue;
+					}
+					if (!crossSymbols.has(symbol)) continue;
+					crossPrices.set(entryKey, price);
+					crossEquity += margin + pnl;
+					crossMaintenance += maintenance;
+				} catch {
+					crossMetricsValid = false;
+				}
+			}
+		}
+		const crossLiquidation = crossSymbols.size > 0 && crossMetricsValid && crossEquity <= crossMaintenance;
+		for (const [entryKey, entry] of Object.entries(this.futuresAccount.entries)) {
+			if (entry.amount === 0) continue;
+			const asset =
+				this.positionMode === "hedge" && entryKey.includes(":")
+					? entryKey.slice(0, entryKey.lastIndexOf(":"))
+					: entryKey;
+			const symbol = `${asset}/${this.quoteCurrency}:${this.quoteCurrency}`;
+			const market = this.futuresExchange.markets[symbol];
+			if (!market || market.contract !== true || market.swap !== true) continue;
+			let price: number | undefined = crossPrices.get(entryKey);
+			try {
+				price ??= (await this.futuresExchange.fetchTicker(symbol)).last;
+			} catch {
+				continue;
+			}
+			if (!isFinitePositive(price)) continue;
+			const amount = Math.abs(entry.amount);
+			const avg = entry.cost / amount;
+			const pnl = (price - avg) * entry.amount;
+			const notional = amount * price;
+			const margin = this.snapshotFuturesLots(entry).reduce(
+				(sum, lot) => sum + (lot.amount * lot.price) / lot.leverage,
+				0,
+			);
+			const equity = margin + pnl;
+			const maintenance = notional * this.maintenanceMarginRate;
+			if (
+				!Number.isFinite(avg) ||
+				!Number.isFinite(pnl) ||
+				!Number.isFinite(notional) ||
+				!Number.isFinite(margin) ||
+				!Number.isFinite(equity) ||
+				!Number.isFinite(maintenance)
+			)
+				continue;
+			const marginType = this.futuresAccount.marginTypeBySymbol?.[symbol] ?? this.futuresAccount.marginType;
+			if (marginType === "cross" ? !crossLiquidation : equity > maintenance) continue;
+			const balance = this.futuresAccount.balances[this.quoteCurrency] ?? 0;
+			const recovered = Math.max(0, margin + pnl);
+			if (!Number.isFinite(balance) || !Number.isFinite(recovered)) continue;
+			this.futuresAccount.balances[this.quoteCurrency] = balance + recovered;
+			this.futuresAccount.realizedPnl += pnl;
+			const liquidationId = `liquidation-${this.nextOrderId++}`;
+			this.futuresAccount.orders.push({
+				id: liquidationId,
+				symbol,
+				side: entry.amount > 0 ? "sell" : "buy",
+				type: "market",
+				amount,
+				filled: amount,
+				average: price,
+				cost: notional,
+				status: "closed",
+				timestamp: Date.now(),
+				positionSide:
+					this.positionMode === "hedge" && entryKey.includes(":")
+						? (entryKey.slice(entryKey.lastIndexOf(":") + 1) as "LONG" | "SHORT")
+						: "BOTH",
+				reduceOnly: true,
+			});
+			this.futuresAccount.trades.push({
+				id: liquidationId,
+				symbol,
+				side: entry.amount > 0 ? "sell" : "buy",
+				price,
+				amount,
+				cost: notional,
+				fee: 0,
+				realizedPnl: pnl,
+				positionSide:
+					this.positionMode === "hedge" && entryKey.includes(":")
+						? (entryKey.slice(entryKey.lastIndexOf(":") + 1) as "LONG" | "SHORT")
+						: "BOTH",
+				timestamp: Date.now(),
+			});
+			delete this.futuresAccount.entries[entryKey];
+			dirty = true;
+		}
+		if (dirty) this.persistAccountsUnlocked(false, true);
 	}
 
 	private async futuresPositions(): Promise<Position[]> {
+		await this.settleFuturesLiquidationsUnlocked();
 		await this.futuresExchange.loadMarkets();
 		const result: Position[] = [];
 		for (const [entryKey, entry] of Object.entries(this.futuresAccount.entries)) {
@@ -1556,11 +1402,23 @@ export class PaperExchangeClient implements ExchangeClient {
 			if (!market || market.contract !== true || market.swap !== true) {
 				throw new Error(`Unsupported futures market: ${symbol}`);
 			}
-			this.contractSizeForMarket(market);
+			contractSizeForMarket(market);
 			const lots = this.snapshotFuturesLots(entry);
 			const settings = this.uniformFuturesLotSettings(lots);
 			const avg = entry.cost / Math.abs(entry.amount);
 			const margin = lots.reduce((sum, lot) => sum + (lot.amount * lot.price) / lot.leverage, 0);
+			const leverage = settings.leverage;
+			const liquidationPrice =
+				settings.marginType !== "cross" &&
+				Number.isFinite(avg) &&
+				avg > 0 &&
+				leverage !== undefined &&
+				Number.isFinite(leverage) &&
+				leverage > 0
+					? positionSide === "SHORT"
+						? avg * (1 - this.maintenanceMarginRate + 1 / leverage)
+						: avg * (1 + this.maintenanceMarginRate - 1 / leverage)
+					: undefined;
 			const basePosition: Position = {
 				symbol,
 				asset,
@@ -1570,6 +1428,9 @@ export class PaperExchangeClient implements ExchangeClient {
 				marginType: settings.marginType,
 				margin,
 				avgEntryPrice: Number.isFinite(avg) ? avg : undefined,
+				...(liquidationPrice !== undefined && Number.isFinite(liquidationPrice) && liquidationPrice > 0
+					? { liquidationPrice }
+					: {}),
 			};
 			let ticker: CcxtTicker;
 			try {
@@ -1784,7 +1645,7 @@ export class PaperExchangeClient implements ExchangeClient {
 				if (!isFinitePositive(last)) {
 					throw new Error(`Ticker for ${order.symbol} did not provide a finite positive last price`);
 				}
-				const marketPath = await this.marketPath(order, last, now, minSince, candleCache);
+				const marketPath = await buildMarketPath(this.exchange, order, last, now, minSince, candleCache);
 				const path = marketPath.segments;
 
 				if (order.ocoGroup) {
@@ -1794,8 +1655,8 @@ export class PaperExchangeClient implements ExchangeClient {
 					const legs = open.filter((o) => o.ocoGroup === order.ocoGroup && o.status === "open");
 					let winner: { leg: PaperOrder; fire: PathFire } | undefined;
 					for (const leg of legs) {
-						const fire = this.evaluatePath(leg, path);
-						this.advanceCheckedAt(leg, marketPath.checkedAt);
+						const fire = evaluatePath(leg, path);
+						advanceCheckedAt(leg, marketPath.checkedAt);
 						if (fire && (!winner || fire.index < winner.fire.index)) winner = { leg, fire };
 					}
 					dirty = true;
@@ -1803,8 +1664,8 @@ export class PaperExchangeClient implements ExchangeClient {
 					continue;
 				}
 
-				const fire = this.evaluatePath(order, path);
-				this.advanceCheckedAt(order, marketPath.checkedAt);
+				const fire = evaluatePath(order, path);
+				advanceCheckedAt(order, marketPath.checkedAt);
 				dirty = true;
 				if (fire) this.fillRestingOrder(order, fire.price);
 			} catch (error) {
@@ -1820,126 +1681,6 @@ export class PaperExchangeClient implements ExchangeClient {
 			}
 		}
 		if (dirty) this.persist();
-	}
-
-	/**
-	 * Build the market path since the order was last checked: gap klines
-	 * (when the gap exceeds two minutes) followed by the current ticker price.
-	 */
-	private async marketPath(
-		order: PaperOrder,
-		last: number,
-		now: number,
-		minSince: Map<string, number>,
-		candleCache: Map<string, Kline[]>,
-	): Promise<MarketPath> {
-		const since = order.lastCheckedAt ?? order.timestamp;
-		const path: PathSegment[] = [];
-		let checkedAt = now;
-		if ((now - since) / 60_000 > 2) {
-			const fetchSince = minSince.get(order.symbol) ?? since;
-			const gapMinutes = (now - fetchSince) / 60_000;
-			const timeframe = gapMinutes <= 400 ? "1m" : gapMinutes <= 6000 ? "15m" : "1h";
-			const minutesPerCandle = timeframe === "1m" ? 1 : timeframe === "15m" ? 15 : 60;
-			const candleDurationMs = minutesPerCandle * 60_000;
-			checkedAt = since;
-			let candles = candleCache.get(order.symbol);
-			if (!candles) {
-				const limit = Math.min(Math.ceil(gapMinutes / minutesPerCandle) + 2, 500);
-				const ohlcv = await this.exchange.fetchOHLCV(order.symbol, timeframe, fetchSince, limit);
-				candles = ohlcv.map((k) => ({
-					timestamp: k[0] ?? 0,
-					open: k[1] ?? 0,
-					high: k[2] ?? 0,
-					low: k[3] ?? 0,
-					close: k[4] ?? 0,
-					volume: k[5] ?? 0,
-				}));
-				candleCache.set(order.symbol, candles);
-			}
-			const validCandles = candles
-				.filter(
-					(k) =>
-						Number.isFinite(k.timestamp) &&
-						k.timestamp >= since &&
-						k.timestamp <= now &&
-						Number.isFinite(k.high) &&
-						Number.isFinite(k.low) &&
-						k.high > 0 &&
-						k.low > 0,
-				)
-				.sort((a, b) => a.timestamp - b.timestamp);
-			let previousTimestamp: number | undefined;
-			for (const k of validCandles) {
-				// The first exchange candle may begin up to one timeframe after an
-				// arbitrary order timestamp. Once a candle is accepted, every later
-				// candle must start no later than the end of the preceding one. A
-				// sparse response therefore contributes only its continuous prefix;
-				// candles after a gap are retried on a later read instead of being
-				// evaluated out of chronological order.
-				const latestAllowedStart =
-					previousTimestamp === undefined ? since + candleDurationMs : previousTimestamp + candleDurationMs;
-				if (k.timestamp > latestAllowedStart) break;
-				if (previousTimestamp === k.timestamp) continue;
-				path.push({ high: k.high, low: k.low });
-				previousTimestamp = k.timestamp;
-				checkedAt = Math.min(now, k.timestamp + candleDurationMs);
-			}
-			checkedAt = Math.max(since, checkedAt);
-		}
-		path.push({ high: last, low: last, tick: true });
-		return { segments: path, checkedAt };
-	}
-
-	private advanceCheckedAt(order: PaperOrder, checkedAt: number): void {
-		const current = order.lastCheckedAt ?? order.timestamp;
-		if (Number.isFinite(checkedAt) && checkedAt > current) order.lastCheckedAt = checkedAt;
-	}
-
-	/**
-	 * Walk an order along the market path and return where it fills.
-	 * Mutates trigger/trailing state (`triggered`, `trailingExtreme`) so
-	 * partial progress survives even when the order does not fill.
-	 */
-	private evaluatePath(order: PaperOrder, path: PathSegment[]): PathFire | undefined {
-		for (let index = 0; index < path.length; index++) {
-			const seg = path[index];
-
-			if (order.type === "trailing_stop_market") {
-				const percent = order.trailingPercent;
-				if (percent === undefined) return undefined;
-				const extreme = order.trailingExtreme ?? seg.low;
-				// Check against the extreme from previous segments first: a
-				// candle's own high must not tighten the stop for its own low.
-				const level = trailingStopLevel(order.side, extreme, percent);
-				if ((order.side === "sell" && seg.low <= level) || (order.side === "buy" && seg.high >= level)) {
-					return { index, price: level };
-				}
-				order.trailingExtreme = order.side === "sell" ? Math.max(extreme, seg.high) : Math.min(extreme, seg.low);
-				continue;
-			}
-
-			if (isTriggerType(order.type) && !order.triggered && order.stopPrice !== undefined) {
-				const fallTo = order.type.startsWith("stop") ? order.side === "sell" : order.side === "buy";
-				const fires = fallTo ? seg.low <= order.stopPrice : seg.high >= order.stopPrice;
-				if (!fires) continue;
-				if (order.type === "stop_market" || order.type === "take_profit_market") {
-					return { index, price: order.stopPrice };
-				}
-				// stop / take_profit: rest as a limit order. Within one candle the
-				// trigger-then-cross sequence is ambiguous, so the limit check
-				// starts at the next segment; a tick is a single price and may
-				// satisfy both at once.
-				order.triggered = true;
-				if (!seg.tick) continue;
-			}
-
-			if (order.price === undefined) continue;
-			if (isTriggerType(order.type) && !order.triggered) continue;
-			const crossed = order.side === "buy" ? seg.low <= order.price : seg.high >= order.price;
-			if (crossed) return { index, price: order.price };
-		}
-		return undefined;
 	}
 
 	/** Fill an open resting order at the given price, keeping its original id in history. */
@@ -2001,46 +1742,4 @@ export class PaperExchangeClient implements ExchangeClient {
 	private persist(): void {
 		this.persistAccountsUnlocked(true, false);
 	}
-}
-
-function toTicker(t: CcxtTicker): Ticker {
-	return {
-		symbol: t.symbol,
-		last: t.last ?? undefined,
-		bid: t.bid ?? undefined,
-		ask: t.ask ?? undefined,
-		high24h: t.high,
-		low24h: t.low,
-		changePct24h: t.percentage,
-		volume24h: t.baseVolume,
-		quoteVolume24h: t.quoteVolume,
-		timestamp: t.timestamp ?? Date.now(),
-	};
-}
-
-function toOrder(o: PaperOrder): Order {
-	return {
-		id: o.id,
-		clientOrderId: o.clientOrderId,
-		listClientOrderId: o.listClientOrderId,
-		symbol: o.symbol,
-		side: o.side,
-		type: o.type,
-		price: o.price,
-		stopPrice: o.stopPrice,
-		trailingPercent: o.trailingPercent,
-		ocoGroup: o.ocoGroup,
-		orderListId: o.ocoGroup,
-		listOrderStatus: o.ocoGroup ? (o.status === "open" ? "EXECUTING" : "ALL_DONE") : undefined,
-		positionSide: o.positionSide,
-		reduceOnly: o.reduceOnly,
-		closePosition: o.closePosition,
-		amount: o.amount,
-		filled: o.filled,
-		remaining: o.amount - o.filled,
-		average: o.average,
-		cost: o.cost,
-		status: o.status,
-		timestamp: o.timestamp,
-	};
 }

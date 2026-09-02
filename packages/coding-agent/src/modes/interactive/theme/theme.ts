@@ -482,6 +482,12 @@ function getBuiltinThemes(): Record<string, ThemeJson> {
 	return BUILTIN_THEMES;
 }
 
+let customThemesDirOverride: string | undefined;
+
+function getActiveCustomThemesDir(): string {
+	return customThemesDirOverride ?? getCustomThemesDir();
+}
+
 export function getAvailableThemes(): string[] {
 	return getAvailableThemesWithPaths().map(({ name }) => name);
 }
@@ -521,7 +527,7 @@ export function getAvailableThemesWithPaths(): ThemeInfo[] {
 }
 
 function getCustomThemeInfos(): ThemeInfo[] {
-	const customThemesDir = getCustomThemesDir();
+	const customThemesDir = getActiveCustomThemesDir();
 	const result: ThemeInfo[] = [];
 	if (!fs.existsSync(customThemesDir)) {
 		return result;
@@ -617,7 +623,7 @@ function loadThemeJson(name: string): ThemeJson {
 	if (registeredTheme) {
 		throw new Error(`Theme "${name}" does not have a source path for export`);
 	}
-	const customThemesDir = getCustomThemesDir();
+	const customThemesDir = getActiveCustomThemesDir();
 	const themePath = path.join(customThemesDir, `${name}.json`);
 	if (!fs.existsSync(themePath)) {
 		throw new Error(`Theme not found: ${name}`);
@@ -873,7 +879,10 @@ export function setRegisteredThemes(themes: Theme[]): void {
 	}
 }
 
-export function initTheme(themeName?: string, enableWatcher: boolean = false): void {
+export function initTheme(themeName?: string, enableWatcher: boolean = false, customThemesDir?: string): void {
+	// Reset to the process default when no override is supplied so separate app
+	// runtimes in one process do not inherit another app's custom theme path.
+	customThemesDirOverride = customThemesDir;
 	const name = themeName ?? getDefaultTheme();
 	currentThemeName = name;
 	try {
@@ -889,7 +898,14 @@ export function initTheme(themeName?: string, enableWatcher: boolean = false): v
 	}
 }
 
-export function setTheme(name: string, enableWatcher: boolean = false): { success: boolean; error?: string } {
+export function setTheme(
+	name: string,
+	enableWatcher: boolean = false,
+	customThemesDir?: string,
+): { success: boolean; error?: string } {
+	if (customThemesDir !== undefined) {
+		customThemesDirOverride = customThemesDir;
+	}
 	currentThemeName = name;
 	try {
 		setGlobalTheme(loadTheme(name));
@@ -933,7 +949,7 @@ function startThemeWatcher(): void {
 		return;
 	}
 
-	const customThemesDir = getCustomThemesDir();
+	const customThemesDir = getActiveCustomThemesDir();
 	const watchedThemeName = currentThemeName;
 	const watchedFileName = `${watchedThemeName}.json`;
 	const themeFile = path.join(customThemesDir, watchedFileName);

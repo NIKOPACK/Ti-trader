@@ -761,6 +761,7 @@ export async function discoverAndLoadExtensions(
 	agentDir: string = getAgentDir(),
 	eventBus?: EventBus,
 	manifestFlavor: ManifestFlavor = "pi",
+	projectConfigDirName: string = CONFIG_DIR_NAME,
 ): Promise<LoadExtensionsResult> {
 	const resolvedCwd = resolvePath(cwd);
 	const resolvedAgentDir = resolvePath(agentDir);
@@ -777,8 +778,8 @@ export async function discoverAndLoadExtensions(
 		}
 	};
 
-	// 1. Project-local extensions: cwd/${CONFIG_DIR_NAME}/extensions/
-	const localExtDir = path.join(resolvedCwd, CONFIG_DIR_NAME, "extensions");
+	// 1. Project-local extensions: cwd/${projectConfigDirName}/extensions/
+	const localExtDir = path.join(resolvedCwd, projectConfigDirName, "extensions");
 	addPaths(discoverExtensionsInDir(localExtDir, manifestFlavor));
 
 	// 2. Global extensions: agentDir/extensions/

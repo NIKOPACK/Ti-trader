@@ -1,5 +1,5 @@
-import { describe, expect, it } from "vitest";
-import { type ExchangeClient, type PlaceOrderInput, timeframeDurationMs } from "./index.ts";
+import { describe, expect, it, vi } from "vitest";
+import { createMarketDataView, type ExchangeClient, type PlaceOrderInput, timeframeDurationMs } from "./index.ts";
 
 describe("exchange contract", () => {
 	it("converts supported ccxt timeframes", () => {
@@ -17,5 +17,33 @@ describe("exchange contract", () => {
 		};
 		expect(input.amount).toBe(0.1);
 		expect(client.placeOrder).toBeTypeOf("function");
+	});
+
+	it("delegates market reads to the live client instead of binding a method snapshot", async () => {
+		const getMarketInfo = vi.fn(async (symbol: string) => ({
+			symbol,
+			base: "BTC",
+			quote: "USDT",
+			marketType: "spot" as const,
+			contract: false,
+		}));
+		const client = {
+			id: "binance",
+			mode: "paper" as const,
+			quoteCurrency: "USDT",
+			getMarketInfo,
+		} as unknown as ExchangeClient;
+		const view = createMarketDataView(client);
+		getMarketInfo.mockResolvedValueOnce({
+			symbol: "ETH/USDT",
+			base: "ETH",
+			quote: "USDT",
+			marketType: "spot",
+			contract: false,
+		});
+
+		await expect(view.getMarketInfo("ETH/USDT")).resolves.toMatchObject({ symbol: "ETH/USDT" });
+		expect(getMarketInfo).toHaveBeenCalledWith("ETH/USDT");
+		expect(Object.getOwnPropertyNames(view)).not.toContain("placeOrder");
 	});
 });

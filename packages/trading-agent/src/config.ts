@@ -1,10 +1,15 @@
-import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+	readJsonFile as readPersistedJson,
+	writeJsonFile as writePersistedJson,
+} from "@earendil-works/ti-trading-engine";
 
 export const APP_NAME = "ti";
 /** Ti owns a separate home from pi so both applications can be installed together. */
-export const CONFIG_DIR = join(homedir(), ".ti-trader");
+export const CONFIG_DIR_NAME = ".ti-trader";
+export const CONFIG_DIR = join(homedir(), CONFIG_DIR_NAME);
 export const AGENT_DIR = join(CONFIG_DIR, "agent");
 export const TRADING_CONFIG_PATH = join(AGENT_DIR, "trading.json");
 export const TRADING_STATE_PATH = join(AGENT_DIR, "trading-state.json");
@@ -17,19 +22,13 @@ export function ensureAgentDir(): void {
 }
 
 export function readJsonFile<T>(path: string): T | undefined {
-	if (!existsSync(path)) return undefined;
 	try {
-		return JSON.parse(readFileSync(path, "utf8")) as T;
+		return readPersistedJson(path) as T | undefined;
 	} catch (error) {
 		throw new Error(`Invalid JSON in ${path}: ${error instanceof Error ? error.message : String(error)}`);
 	}
 }
 
 export function writeJsonFile(path: string, data: unknown, mode?: number): void {
-	mkdirSync(join(path, ".."), { recursive: true });
-	const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
-	writeFileSync(temporaryPath, `${JSON.stringify(data, null, "\t")}\n`, { encoding: "utf8", mode: mode ?? 0o600 });
-	if (mode !== undefined) chmodSync(temporaryPath, mode);
-	renameSync(temporaryPath, path);
-	if (mode !== undefined) chmodSync(path, mode);
+	writePersistedJson(path, data, mode ?? 0o600);
 }

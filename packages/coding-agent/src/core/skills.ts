@@ -394,6 +394,8 @@ export interface LoadSkillsOptions {
 	cwd: string;
 	/** Agent config directory for global skills. */
 	agentDir: string;
+	/** Project-local configuration directory name. Defaults to `.pi`. */
+	projectConfigDirName?: string;
 	/** Explicit skill paths (files or directories) */
 	skillPaths: string[];
 	/** Include default skills directories. */
@@ -410,6 +412,7 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 	// Resolve agentDir - if not provided, use default from config
 	const resolvedCwd = resolvePath(options.cwd);
 	const resolvedAgentDir = resolvePath(agentDir ?? getAgentDir());
+	const projectConfigDirName = options.projectConfigDirName ?? CONFIG_DIR_NAME;
 
 	const skillMap = new Map<string, Skill>();
 	const realPathSet = new Set<string>();
@@ -449,11 +452,11 @@ export function loadSkills(options: LoadSkillsOptions): LoadSkillsResult {
 
 	if (includeDefaults) {
 		addSkills(loadSkillsFromDirInternal(join(resolvedAgentDir, "skills"), "user", true));
-		addSkills(loadSkillsFromDirInternal(resolve(resolvedCwd, CONFIG_DIR_NAME, "skills"), "project", true));
+		addSkills(loadSkillsFromDirInternal(resolve(resolvedCwd, projectConfigDirName, "skills"), "project", true));
 	}
 
 	const userSkillsDir = join(resolvedAgentDir, "skills");
-	const projectSkillsDir = resolve(resolvedCwd, CONFIG_DIR_NAME, "skills");
+	const projectSkillsDir = resolve(resolvedCwd, projectConfigDirName, "skills");
 
 	const isUnderPath = (target: string, root: string): boolean => {
 		const normalizedRoot = resolve(root);

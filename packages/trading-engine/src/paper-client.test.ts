@@ -146,6 +146,56 @@ afterEach(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
+describe("paper futures liquidation boundary", () => {
+	it("exposes a finite liquidation price and liquidates when equity reaches maintenance margin", async () => {
+		const futures = newFuturesClient("one-way");
+		await futures.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 1 });
+		stub.last = 80;
+		const positions = await futures.getPositions();
+		expect(positions).toHaveLength(0);
+		const history = await futures.getOrderHistory();
+		expect(history.some((order) => order.symbol === "BTC/USDT:USDT" && order.reduceOnly === true)).toBe(true);
+		const balances = await futures.getBalances();
+		expect(Number.isFinite(balances[0]?.free)).toBe(true);
+		await futures.close();
+	});
+
+	it("reports a finite liquidation price before liquidation", async () => {
+		const futures = newFuturesClient("one-way");
+		await futures.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 1 });
+		const [position] = await futures.getPositions();
+		expect(position.liquidationPrice).toBeCloseTo(80.5, 8);
+		await futures.close();
+	});
+
+	it("uses free account collateral for cross-margin liquidation", async () => {
+		const futures = newFuturesClient("one-way");
+		await futures.setMarginMode("BTC/USDT:USDT", "cross");
+		await futures.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 1 });
+		stub.last = 80;
+		expect(await futures.getPositions()).toHaveLength(1);
+		await futures.close();
+	});
+});
+
+describe("paper futures funding", () => {
+	it("reports funding as unavailable instead of fabricating a zero rate", async () => {
+		const futures = newFuturesClient();
+		await expect(futures.getFundingRate("BTC/USDT:USDT")).resolves.toEqual({ symbol: "BTC/USDT:USDT" });
+		await expect(futures.getFundingRateHistory("BTC/USDT:USDT")).resolves.toEqual([]);
+		await futures.close();
+	});
+
+	it("validates market metadata and pagination limits", async () => {
+		const futures = newFuturesClient();
+		stub.futuresSwap = false;
+		await expect(futures.getFundingRate("BTC/USDT:USDT")).rejects.toThrow(/Unsupported futures market/);
+		stub.futuresSwap = true;
+		await expect(futures.getFundingRateHistory("BTC/USDT:USDT", 0)).rejects.toThrow(/positive integer/);
+		await futures.close();
+	});
+});
+
 describe("paper both-market mode", () => {
 	it("routes futures orders to an isolated paper account", async () => {
 		const both = new PaperExchangeClient("okx", "USDT", 10_000, 0.001, dir, "both");

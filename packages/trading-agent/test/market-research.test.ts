@@ -79,7 +79,7 @@ describe("market research subagent", () => {
 				"--no-context-files",
 				"--extension",
 				"--tools",
-				"calculate_indicators,analyze_market_structure,generate_trade_signal",
+				"calculate_indicators,analyze_market_structure,generate_trade_signal,evaluate_strategy,screen_markets,simulate_rule",
 				"--model",
 				"test/model",
 				"--thinking",

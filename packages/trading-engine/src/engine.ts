@@ -1,4 +1,12 @@
 import {
+	type RiskClock,
+	type RiskConfig,
+	RiskLedger,
+	type RiskReservation,
+	type RiskStateStore,
+} from "@earendil-works/ti-trading-risk";
+import type { FuturesPositionMode } from "./client-types.ts";
+import {
 	type OcoIntent,
 	type OrderIntent,
 	type OrderPlanningContext,
@@ -7,13 +15,6 @@ import {
 	prepareOcoOrder,
 	prepareOrder,
 } from "./order-plan.ts";
-import {
-	type EngineClock,
-	RiskLedger,
-	type RiskReservation,
-	type RiskStateStore,
-	type TradingEngineConfig,
-} from "./risk.ts";
 import {
 	createMarketDataView,
 	type ExchangeClient,
@@ -44,6 +45,19 @@ function combineFailures(message: string, first: unknown, second: unknown): Erro
 	return new AggregateError([first, second], message);
 }
 
+export interface TradingEngineConfig extends RiskConfig {
+	positionMode: FuturesPositionMode;
+}
+
+function toRiskConfig(config: TradingEngineConfig): RiskConfig {
+	return {
+		mode: config.mode,
+		marketType: config.marketType,
+		quoteCurrency: config.quoteCurrency,
+		risk: config.risk,
+	};
+}
+
 /** Framework-independent trading orchestration: planning, risk reservation, and submission. */
 function copyConfig(config: TradingEngineConfig): TradingEngineConfig {
 	return {
@@ -64,7 +78,7 @@ export class TradingEngine {
 	/** Prevent two concurrent callers from submitting the same plan. */
 	private readonly inFlightPlans = new WeakSet<object>();
 
-	constructor(config: TradingEngineConfig, exchange: ExchangeClient, stateStore: RiskStateStore, clock?: EngineClock) {
+	constructor(config: TradingEngineConfig, exchange: ExchangeClient, stateStore: RiskStateStore, clock?: RiskClock) {
 		if (config.mode !== exchange.mode) {
 			throw new Error(`Trading engine mode ${config.mode} does not match exchange client mode ${exchange.mode}`);
 		}
@@ -77,7 +91,7 @@ export class TradingEngine {
 		this.config = acceptedConfig;
 		this.exchangeClient = exchange;
 		this.marketDataClient = createMarketDataView(exchange);
-		this.risk = new RiskLedger(acceptedConfig, stateStore, clock);
+		this.risk = new RiskLedger(toRiskConfig(acceptedConfig), stateStore, clock);
 	}
 
 	get id(): string {
@@ -90,40 +104,40 @@ export class TradingEngine {
 		return this.exchangeClient.quoteCurrency;
 	}
 	getTicker(symbol: string) {
-		return this.exchangeClient.getTicker(symbol);
+		return this.marketDataClient.getTicker(symbol);
 	}
 	getOrderBook(symbol: string, limit?: number) {
-		return this.exchangeClient.getOrderBook(symbol, limit);
+		return this.marketDataClient.getOrderBook(symbol, limit);
 	}
 	getMarketInfo(symbol: string) {
-		return this.exchangeClient.getMarketInfo(symbol);
+		return this.marketDataClient.getMarketInfo(symbol);
 	}
 	getContractStats(symbol: string) {
-		return this.exchangeClient.getContractStats(symbol);
+		return this.marketDataClient.getContractStats(symbol);
 	}
 	getKlines(symbol: string, timeframe: string, limit: number) {
-		return this.exchangeClient.getKlines(symbol, timeframe, limit);
+		return this.marketDataClient.getKlines(symbol, timeframe, limit);
 	}
 	getBalances() {
-		return this.exchangeClient.getBalances();
+		return this.marketDataClient.getBalances();
 	}
 	getPositions() {
-		return this.exchangeClient.getPositions();
+		return this.marketDataClient.getPositions();
 	}
 	getOpenOrders(symbol?: string) {
-		return this.exchangeClient.getOpenOrders(symbol);
+		return this.marketDataClient.getOpenOrders(symbol);
 	}
 	getOrderHistory(symbol?: string, limit?: number) {
-		return this.exchangeClient.getOrderHistory(symbol, limit);
+		return this.marketDataClient.getOrderHistory(symbol, limit);
 	}
 	getTopMarkets(limit: number) {
-		return this.exchangeClient.getTopMarkets(limit);
+		return this.marketDataClient.getTopMarkets(limit);
 	}
 	getFundingRate(symbol: string) {
-		return this.exchangeClient.getFundingRate(symbol);
+		return this.marketDataClient.getFundingRate(symbol);
 	}
 	getFundingRateHistory(symbol: string, limit?: number) {
-		return this.exchangeClient.getFundingRateHistory(symbol, limit);
+		return this.marketDataClient.getFundingRateHistory(symbol, limit);
 	}
 	setLeverage(symbol: string, leverage: number) {
 		return this.exchangeClient.setLeverage(symbol, leverage);
@@ -156,7 +170,7 @@ export class TradingEngine {
 		}
 		const acceptedConfig = copyConfig(config);
 		this.config = acceptedConfig;
-		this.risk.setConfig(acceptedConfig);
+		this.risk.setConfig(toRiskConfig(acceptedConfig));
 	}
 
 	prepareOrder(side: OrderSide, intent: OrderIntent): Promise<PreparedOrder> {
@@ -323,19 +337,19 @@ export class TradingEngine {
 	}
 
 	getOrder(id: string, symbol: string): Promise<Order> {
-		return this.exchangeClient.getOrder(id, symbol);
+		return this.marketDataClient.getOrder(id, symbol);
 	}
 
 	getOrderByClientId(origClientOrderId: string, symbol: string): Promise<Order> {
-		return this.exchangeClient.getOrderByClientId(origClientOrderId, symbol);
+		return this.marketDataClient.getOrderByClientId(origClientOrderId, symbol);
 	}
 
 	getOrderList(orderListId: string): Promise<OrderList> {
-		return this.exchangeClient.getOrderList(orderListId);
+		return this.marketDataClient.getOrderList(orderListId);
 	}
 
 	getOrderListByClientId(listClientOrderId: string): Promise<OrderList> {
-		return this.exchangeClient.getOrderListByClientId(listClientOrderId);
+		return this.marketDataClient.getOrderListByClientId(listClientOrderId);
 	}
 
 	close(): Promise<void> {

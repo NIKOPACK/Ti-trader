@@ -91,7 +91,7 @@ export function parseTradingArgs(argv: string[]): TradingArgs {
 }
 
 export function printHelp(): void {
-	console.log(`ti — AI trading agent CLI (built on the pi agent harness)
+	console.log(`Ti — AI trading agent CLI
 
 Usage: ti [options] [message...]
 
@@ -106,15 +106,24 @@ Options:
   -v, --version           Show version
 
 Trading commands (interactive mode):
-  /language    Change TUI language (中文 / English)
+  /settings    Trading settings (language, mode, exchange, market, keys, risk, paper, monitor)
   /balance     Account balances with valuation
   /positions   Holdings with entry price and PnL
   /orders      Open orders
   /trades      Order history
   /markets     Top markets by volume
+  /language    Change TUI language (中文 / English)
   /mode        Show/switch paper|live
   /exchange    Show/switch exchange
-  /risk        Risk limits and today's usage
+  /market      Show/switch spot|usdm-futures|both
+  /risk        Risk limits, usage, and /risk reconcile <id> commit|release
+  /trigger     Experimental in-memory monitor (live: notify only, never auto-wake)
+  /paper       Paper account summary or reset
+  /monitor     Order-fill monitor and position guard
+  /indicators  Read-only indicators for a spot symbol
+  /signal      Read-only preset signal (ema-cross|rsi-revert|macd-hist)
+  /screen      Read-only multi-symbol preset scan
+  /replay      Read-only closed-candle preset replay
   /exchange-login  Configure trading exchange API credentials
 
 Plus the generic session commands (/model, /login, /new, /resume, /quit, ...).

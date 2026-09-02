@@ -1,0 +1,29 @@
+{
+  "name": "@earendil-works/ti-trading-risk",
+  "version": "0.1.0",
+  "description": "Trading risk-control ledger for Ti: order and daily notional limits with atomic, durable reservations",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist", "README.md", "CHANGELOG.md"],
+  "scripts": {
+    "clean": "shx rm -rf dist",
+    "build": "npm run clean && tsgo -p tsconfig.build.json",
+    "test": "vitest --run src test --passWithNoTests",
+    "prepublishOnly": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "22.19.19",
+    "shx": "0.4.0",
+    "typescript": "5.9.3",
+    "vitest": "4.1.9"
+  },
+  "engines": { "node": ">=22.19.0" },
+  "license": "MIT"
+}
