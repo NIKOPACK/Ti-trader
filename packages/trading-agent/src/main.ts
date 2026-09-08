@@ -15,7 +15,11 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { parseTradingArgs, printHelp } from "./args.ts";
-import { resolveBundledMarketChartExtension, resolveBundledMarketLabExtension } from "./bundled-extensions.ts";
+import {
+	resolveBundledMarketChartExtension,
+	resolveBundledMarketLabExtension,
+	resolveOptionalBundledExtensionPaths,
+} from "./bundled-extensions.ts";
 import { createTradingExtension } from "./commands.ts";
 import { AGENT_DIR, APP_NAME, CONFIG_DIR_NAME, ensureAgentDir } from "./config.ts";
 import { getTrading, initTrading } from "./context.ts";
@@ -158,6 +162,7 @@ export async function main(argv: string[]): Promise<void> {
 					...parsed.extensions,
 					resolveBundledMarketLabExtension(),
 					resolveBundledMarketChartExtension(),
+					...resolveOptionalBundledExtensionPaths(),
 				],
 				systemPrompt: buildTradingPrompt(trading.config),
 				extensionFactories: [

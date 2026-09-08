@@ -20,22 +20,14 @@
 	"pi": {
 		"extensions": [
 			"./dist/market-lab/index.js",
-			"./dist/market-chart/index.js",
-			"./dist/market-research/index.js",
-			"./dist/web-search/index.js",
-			"./dist/zhihu-research/index.js"
-		],
-		"skills": ["./dist/market-research/SKILL.md"]
+			"./dist/market-chart/index.js"
+		]
 	},
 	"ti": {
 		"extensions": [
 			"./dist/market-lab/index.js",
-			"./dist/market-chart/index.js",
-			"./dist/market-research/index.js",
-			"./dist/web-search/index.js",
-			"./dist/zhihu-research/index.js"
-		],
-		"skills": ["./dist/market-research/SKILL.md"]
+			"./dist/market-chart/index.js"
+		]
 	},
 	"publishConfig": {
 		"access": "public"

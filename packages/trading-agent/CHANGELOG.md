@@ -8,6 +8,17 @@ All notable changes to `ti-trader` are documented in this file.
 
 - Show the active exchange and market-data source on one line above the editor. Slash command tables keep the same venue stamp so a scrolled transcript still names the source. Paper labels public exchange market data separately from the simulated ledger.
 
+### Changed
+
+- Slash command tables, empty states, confirms, and notifications now use the same zh-CN/en-US catalog as Settings.
+- Default `ti` sessions autoload only market-lab and market-chart. `web-search`, `zhihu-research`, and `market-research` load when `TAVILY_API_KEY`, a Zhihu secret, or `TI_MARKET_RESEARCH` is set, or via `--extension`.
+- The trading prompt treats market-lab as Binance public spot analysis, not a fillable signal for another venue. `show_market_view` is TUI-only and does not invent levels. `web_search`, `zhihu_global_search`, and `market_research` may be absent.
+
+### Removed
+
+- Duplicate market-lab tools `analyze_market_structure` and `generate_trade_signal`. Use `evaluate_strategy`.
+- The `zhihu_search` alias. Use `zhihu_global_search`.
+
 ## [0.1.11] - 2026-09-08
 
 ### Changed

@@ -69,8 +69,6 @@ const codingTools = ["read", "bash", "edit", "write", "grep", "find", "ls"].filt
 const tradingTools = [
 	"show_market_view",
 	"calculate_indicators",
-	"analyze_market_structure",
-	"generate_trade_signal",
 	"evaluate_strategy",
 	"screen_markets",
 	"simulate_rule",

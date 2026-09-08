@@ -19,6 +19,12 @@ describe("menu i18n", () => {
 		expect(t("zh-CN", "settingsTitle")).toBe("设置");
 	});
 
+	it("localizes slash command empty states and counts", () => {
+		expect(t("zh-CN", "emptyPositions")).toBe("当前没有持仓。");
+		expect(t("en-US", "emptyPositions")).toBe("No open positions.");
+		expect(t("zh-CN", "titleBalance")).toBe("余额");
+	});
+
 	it("maps pinned slash commands to description keys", () => {
 		for (const name of PINNED_SLASH_COMMANDS) {
 			expect(SLASH_DESCRIPTION_KEYS[name]).toBeDefined();

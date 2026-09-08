@@ -9,6 +9,7 @@ import {
 	validateTriggerDefinition,
 } from "@nikopack/ti-triggers";
 import { getTrading } from "./context.ts";
+import { t, translate } from "./i18n.ts";
 import {
 	cancelTriggerNotifications,
 	createFileMonitoringStore,
@@ -48,12 +49,12 @@ function factKeys(condition: Condition, keys: Set<string>): void {
 }
 
 function warning(ctx: ExtensionContext, message: string): void {
-	if (ctx.hasUI) ctx.ui.notify(`Trigger: ${message}`, "warning");
+	if (ctx.hasUI) ctx.ui.notify(translate(getTrading().config.language, "triggerWarning", { message }), "warning");
 }
 
 async function waitForIdleBeforeMutation(ctx: ExtensionCommandContext): Promise<void> {
 	if (ctx.isIdle()) return;
-	if (ctx.hasUI) ctx.ui.notify("Waiting for the active agent turn before changing triggers", "info");
+	if (ctx.hasUI) ctx.ui.notify(t(getTrading().config.language, "triggerWaitingIdle"), "info");
 	await ctx.waitForIdle();
 }
 
@@ -414,13 +415,14 @@ export function createTriggerMonitorExtension(options: TriggerMonitorOptions = {
 								updatedAt: Date.now(),
 							});
 						});
-						if (ctx.hasUI) ctx.ui.notify(`Trigger added: ${value.id}`, "info");
+						if (ctx.hasUI)
+							ctx.ui.notify(translate(getTrading().config.language, "triggerAdded", { id: value.id }), "info");
 					} else if (command === "list") {
 						const triggers = findMonitoringScope(store.read(), scope)?.triggers ?? [];
 						if (ctx.hasUI)
 							ctx.ui.notify(
 								triggers.length === 0
-									? "No triggers"
+									? t(getTrading().config.language, "triggerNone")
 									: triggers
 											.map(({ definition: d, state }) => `${d.id}: ${d.name} (${state.status})`)
 											.join("\n"),

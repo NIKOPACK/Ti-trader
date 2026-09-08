@@ -7,6 +7,7 @@ import { loginExchange, openTradingSettings } from "./settings-menu.ts";
 import { wrapTradingAutocomplete } from "./slash-autocomplete.ts";
 import { loadExchangeKeys, type MarketType, type TradingLanguage, type TradingMode } from "./state.ts";
 import { padEndWidth, padStartWidth, renderTradingTable, type TableData, type TableLine } from "./table.ts";
+import { formatTradingVenue } from "./venue.ts";
 
 function fmt(n: number | undefined, decimals = 2): string {
 	if (n === undefined || !Number.isFinite(n)) return "-";
@@ -18,13 +19,17 @@ function fmtAmount(n: number | undefined): string {
 	return n.toLocaleString("en-US", { maximumFractionDigits: 8 });
 }
 
+function uiLang(): TradingLanguage {
+	return getTrading().config.language;
+}
+
 function hasFiniteQuoteValue(balance: Balance): balance is Balance & { quoteValue: number } {
 	return balance.quoteValue !== undefined && Number.isFinite(balance.quoteValue);
 }
 
 async function waitForIdleBeforeMutation(ctx: ExtensionCommandContext): Promise<void> {
 	if (ctx.isIdle()) return;
-	ctx.ui.notify("Waiting for the active agent turn before changing trading state", "info");
+	ctx.ui.notify(t(uiLang(), "waitingIdle"), "info");
 	await ctx.waitForIdle();
 }
 
@@ -39,12 +44,13 @@ async function runWithAccountSwitchConfirmation(
 	} catch (error) {
 		if (!(error instanceof AccountSwitchConfirmationRequired)) throw error;
 		if (!ctx.hasUI) throw error;
+		const language = uiLang();
 		const confirmed = await ctx.ui.confirm(
-			"Confirm account switch?",
-			"The previous account may still have orders or positions, or could not be fully verified. They will remain there but be hidden by the new configuration. Continue only after verifying them.",
+			t(language, "confirmAccountSwitchTitle"),
+			t(language, "confirmAccountSwitchMessage"),
 		);
 		if (!confirmed) {
-			ctx.ui.notify("Account switch cancelled", "info");
+			ctx.ui.notify(t(language, "accountSwitchCancelled"), "info");
 			return false;
 		}
 		await action(true);
@@ -73,12 +79,15 @@ export function createTradingExtension() {
 			const previous = lastObservedMode;
 			lastObservedMode = mode;
 			modeAlertInFlight = true;
-			const label = mode === "live" ? "LIVE (real funds)" : "PAPER (simulated)";
-			if (ctx.hasUI) ctx.ui.notify(`Trading mode changed: ${previous.toUpperCase()} → ${label}`, "warning");
+			const language = trading.config.language;
+			const label = t(language, mode === "live" ? "modeLive" : "modePaper");
+			const previousLabel = t(language, previous === "live" ? "modeLive" : "modePaper");
+			if (ctx.hasUI)
+				ctx.ui.notify(translate(language, "modeChangedNotify", { previous: previousLabel, label }), "warning");
 			pi.sendMessage(
 				{
 					customType: "mode-change",
-					content: `[mode change] Trading mode is now ${label}. Re-check this before placing any order.`,
+					content: translate(language, "modeChangedAgent", { label }),
 					display: true,
 				},
 				{ triggerTurn: false },
@@ -100,7 +109,7 @@ export function createTradingExtension() {
 			}
 			if (pending.length > 0 && ctx.hasUI) {
 				ctx.ui.notify(
-					`Risk: ${pending.length} unsettled reservation(s). Verify exchange orders, then /risk reconcile <id> commit|release.`,
+					translate(trading.config.language, "unsettledReservationsNotice", { count: pending.length }),
 					"warning",
 				);
 			}
@@ -123,13 +132,28 @@ export function createTradingExtension() {
 			pi.appendEntry<TableData>("trading:table", { title, lines, warning });
 		};
 
+		const tradingVenue = () => {
+			const trading = getTrading();
+			return formatTradingVenue({
+				language: trading.config.language,
+				mode: trading.mode,
+				exchangeId: trading.config.exchange,
+				marketType: trading.config.marketType,
+				quoteCurrency: trading.config.quoteCurrency,
+				paused: trading.tradingEngine.risk.usage().newExposurePause !== undefined,
+			});
+		};
+
 		const updateStatus = (ctx: ExtensionContext): void => {
 			const trading = getTrading();
-			const paused = trading.tradingEngine.risk.usage().newExposurePause !== undefined;
-			ctx.ui.setStatus(
-				"trading-status",
-				`${trading.mode === "live" ? "LIVE" : "PAPER"}  ${trading.config.exchange}  ${trading.config.marketType}  ${trading.config.quoteCurrency}  ${trading.config.language}${paused ? `  ${t(trading.config.language, "riskEntriesPaused")}` : ""}`,
-			);
+			const venue = tradingVenue();
+			ctx.ui.setStatus("trading-status", undefined);
+			if (!ctx.hasUI) return;
+			const theme = ctx.ui.theme;
+			const modeColor = trading.mode === "live" ? "error" : "accent";
+			ctx.ui.setWidget("trading-venue", [
+				`${theme.fg(modeColor, venue.identity)}  ${theme.fg("muted", venue.source)}`,
+			]);
 		};
 
 		let autocompleteWrapped = false;
@@ -166,13 +190,13 @@ export function createTradingExtension() {
 					return;
 				}
 				if (language !== "zh-CN" && language !== "en-US") {
-					ctx.ui.notify("Language must be zh-CN or en-US", "error");
+					ctx.ui.notify(t(trading.config.language, "languageInvalid"), "error");
 					return;
 				}
 				await waitForIdleBeforeMutation(ctx);
 				await trading.setLanguage(language);
 				updateStatus(ctx);
-				ctx.ui.notify(language === "zh-CN" ? "语言已切换为中文" : "Language changed to English", "info");
+				ctx.ui.notify(t(language, "languageChanged"), "info");
 			},
 		});
 
@@ -186,13 +210,15 @@ export function createTradingExtension() {
 				const totalLabel =
 					valuedBalances.length === balances.length
 						? `${fmt(total)} ${trading.config.quoteCurrency}`
-						: `- (${fmt(total)} known; valuation incomplete)`;
-				const english = trading.config.language === "en-US";
+						: translate(trading.config.language, "valuationIncomplete", { known: fmt(total) });
+				const language = trading.config.language;
+				const venue = tradingVenue();
 				const lines: TableLine[] = [
-					`${english ? "Exchange" : "交易所"}: ${trading.tradingEngine.id}   ${english ? "Mode" : "模式"}: ${trading.mode}   ${english ? "Quote" : "计价币"}: ${trading.config.quoteCurrency}`,
+					venue.identity,
+					{ text: venue.source, tone: "muted" },
 					"",
 					{
-						text: `${padEndWidth(english ? "Asset" : "资产", 8)} ${padStartWidth(english ? "Available" : "可用余额", 16)}  ${padStartWidth(english ? "Locked" : "冻结余额", 14)}  ${padStartWidth(english ? "Valuation" : "估值", 16)}`,
+						text: `${padEndWidth(t(language, "colAsset"), 8)} ${padStartWidth(t(language, "colAvailable"), 16)}  ${padStartWidth(t(language, "colLocked"), 14)}  ${padStartWidth(t(language, "colValuation"), 16)}`,
 						tone: "muted",
 					},
 					...balances.map(
@@ -200,10 +226,17 @@ export function createTradingExtension() {
 							`${padEndWidth(b.asset, 8)} ${padStartWidth(fmtAmount(b.free), 16)}  ${padStartWidth(fmtAmount(b.used), 14)}  ${padStartWidth(`${fmt(b.quoteValue)} ${trading.config.quoteCurrency}`, 16)}`,
 					),
 					"",
-					`${english ? "Total valuation" : "总资产估值"} ≈ ${totalLabel}`,
+					`${t(language, "totalValuation")} ≈ ${totalLabel}`,
 				];
-				show("balance", lines);
-				ctx.ui.notify(`${english ? "Total valuation" : "总资产估值"} ≈ ${totalLabel} (${trading.mode})`, "info");
+				show(t(language, "titleBalance"), lines);
+				ctx.ui.notify(
+					translate(language, "notifyTotalValuation", {
+						label: t(language, "totalValuation"),
+						total: totalLabel,
+						mode: trading.mode,
+					}),
+					"info",
+				);
 			},
 		});
 
@@ -212,29 +245,34 @@ export function createTradingExtension() {
 			handler: async (_args, ctx) => {
 				const trading = getTrading();
 				const positions = await trading.tradingEngine.getPositions();
+				const language = trading.config.language;
+				const venue = tradingVenue();
+				const header: TableLine[] = [venue.identity, { text: venue.source, tone: "muted" }, ""];
 				if (positions.length === 0) {
-					show("positions", ["No open positions."]);
+					show(t(language, "titlePositions"), [...header, t(language, "emptyPositions")]);
 					return;
 				}
-				const lines: TableLine[] = positions.map((p) => {
-					const pnl =
-						p.unrealizedPnl !== undefined
-							? `  PnL ${p.unrealizedPnl >= 0 ? "+" : ""}${fmt(p.unrealizedPnl)} (${fmt(p.unrealizedPnlPct)}%)`
-							: "";
-					const entry = p.avgEntryPrice !== undefined ? `  entry ${fmt(p.avgEntryPrice, 6)}` : "";
-					const basis =
-						p.costBasisStatus && p.costBasisStatus !== "complete" ? `  basis ${p.costBasisStatus}` : "";
-					const valuation =
-						p.quoteValue !== undefined && Number.isFinite(p.quoteValue)
-							? `≈ ${fmt(p.quoteValue)}`
-							: `≈ - (valuation unavailable${p.valuationReason ? `: ${p.valuationReason}` : ""})`;
-					return {
-						text: `${padEndWidth(p.symbol, 12)} ${padStartWidth(fmtAmount(p.amount), 16)}  ${valuation}${entry}${basis}${pnl}`,
-						tone: p.unrealizedPnl === undefined ? undefined : p.unrealizedPnl >= 0 ? "up" : "down",
-					};
-				});
-				show("positions", lines);
-				ctx.ui.notify(`${positions.length} position(s)`, "info");
+				show(t(language, "titlePositions"), [
+					...header,
+					...positions.map((p): TableLine => {
+						const pnl =
+							p.unrealizedPnl !== undefined
+								? `  PnL ${p.unrealizedPnl >= 0 ? "+" : ""}${fmt(p.unrealizedPnl)} (${fmt(p.unrealizedPnlPct)}%)`
+								: "";
+						const entry = p.avgEntryPrice !== undefined ? `  entry ${fmt(p.avgEntryPrice, 6)}` : "";
+						const basis =
+							p.costBasisStatus && p.costBasisStatus !== "complete" ? `  basis ${p.costBasisStatus}` : "";
+						const valuation =
+							p.quoteValue !== undefined && Number.isFinite(p.quoteValue)
+								? `≈ ${fmt(p.quoteValue)}`
+								: `≈ - (valuation unavailable${p.valuationReason ? `: ${p.valuationReason}` : ""})`;
+						return {
+							text: `${padEndWidth(p.symbol, 12)} ${padStartWidth(fmtAmount(p.amount), 16)}  ${valuation}${entry}${basis}${pnl}`,
+							tone: p.unrealizedPnl === undefined ? undefined : p.unrealizedPnl >= 0 ? "up" : "down",
+						};
+					}),
+				]);
+				ctx.ui.notify(translate(language, "notifyPositions", { count: positions.length }), "info");
 			},
 		});
 
@@ -242,14 +280,17 @@ export function createTradingExtension() {
 			description: "Show open orders. Usage: /orders [symbol]",
 			handler: async (args, ctx) => {
 				const symbol = args.trim() || undefined;
+				const language = uiLang();
 				const orders = await getTrading().tradingEngine.getOpenOrders(symbol);
+				const venue = tradingVenue();
+				const header: TableLine[] = [venue.identity, { text: venue.source, tone: "muted" }, ""];
 				if (orders.length === 0) {
-					show("orders", ["No open orders."]);
+					show(t(language, "titleOrders"), [...header, t(language, "emptyOrders")]);
 					return;
 				}
-				show(
-					"orders",
-					orders.map((o): TableLine => {
+				show(t(language, "titleOrders"), [
+					...header,
+					...orders.map((o): TableLine => {
 						const level =
 							o.price !== undefined
 								? `@ ${fmt(o.price, 6)}${o.stopPrice !== undefined ? ` trigger ${fmt(o.stopPrice, 6)}` : ""}`
@@ -263,8 +304,8 @@ export function createTradingExtension() {
 							tone: o.side === "buy" ? "up" : "down",
 						};
 					}),
-				);
-				ctx.ui.notify(`${orders.length} open order(s)`, "info");
+				]);
+				ctx.ui.notify(translate(language, "notifyOrders", { count: orders.length }), "info");
 			},
 		});
 
@@ -272,21 +313,24 @@ export function createTradingExtension() {
 			description: "Show recently closed orders. Usage: /trades [symbol]",
 			handler: async (args, ctx) => {
 				const symbol = args.trim() || undefined;
+				const language = uiLang();
 				const orders = await getTrading().tradingEngine.getOrderHistory(symbol, 20);
+				const venue = tradingVenue();
+				const header: TableLine[] = [venue.identity, { text: venue.source, tone: "muted" }, ""];
 				if (orders.length === 0) {
-					show("trades", ["No order history."]);
+					show(t(language, "titleTrades"), [...header, t(language, "emptyTrades")]);
 					return;
 				}
-				show(
-					"trades",
-					orders.map(
+				show(t(language, "titleTrades"), [
+					...header,
+					...orders.map(
 						(o): TableLine => ({
 							text: `#${o.id} ${padEndWidth(o.side, 4)} ${padEndWidth(o.symbol, 12)} ${fmtAmount(o.filled)} @ ${fmt(o.average, 6)}  ${o.status}  (${new Date(o.timestamp).toLocaleString()})`,
 							tone: o.side === "buy" ? "up" : "down",
 						}),
 					),
-				);
-				ctx.ui.notify(`${orders.length} historical order(s)`, "info");
+				]);
+				ctx.ui.notify(translate(language, "notifyTrades", { count: orders.length }), "info");
 			},
 		});
 
@@ -294,17 +338,21 @@ export function createTradingExtension() {
 			description: `Show top markets by 24h quote volume. Usage: /markets [limit]`,
 			handler: async (args, ctx) => {
 				const limit = Math.min(Math.max(Number.parseInt(args.trim(), 10) || 15, 1), 50);
+				const language = uiLang();
 				const tickers = await getTrading().tradingEngine.getTopMarkets(limit);
-				show(
-					"markets",
-					tickers.map(
+				const venue = tradingVenue();
+				show(t(language, "titleMarkets"), [
+					venue.identity,
+					{ text: venue.source, tone: "muted" },
+					"",
+					...tickers.map(
 						(t, i): TableLine => ({
 							text: `${String(i + 1).padStart(2)}. ${padEndWidth(t.symbol, 14)} ${padStartWidth(fmt(t.last, 6), 14)}  ${(t.changePct24h ?? 0) >= 0 ? "+" : ""}${fmt(t.changePct24h)}%  vol ${fmt(t.quoteVolume24h, 0)}`,
 							tone: (t.changePct24h ?? 0) >= 0 ? "up" : "down",
 						}),
 					),
-				);
-				ctx.ui.notify(`Top ${tickers.length} markets by volume`, "info");
+				]);
+				ctx.ui.notify(translate(language, "notifyMarkets", { count: tickers.length }), "info");
 			},
 		});
 
@@ -317,8 +365,9 @@ export function createTradingExtension() {
 					await openSettings(ctx);
 					return;
 				}
+				const language = trading.config.language;
 				if (target !== "paper" && target !== "live") {
-					ctx.ui.notify(`Unknown mode "${target}". Use paper or live.`, "error");
+					ctx.ui.notify(translate(language, "unknownMode", { target }), "error");
 					return;
 				}
 				let liveConfirmed = false;
@@ -326,18 +375,17 @@ export function createTradingExtension() {
 					const keys = loadExchangeKeys()[trading.config.exchange];
 					if (!keys) {
 						ctx.ui.notify(
-							`No API keys for ${trading.config.exchange}. Set them with /exchange-login first.`,
+							translate(language, "liveKeysMissingSlash", { exchange: trading.config.exchange }),
 							"error",
 						);
 						return;
 					}
 					liveConfirmed = await ctx.ui.confirm(
-						"Switch to LIVE trading?",
-						`Real orders will be placed on ${trading.config.exchange} with real funds. ` +
-							`Confirm-live-orders is ${trading.config.confirmLiveOrders ? "ON" : "OFF"}.`,
+						t(language, "confirmLiveTitle"),
+						`${translate(language, "confirmLiveMessage", { exchange: trading.config.exchange })} ${translate(language, "confirmLiveOrdersState", { state: t(language, trading.config.confirmLiveOrders ? "on" : "off") })}`,
 					);
 					if (!liveConfirmed) {
-						ctx.ui.notify("Stayed in paper mode", "info");
+						ctx.ui.notify(t(language, "stayedPaper"), "info");
 						return;
 					}
 				}
@@ -348,13 +396,17 @@ export function createTradingExtension() {
 					);
 					if (!applied) return;
 					updateStatus(ctx);
-					show("mode", [
+					const modeLabel = t(language, target === "live" ? "venueLive" : "venuePaper");
+					show(t(language, "titleMode"), [
 						{
-							text: `Switched to ${target.toUpperCase()} trading on ${trading.config.exchange}.`,
+							text: translate(language, "switchedMode", {
+								mode: modeLabel,
+								exchange: trading.config.exchange,
+							}),
 							tone: target === "live" ? "warn" : undefined,
 						},
 					]);
-					ctx.ui.notify(`Mode: ${target}`, "info");
+					ctx.ui.notify(translate(language, "notifyMode", { mode: target }), "info");
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}
@@ -377,8 +429,11 @@ export function createTradingExtension() {
 					);
 					if (!applied) return;
 					updateStatus(ctx);
-					show("exchange", [`Switched to ${target} (${trading.mode} mode).`]);
-					ctx.ui.notify(`Exchange: ${target}`, "info");
+					const language = trading.config.language;
+					show(t(language, "titleExchange"), [
+						translate(language, "switchedExchange", { exchange: target, mode: trading.mode }),
+					]);
+					ctx.ui.notify(translate(language, "notifyExchange", { exchange: target }), "info");
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}
@@ -394,24 +449,25 @@ export function createTradingExtension() {
 					await openSettings(ctx);
 					return;
 				}
+				const language = trading.config.language;
 				if (target !== "spot" && target !== "usdm-futures" && target !== "both") {
-					ctx.ui.notify(`Unknown market type "${target}". Use spot, usdm-futures, or both.`, "error");
+					ctx.ui.notify(translate(language, "unknownMarketType", { target }), "error");
 					return;
 				}
 				if (target === "both" && trading.mode !== "paper") {
-					ctx.ui.notify('market type "both" is available only in paper mode', "error");
+					ctx.ui.notify(t(language, "marketBothPaperOnly"), "error");
 					return;
 				}
 				if (target === "usdm-futures" && trading.config.exchange !== "binance") {
-					ctx.ui.notify("USDⓈ-M futures require Binance", "error");
+					ctx.ui.notify(t(language, "marketFuturesBinanceOnly"), "error");
 					return;
 				}
 				const isLiveFutures = trading.mode === "live" && target === "usdm-futures";
 				let futuresConfirmed = false;
 				if (isLiveFutures) {
 					futuresConfirmed = await ctx.ui.confirm(
-						"Switch to Binance USDⓈ-M futures?",
-						"This uses the separate futures wallet and exposes leverage and liquidation risk. Existing spot orders and positions are not changed.",
+						t(language, "confirmFuturesTitle"),
+						t(language, "confirmFuturesMessage"),
 					);
 					if (!futuresConfirmed) return;
 				}
@@ -422,11 +478,13 @@ export function createTradingExtension() {
 					);
 					if (!applied) return;
 					updateStatus(ctx);
-					show("market", [
-						`Market type: ${target}`,
-						target === "usdm-futures" ? "Symbol format: BTC/USDT:USDT" : "",
+					show(t(language, "titleMarket"), [
+						translate(language, "switchedMarket", {
+							market: target,
+							hint: target === "usdm-futures" ? t(language, "futuresSymbolHint") : "",
+						}),
 					]);
-					ctx.ui.notify(`Market type: ${target}`, "info");
+					ctx.ui.notify(translate(language, "notifyMarket", { market: target }), "info");
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}
@@ -501,52 +559,64 @@ export function createTradingExtension() {
 				if (arg === "reset") {
 					const usage = trading.tradingEngine.risk.usage();
 					const ok = await ctx.ui.confirm(
-						"Reset used notional quota?",
-						`Used ${fmt(usage.used)} of ${fmt(usage.limit)} ${trading.config.quoteCurrency} will be reset to 0.`,
+						t(language, "riskResetConfirm"),
+						translate(language, "riskResetConfirmBody", {
+							used: fmt(usage.used),
+							limit: fmt(usage.limit),
+							quote: trading.config.quoteCurrency,
+						}),
 					);
 					if (!ok) {
-						ctx.ui.notify("Risk usage reset cancelled", "info");
+						ctx.ui.notify(t(language, "riskResetCancelled"), "info");
 						return;
 					}
 					await waitForIdleBeforeMutation(ctx);
 					trading.tradingEngine.risk.reset();
-					ctx.ui.notify("Used notional quota reset to 0", "info");
+					ctx.ui.notify(t(language, "riskResetDone"), "info");
 					return;
 				}
 				if (parts[0] === "reconcile") {
 					if (!ctx.hasUI) {
-						ctx.ui.notify("Manual reconciliation requires interactive confirmation", "error");
+						ctx.ui.notify(t(language, "riskReconcileUiRequired"), "error");
 						return;
 					}
 					const engine = trading.tradingEngine;
 					const id = parts[1];
 					const outcome = parts[2];
 					if (parts.length !== 3 || (outcome !== "commit" && outcome !== "release")) {
-						ctx.ui.notify("Usage: /risk reconcile <id> commit|release", "warning");
+						ctx.ui.notify(t(language, "riskReconcileUsage"), "warning");
 						return;
 					}
 					const claim = trading.tradingEngine.risk.listPendingReservations().find((item) => item.id === id);
 					if (!claim) {
-						ctx.ui.notify(`No unsettled reservation ${id}`, "error");
+						ctx.ui.notify(translate(language, "riskReservationMissing", { id }), "error");
 						return;
 					}
 					const ok = await ctx.ui.confirm(
-						outcome === "commit"
-							? "Commit reserved notional into used quota?"
-							: "Release reserved notional without counting it as used?",
-						`Reservation ${claim.id}: ${fmt(claim.notional)} ${trading.config.quoteCurrency} on ${claim.symbol} (${claim.mode}). Verify the exchange order first. Do not retry the submission.`,
+						t(language, outcome === "commit" ? "riskCommitTitle" : "riskReleaseTitle"),
+						translate(language, "riskReconcileBody", {
+							id: claim.id,
+							notional: fmt(claim.notional),
+							quote: trading.config.quoteCurrency,
+							symbol: claim.symbol,
+							mode: claim.mode,
+						}),
 					);
 					if (!ok) {
-						ctx.ui.notify("Risk reservation unchanged", "info");
+						ctx.ui.notify(t(language, "riskReservationUnchanged"), "info");
 						return;
 					}
 					await waitForIdleBeforeMutation(ctx);
 					try {
 						if (getTrading() !== trading || getTrading().tradingEngine !== engine)
-							throw new Error("Trading runtime changed during confirmation");
+							throw new Error(t(language, "riskRuntimeChanged"));
 						engine.risk.reconcileReservation(id, outcome);
 						ctx.ui.notify(
-							outcome === "commit" ? `Reservation ${id} committed to used quota` : `Reservation ${id} released`,
+							translate(
+								language,
+								outcome === "commit" ? "riskReservationCommitted" : "riskReservationReleased",
+								{ id },
+							),
 							"info",
 						);
 					} catch (error) {
@@ -563,34 +633,56 @@ export function createTradingExtension() {
 				const { risk } = trading.config;
 				const usedLabel =
 					usage.resetPolicy === "manual"
-						? `Used (cumulative): ${fmt(usage.used)} ${trading.config.quoteCurrency} — manual reset via /risk reset`
-						: `Used today:        ${fmt(usage.used)} ${trading.config.quoteCurrency} (${usage.date}, resets daily)`;
-				show("risk", [
+						? translate(language, "riskUsedCumulative", {
+								used: fmt(usage.used),
+								quote: trading.config.quoteCurrency,
+							})
+						: translate(language, "riskUsedDaily", {
+								used: fmt(usage.used),
+								quote: trading.config.quoteCurrency,
+								date: usage.date,
+							});
+				show(t(language, "titleRisk"), [
 					`${t(language, "riskEntries")}: ${t(language, usage.newExposurePause ? "riskEntriesPaused" : "riskEntriesAllowed")}`,
 					...(usage.newExposurePause
 						? [`${usage.newExposurePause.pausedAt}  ${usage.newExposurePause.reason}`]
 						: []),
 					t(language, "riskPauseControls"),
-					`Max per order:     ${fmt(risk.maxOrderNotional)} ${trading.config.quoteCurrency}`,
-					`Max notional:      ${fmt(risk.maxDailyNotional)} ${trading.config.quoteCurrency} ${usage.resetPolicy === "manual" ? "(cumulative quota, paper)" : "(per day, live)"}`,
+					translate(language, "riskMaxOrderLine", {
+						value: fmt(risk.maxOrderNotional),
+						quote: trading.config.quoteCurrency,
+					}),
+					translate(language, "riskMaxNotionalLine", {
+						value: fmt(risk.maxDailyNotional),
+						quote: trading.config.quoteCurrency,
+						policy: t(language, usage.resetPolicy === "manual" ? "riskQuotaCumulative" : "riskQuotaDaily"),
+					}),
 					usedLabel,
-					`Reserved:          ${fmt(usage.reserved)} ${trading.config.quoteCurrency}`,
-					`Allowed symbols:   ${risk.allowedSymbols.length > 0 ? risk.allowedSymbols.join(", ") : "(all)"}`,
-					`Confirm live:      ${trading.config.confirmLiveOrders ? "yes" : "no"}`,
+					translate(language, "riskReservedLine", {
+						value: fmt(usage.reserved),
+						quote: trading.config.quoteCurrency,
+					}),
+					translate(language, "riskAllowedLine", {
+						symbols:
+							risk.allowedSymbols.length > 0 ? risk.allowedSymbols.join(", ") : t(language, "riskAllowedAll"),
+					}),
+					translate(language, "riskConfirmLiveLine", {
+						value: t(language, trading.config.confirmLiveOrders ? "yes" : "no"),
+					}),
 					...(pending.length === 0
-						? ["Unsettled:         none"]
+						? [t(language, "riskUnsettledNone")]
 						: [
-								`Unsettled:         ${pending.length}`,
+								translate(language, "riskUnsettledCount", { count: pending.length }),
 								...pending.map(
 									(claim) =>
 										`  ${claim.id}  ${claim.mode}  ${claim.symbol}  ${fmt(claim.notional)} ${trading.config.quoteCurrency}`,
 								),
 							]),
 					"",
-					"Edit limits in ~/.ti-trader/agent/trading.json",
-					"Settle stuck claims with /risk reconcile <id> commit|release after verifying the exchange.",
+					t(language, "riskEditLimits"),
+					t(language, "riskSettleHint"),
 				]);
-				ctx.ui.notify("Risk limits shown in transcript", "info");
+				ctx.ui.notify(t(language, "riskShown"), "info");
 			},
 		});
 
@@ -598,16 +690,20 @@ export function createTradingExtension() {
 			description: "Execution recovery: /recovery [run|resolve <id> commit|release <notional> <evidence-reference>]",
 			handler: async (args, ctx) => {
 				const trading = getTrading();
+				const language = trading.config.language;
 				const engine = trading.tradingEngine;
 				const parts = args.trim().split(/\s+/).filter(Boolean);
 				try {
 					if (parts.length === 0) {
 						const records = engine.listExecutions();
 						const maintenance = engine.getExecutionStatus().maintenance;
-						show("recovery", [
+						show(t(language, "titleRecovery"), [
 							...(maintenance
 								? [
-										`Maintenance ${maintenance.id}: ${maintenance.action}; all submissions blocked. Verify every writer is stopped and account/risk state is consistent before /recovery maintenance ${maintenance.id} <evidence-reference>.`,
+										translate(language, "recoveryMaintenanceLine", {
+											id: maintenance.id,
+											action: maintenance.action,
+										}),
 									]
 								: []),
 							...(records.length
@@ -616,34 +712,43 @@ export function createTradingExtension() {
 										`${entry.scope.mode} ${entry.scope.exchange} ${entry.scope.marketType} ${entry.scope.quoteCurrency} account=${entry.scope.accountId}`,
 										JSON.stringify(entry.intent),
 									])
-								: ["No execution records."]),
+								: [t(language, "recoveryNoRecords")]),
 						]);
 						return;
 					}
 					if (parts[0] === "maintenance") {
 						if (parts.length !== 3 || !/^[A-Za-z0-9_-]{1,80}$/.test(parts[2]))
-							throw new Error("Usage: /recovery maintenance <id> <evidence-reference>");
-						if (!ctx.hasUI) throw new Error("Maintenance resolution requires interactive human confirmation");
+							throw new Error(t(language, "recoveryMaintenanceUsage"));
+						if (!ctx.hasUI) throw new Error(t(language, "recoveryMaintenanceNeedsUi"));
 						const maintenance = engine.getExecutionStatus().maintenance;
-						if (!maintenance || maintenance.id !== parts[1]) throw new Error("Account maintenance changed");
+						if (!maintenance || maintenance.id !== parts[1])
+							throw new Error(t(language, "recoveryMaintenanceChanged"));
 						if (
 							!(await ctx.ui.confirm(
-								"Release abandoned account maintenance?",
-								`${maintenance.id}: ${maintenance.action}. Confirm every other writer is stopped and account, configuration and risk state have been independently verified consistent. This does not rerun or finish a reset. Evidence=${parts[2]}`,
+								t(language, "recoveryMaintenanceTitle"),
+								translate(language, "recoveryMaintenanceBody", {
+									id: maintenance.id,
+									action: maintenance.action,
+									evidence: parts[2],
+								}),
 							))
 						)
 							return;
 						await waitForIdleBeforeMutation(ctx);
 						if (getTrading() !== trading || trading.tradingEngine !== engine)
-							throw new Error("Trading runtime changed during confirmation");
+							throw new Error(t(language, "riskRuntimeChanged"));
 						trading.resolveMaintenance(maintenance.id, parts[2]);
-						ctx.ui.notify("Maintenance fence released; manual entry pauses remain in effect", "info");
+						ctx.ui.notify(t(language, "recoveryMaintenanceReleased"), "info");
 						return;
 					}
 					if (parts.length === 1 && parts[0] === "run") {
 						const report = await trading.recoverExecutions();
-						show("recovery", [
-							`Examined ${report.examined}; reconciled ${report.reconciled}; unresolved ${report.unresolved}. No orders were resubmitted.`,
+						show(t(language, "titleRecovery"), [
+							translate(language, "recoveryRunReport", {
+								examined: report.examined,
+								reconciled: report.reconciled,
+								unresolved: report.unresolved,
+							}),
 							...report.issues.map((issue) => `${issue.executionId}: ${issue.issue}`),
 						]);
 						return;
@@ -658,23 +763,29 @@ export function createTradingExtension() {
 						notional < 0 ||
 						!/^[A-Za-z0-9_-]{1,80}$/.test(parts[4])
 					) {
-						throw new Error(
-							"Usage: /recovery resolve <id> commit|release <notional> <evidence-reference>. Evidence must be a non-secret reference, not raw exchange data.",
-						);
+						throw new Error(t(language, "recoveryResolveUsage"));
 					}
-					if (!ctx.hasUI) throw new Error("Manual execution resolution requires interactive human confirmation");
+					if (!ctx.hasUI) throw new Error(t(language, "recoveryResolveNeedsUi"));
 					const entry = engine.listExecutions().find((item) => item.id === parts[1]);
-					if (!entry) throw new Error("Execution record not found");
+					if (!entry) throw new Error(t(language, "recoveryNotFound"));
 					const confirmed = await ctx.ui.confirm(
-						"Resolve execution with verified terminal evidence?",
-						`${entry.id}: ${entry.scope.mode} ${entry.scope.exchange} ${entry.intent.input.symbol}; account=${entry.scope.accountId}.\n` +
-							`Decision: ${outcome} ${notional} ${entry.scope.quoteCurrency}; evidence=${parts[4]}.\n` +
-							"Confirm all submitting processes are stopped or this request has finished, and exchange evidence proves terminal status and final filled notional. Release requires zero fills and no possibility of later acceptance. This NEVER retries an order.",
+						t(language, "recoveryResolveTitle"),
+						translate(language, "recoveryResolveBody", {
+							id: entry.id,
+							mode: entry.scope.mode,
+							exchange: entry.scope.exchange,
+							symbol: entry.intent.input.symbol,
+							account: entry.scope.accountId,
+							outcome,
+							notional,
+							quote: entry.scope.quoteCurrency,
+							evidence: parts[4],
+						}),
 					);
 					if (!confirmed) return;
 					await waitForIdleBeforeMutation(ctx);
 					if (getTrading() !== trading || trading.tradingEngine !== engine)
-						throw new Error("Trading runtime changed during confirmation");
+						throw new Error(t(language, "riskRuntimeChanged"));
 					trading.resolveExecution({
 						executionId: entry.id,
 						expectedRevision: entry.revision,
@@ -684,9 +795,9 @@ export function createTradingExtension() {
 						evidenceReference: parts[4],
 						verifiedTerminal: true,
 					});
-					ctx.ui.notify("Execution reconciled; any manual entry pause remains in effect", "info");
+					ctx.ui.notify(t(language, "recoveryReconciled"), "info");
 				} catch (error) {
-					ctx.ui.notify(error instanceof Error ? error.message : "Execution recovery failed", "error");
+					ctx.ui.notify(error instanceof Error ? error.message : t(language, "recoveryFailed"), "error");
 				}
 			},
 		});
@@ -695,7 +806,7 @@ export function createTradingExtension() {
 			description: "Read bounded, redacted trading audit history",
 			handler: async (_args, _ctx) => {
 				show(
-					"audit",
+					t(uiLang(), "titleAudit"),
 					getTrading()
 						.listAuditEvents()
 						.map(
@@ -715,36 +826,50 @@ export function createTradingExtension() {
 					await openSettings(ctx);
 					return;
 				}
+				const language = trading.config.language;
 				if (parts[0] !== "reset" || parts.length > 2) {
-					ctx.ui.notify("Usage: /paper [reset [startQuote]]", "warning");
+					ctx.ui.notify(t(language, "paperUsage"), "warning");
 					return;
 				}
 				let startQuote: number | undefined;
 				if (parts.length === 2) {
 					startQuote = Number(parts[1]);
 					if (!Number.isFinite(startQuote) || startQuote <= 0) {
-						ctx.ui.notify(`Invalid start balance: ${parts[1]}`, "error");
+						ctx.ui.notify(translate(language, "paperInvalidStart", { value: parts[1] }), "error");
 						return;
 					}
 				}
 				if (trading.mode !== "paper") {
-					ctx.ui.notify("Paper reset is only available in paper mode (see /mode)", "error");
+					ctx.ui.notify(t(language, "paperResetOnlyHint"), "error");
 					return;
 				}
 				const target = startQuote ?? trading.config.paper.startQuote;
 				const confirmed = await ctx.ui.confirm(
-					"Reset paper account?",
-					`All simulated balances, open orders and trade history will be wiped. ` +
-						`New starting balance: ${fmt(target)} ${trading.config.quoteCurrency}.`,
+					t(language, "paperReset"),
+					translate(language, "paperResetWipe", {
+						amount: fmt(target),
+						quote: trading.config.quoteCurrency,
+					}),
 				);
 				if (!confirmed) {
-					ctx.ui.notify("Paper account unchanged", "info");
+					ctx.ui.notify(t(language, "paperUnchanged"), "info");
 					return;
 				}
 				await waitForIdleBeforeMutation(ctx);
 				const applied = await trading.resetPaperAccount(startQuote, { confirmExposure: true });
-				show("paper", [`Paper account reset. Balance: ${fmt(applied)} ${trading.config.quoteCurrency}.`]);
-				ctx.ui.notify(`Paper account reset to ${fmt(applied)} ${trading.config.quoteCurrency}`, "info");
+				show(t(language, "titlePaper"), [
+					translate(language, "paperResetDone", {
+						amount: fmt(applied),
+						quote: trading.config.quoteCurrency,
+					}),
+				]);
+				ctx.ui.notify(
+					translate(language, "paperResetNotify", {
+						amount: fmt(applied),
+						quote: trading.config.quoteCurrency,
+					}),
+					"info",
+				);
 			},
 		});
 
@@ -759,7 +884,7 @@ export function createTradingExtension() {
 					return;
 				}
 				if (!isSupportedExchangeId(target)) {
-					ctx.ui.notify(`Unsupported exchange: ${target}`, "error");
+					ctx.ui.notify(translate(uiLang(), "unsupportedExchange", { exchange: target }), "error");
 					return;
 				}
 				await loginExchange(target, ctx);

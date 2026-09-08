@@ -99,6 +99,7 @@ function fixture() {
 			marketType: "spot",
 			contract: false,
 			active: true,
+			amountStep: 0.0001,
 		}),
 		getOrderBook: async (symbol) => ({ symbol, timestamp: Date.now(), bids: [], asks: [], bidDepth: 0, askDepth: 0 }),
 		getContractStats: async (symbol) => ({ symbol }),
@@ -404,6 +405,49 @@ describe("durable execution protocol", () => {
 		);
 		expect(engine.risk.usage().reserved).toBe(100);
 	});
+
+	it.each(["paper", "live"] as const)(
+		"submits a truncated $mode spot amount so the fill matches the plan",
+		async (mode) => {
+			const f = fixture();
+			const engine = f.engine(mode === "live" ? "live-account" : "fixture-account", { ...f.exchange, mode });
+			const policy = mode === "live" ? { allowUnconfirmedLive: true } : {};
+			const requested = 25 / 108_234.56;
+			const plan = await engine.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: requested });
+			expect(plan.input.amount).toBe(0.0002);
+			const result = await engine.placeOrder(plan, policy);
+			expect(result.order.amount).toBe(0.0002);
+			expect(engine.listExecutions()).toEqual([
+				expect.objectContaining({
+					status: "acknowledged",
+					intent: expect.objectContaining({ input: expect.objectContaining({ amount: 0.0002 }) }),
+				}),
+			]);
+			expect(engine.risk.usage()).toMatchObject({ reserved: 0 });
+			expect(engine.listExecutions().filter(isUnresolvedExecution)).toEqual([]);
+		},
+	);
+
+	it.each(["paper", "live"] as const)(
+		"recovers a truncated $mode fill after settlement persistence fails",
+		async (mode) => {
+			const f = fixture();
+			const engine = f.engine(mode === "live" ? "live-account" : "fixture-account", { ...f.exchange, mode });
+			const policy = mode === "live" ? { allowUnconfirmedLive: true } : {};
+			f.fail(3);
+			await expect(
+				engine.placeOrder(
+					await engine.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 25 / 108_234.56 }),
+					policy,
+				),
+			).rejects.toThrow();
+			expect(engine.listExecutions()[0]).toMatchObject({ status: "submission-started" });
+			const restarted = f.engine(mode === "live" ? "live-account" : "fixture-account", { ...f.exchange, mode });
+			expect((await restarted.recoverExecutions(recovery)).issues).toEqual([]);
+			expect(engine.listExecutions().filter(isUnresolvedExecution)).toEqual([]);
+			expect(f.submit).toHaveBeenCalledOnce();
+		},
+	);
 
 	it.each(["complete", "missing-leg", "duplicate-leg", "wrong-list", "excess-fills"] as const)(
 		"validates OCO %s evidence",

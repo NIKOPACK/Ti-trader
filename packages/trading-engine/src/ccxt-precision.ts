@@ -19,3 +19,25 @@ export function amountStepFromCcxtPrecision(
 	}
 	return undefined;
 }
+
+/** Decimal places implied by a lot step, matching ccxt TICK_SIZE stringification. */
+export function amountStepDecimals(step: number): number | undefined {
+	if (!Number.isFinite(step) || step <= 0) return undefined;
+	const text = step.toFixed(16).replace(/0+$/, "").replace(/\.$/, "");
+	const dot = text.indexOf(".");
+	const decimals = dot === -1 ? 0 : text.length - dot - 1;
+	return decimals > 16 ? undefined : decimals;
+}
+
+/**
+ * Truncate `amount` onto `step`, matching ccxt `amountToPrecision` (TRUNCATE).
+ * Paper and live adapters both go through that API, so planning must not round.
+ */
+export function truncateToAmountStep(amount: number, step: number): number | undefined {
+	const decimals = amountStepDecimals(step);
+	if (decimals === undefined || !Number.isFinite(amount) || amount <= 0) return undefined;
+	const units = Math.floor(amount / step + 1e-12);
+	if (!Number.isFinite(units) || units <= 0) return undefined;
+	const snapped = Number((units * step).toFixed(decimals));
+	return Number.isFinite(snapped) && snapped > 0 ? snapped : undefined;
+}

@@ -1,5 +1,6 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
+import webSearchExtension, {
 	assertSafeUrl,
 	fetchSource,
 	getSearchEndpoint,
@@ -186,6 +187,23 @@ describe("web-search extension safety", () => {
 		const requestSignal = fetchMock.mock.calls[0]?.[1]?.signal;
 		expect(requestSignal).not.toBe(controller.signal);
 		expect(requestSignal?.aborted).toBe(true);
+	});
+
+	it("registers no LLM tools without a key and both tools when a key is set", () => {
+		const registered = (apiKey?: string): string[] => {
+			if (apiKey === undefined) delete process.env.TAVILY_API_KEY;
+			else process.env.TAVILY_API_KEY = apiKey;
+			const names: string[] = [];
+			const registerTool = vi.fn((tool: { name: string }) => {
+				names.push(tool.name);
+			}) as unknown as ExtensionAPI["registerTool"];
+			webSearchExtension({ registerTool } as ExtensionAPI);
+			return names;
+		};
+
+		expect(registered()).toEqual([]);
+		expect(registered("  \t")).toEqual([]);
+		expect(registered("secret-key")).toEqual(["web_search", "fetch_source"]);
 	});
 
 	it("rejects malformed provider responses and provider errors", async () => {

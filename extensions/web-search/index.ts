@@ -189,9 +189,14 @@ function parseSearchResponse(payload: unknown): SearchResult[] {
 	return results;
 }
 
+function tavilyApiKey(): string | undefined {
+	const key = process.env.TAVILY_API_KEY?.trim();
+	return key || undefined;
+}
+
 export async function webSearch(params: unknown, signal?: AbortSignal): Promise<SearchResponse> {
 	const request = validateSearchRequest(params);
-	const apiKey = process.env.TAVILY_API_KEY;
+	const apiKey = tavilyApiKey();
 	if (!apiKey) throw new Error("TAVILY_API_KEY is not configured");
 	const endpoint = getSearchEndpoint();
 	const body: Record<string, unknown> = {
@@ -235,6 +240,7 @@ async function fetchSource(
 }
 
 export default function webSearchExtension(pi: ExtensionAPI): void {
+	if (!tavilyApiKey()) return;
 	pi.registerTool({
 		name: "web_search",
 		label: "web_search",

@@ -65,13 +65,15 @@ interface RegisteredCommand {
 }
 
 let shutdownHandler: ((event: { reason: "quit" | "reload" }) => Promise<void>) | undefined;
+const sessionStartHandlers: Array<(event: unknown, ctx: ExtensionCommandContext) => Promise<void>> = [];
 const appendEntry = vi.fn();
 
 function registerCommands(): Map<string, RegisteredCommand> {
 	const commands = new Map<string, RegisteredCommand>();
 	const pi = {
-		on: vi.fn((event: string, handler: () => Promise<void>) => {
+		on: vi.fn((event: string, handler: (event: unknown, ctx: ExtensionCommandContext) => Promise<void>) => {
 			if (event === "session_shutdown") shutdownHandler = handler as typeof shutdownHandler;
+			if (event === "session_start") sessionStartHandlers.push(handler);
 		}),
 		registerEntryRenderer: vi.fn(),
 		appendEntry,
@@ -90,6 +92,9 @@ function commandContext(idle: boolean, confirm = true): ExtensionCommandContext 
 		ui: {
 			notify: vi.fn(),
 			setStatus: vi.fn(),
+			setWidget: vi.fn(),
+			addAutocompleteProvider: vi.fn(),
+			theme: { fg: (_color: string, text: string) => text },
 			confirm: vi.fn(async () => confirm),
 		},
 	} as unknown as ExtensionCommandContext;
@@ -99,8 +104,19 @@ describe("trading commands", () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
 		shutdownHandler = undefined;
+		sessionStartHandlers.length = 0;
 		trading.tradingEngine.listExecutions.mockReturnValue([]);
 		trading.tradingEngine.getExecutionStatus.mockReturnValue({ maintenance: undefined });
+	});
+
+	it("shows the exchange and market-data source above the editor", async () => {
+		const ctx = commandContext(true);
+		registerCommands();
+		for (const handler of sessionStartHandlers) await handler({}, ctx);
+		expect(ctx.ui.setStatus).toHaveBeenCalledWith("trading-status", undefined);
+		expect(ctx.ui.setWidget).toHaveBeenCalledWith("trading-venue", [
+			"PAPER  OKX  Spot  USDT  market data: OKX public",
+		]);
 	});
 
 	it("lists execution history without lookup, mutation or confirmation", async () => {

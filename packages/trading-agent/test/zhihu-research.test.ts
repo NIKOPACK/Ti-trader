@@ -121,18 +121,44 @@ describe("zhihu global search extension", () => {
 	it("registers a masked zhihu-login command that persists the secret", async () => {
 		const secretPath = temporarySecretPath();
 		process.env.TI_ZHIHU_ACCESS_SECRET_FILE = secretPath;
+		const toolNames: string[] = [];
 		const commands = new Map<string, Omit<RegisteredCommand, "name" | "sourceInfo">>();
-		const registerTool = vi.fn() as unknown as ExtensionAPI["registerTool"];
+		const registerTool = vi.fn((tool: { name: string }) => {
+			toolNames.push(tool.name);
+		}) as unknown as ExtensionAPI["registerTool"];
 		const registerCommand = vi.fn((name, command) => commands.set(name, command)) as ExtensionAPI["registerCommand"];
 		zhihuResearchExtension({ registerTool, registerCommand });
 		const input = vi.fn().mockResolvedValue("command-secret");
 		const notify = vi.fn();
+
+		expect(toolNames).not.toContain("zhihu_search");
+		expect(toolNames).not.toContain("zhihu_global_search");
+		expect(commands.has("zhihu-login")).toBe(true);
+		expect(commands.has("zhihu")).toBe(true);
+
+		await commands.get("zhihu")?.handler("BTC", { ui: { notify } } as unknown as ExtensionCommandContext);
+		expect(notify).toHaveBeenCalledWith(expect.stringContaining("/zhihu-login"), "warning");
 
 		await commands.get("zhihu-login")?.handler("", { ui: { input, notify } } as unknown as ExtensionCommandContext);
 
 		expect(input).toHaveBeenCalledWith(expect.any(String), expect.any(String), { secret: true });
 		expect(readZhihuAccessSecret()).toBe("command-secret");
 		expect(notify).toHaveBeenCalledWith(expect.stringContaining("mode 600"), "info");
+	});
+
+	it("registers zhihu_global_search only when a secret exists", () => {
+		process.env.ZHIHU_ACCESS_SECRET = "test-secret";
+		const toolNames: string[] = [];
+		const commands = new Map<string, Omit<RegisteredCommand, "name" | "sourceInfo">>();
+		const registerTool = vi.fn((tool: { name: string }) => {
+			toolNames.push(tool.name);
+		}) as unknown as ExtensionAPI["registerTool"];
+		const registerCommand = vi.fn((name, command) => commands.set(name, command)) as ExtensionAPI["registerCommand"];
+		zhihuResearchExtension({ registerTool, registerCommand });
+		expect(toolNames).toEqual(["zhihu_global_search"]);
+		expect(toolNames).not.toContain("zhihu_search");
+		expect(commands.has("zhihu-login")).toBe(true);
+		expect(commands.has("zhihu")).toBe(true);
 	});
 
 	it("rejects invalid endpoint hosts and business errors", async () => {

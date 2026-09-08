@@ -1,5 +1,6 @@
 import { validateTradingSymbol } from "@nikopack/ti-trading-risk";
 import { evaluateOrderCapability, getTradingCapabilities, type TradingCapabilityContext } from "./capabilities.ts";
+import { truncateToAmountStep } from "./ccxt-precision.ts";
 import type { FuturesPositionMode, MarketType } from "./client-types.ts";
 import { futuresAmountsEqual } from "./contract-size.ts";
 import { reduceSide } from "./protection.ts";
@@ -188,15 +189,24 @@ function requireFuturesLot(market: MarketInfo): { contractSize: number; step: nu
 	return { contractSize, step };
 }
 
-async function futuresMarketForQuoteAmount(trading: OrderPlanningContext, symbol: string): Promise<MarketInfo> {
+async function loadMarketInfo(
+	trading: OrderPlanningContext,
+	symbol: string,
+	kind: "Spot" | "Futures",
+): Promise<MarketInfo> {
 	try {
 		return await trading.exchange.getMarketInfo(symbol);
 	} catch (error) {
+		if (error instanceof OrderPreparationError) throw error;
 		rejectOrder(
-			`Futures market metadata unavailable: ${error instanceof Error ? error.message : String(error)}`,
+			`${kind} market metadata unavailable: ${error instanceof Error ? error.message : String(error)}`,
 			true,
 		);
 	}
+}
+
+async function futuresMarketForQuoteAmount(trading: OrderPlanningContext, symbol: string): Promise<MarketInfo> {
+	return loadMarketInfo(trading, symbol, "Futures");
 }
 
 function snapQuoteAmountToFuturesLot(amount: number, market: MarketInfo, referencePrice: number): number {
@@ -215,6 +225,21 @@ function snapQuoteAmountToFuturesLot(amount: number, market: MarketInfo, referen
 	}
 	const snapped = contracts * contractSize;
 	if (!Number.isFinite(snapped) || snapped <= 0) rejectOrder("Order amount must be positive");
+	return snapped;
+}
+
+function snapSpotLot(amount: number, market: MarketInfo, requireStep: boolean): number {
+	const step = market.amountStep;
+	if (step === undefined || !Number.isFinite(step) || step <= 0) {
+		if (requireStep) rejectOrder("Spot amount precision is unavailable; refusing to guess a lot size", true);
+		return amount;
+	}
+	const snapped = truncateToAmountStep(amount, step);
+	if (snapped === undefined) rejectOrder(`Amount ${amount} rounds to zero for ${market.symbol}`);
+	const minAmount = market.minAmount ?? market.limits?.amount?.min;
+	if (minAmount !== undefined && Number.isFinite(minAmount) && snapped < minAmount) {
+		rejectOrder(`Amount ${snapped} is below minimum ${minAmount} for ${market.symbol}`);
+	}
 	return snapped;
 }
 
@@ -410,6 +435,13 @@ export async function prepareOrder(
 		rejectOrder("Provide exactly one of amount (base currency) or quoteAmount (quote currency)");
 	}
 	if (!Number.isFinite(amount) || amount <= 0) rejectOrder("Order amount must be positive");
+	if (!futuresOrder && !closePosition) {
+		amount = snapSpotLot(
+			amount,
+			await loadMarketInfo(trading, params.symbol, "Spot"),
+			params.quoteAmount !== undefined,
+		);
+	}
 	if (futuresOrder && !closePosition) {
 		// Fetch one metadata snapshot for the sizing path. A second request could
 		// observe different contract metadata or fail after the first succeeded,
@@ -504,6 +536,9 @@ export async function prepareOcoOrder(params: OcoIntent, trading: OrderPlanningC
 	if (!Number.isFinite(params.takeProfitPrice) || params.takeProfitPrice <= 0)
 		rejectOrder("takeProfitPrice must be a positive finite number");
 	if (params.stopLossPrice === params.takeProfitPrice) rejectOrder("stopLossPrice and takeProfitPrice must differ");
+	const amount = futuresOrder
+		? params.amount
+		: snapSpotLot(params.amount, await loadMarketInfo(trading, params.symbol, "Spot"), false);
 	const ticker = await trading.exchange.getTicker(params.symbol);
 	const referencePrice = ticker.last;
 	if (referencePrice === undefined || !Number.isFinite(referencePrice) || referencePrice <= 0)
@@ -527,9 +562,9 @@ export async function prepareOcoOrder(params: OcoIntent, trading: OrderPlanningC
 				`Buy OCO takeProfitPrice ${params.takeProfitPrice} must be below the current last price ${referencePrice}`,
 			);
 	}
-	const observedNotional = params.amount * referencePrice;
+	const observedNotional = amount * referencePrice;
 	const riskPrice = params.side === "buy" ? Math.max(params.stopLossPrice, params.takeProfitPrice) : referencePrice;
-	const riskNotional = params.amount * riskPrice;
+	const riskNotional = amount * riskPrice;
 	if (!Number.isFinite(observedNotional) || observedNotional <= 0)
 		rejectOrder("OCO notional must be positive and finite");
 	if (!Number.isFinite(riskNotional) || riskNotional <= 0)
@@ -539,7 +574,7 @@ export async function prepareOcoOrder(params: OcoIntent, trading: OrderPlanningC
 		input: {
 			symbol: params.symbol,
 			side: params.side,
-			amount: params.amount,
+			amount,
 			stopLossPrice: params.stopLossPrice,
 			takeProfitPrice: params.takeProfitPrice,
 		},
@@ -549,6 +584,6 @@ export async function prepareOcoOrder(params: OcoIntent, trading: OrderPlanningC
 		referencePrice,
 		referenceTimestamp: ticker.timestamp,
 		countTowardsDailyLimit: params.side === "buy",
-		summary: `OCO ${params.side.toUpperCase()} ${params.amount} ${params.symbol} SL ${params.stopLossPrice} / TP ${params.takeProfitPrice} ≈ ${observedNotional.toFixed(2)} ${trading.config.quoteCurrency}${params.side === "buy" ? ` (risk ≤ ${riskNotional.toFixed(2)} ${trading.config.quoteCurrency})` : ""}`,
+		summary: `OCO ${params.side.toUpperCase()} ${amount} ${params.symbol} SL ${params.stopLossPrice} / TP ${params.takeProfitPrice} ≈ ${observedNotional.toFixed(2)} ${trading.config.quoteCurrency}${params.side === "buy" ? ` (risk ≤ ${riskNotional.toFixed(2)} ${trading.config.quoteCurrency})` : ""}`,
 	});
 }

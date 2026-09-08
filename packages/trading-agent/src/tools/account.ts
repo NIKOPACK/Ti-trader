@@ -64,6 +64,7 @@ export function createGetPositionsTool(
 			const unavailable = positions.filter((position) => !hasFiniteQuoteValue(position));
 			return jsonResult({
 				mode: trading.mode,
+				exchange: trading.tradingEngine.id,
 				count: positions.length,
 				positions: positions.map(formatPosition),
 				dataQuality: {

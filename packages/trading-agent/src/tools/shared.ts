@@ -41,6 +41,7 @@ export {
 	round,
 	SUBMISSION_STATUS_UNKNOWN_MARKER,
 	type TradingProvider,
+	venueFields,
 } from "./format.ts";
 export {
 	cancelOrderListSchema,

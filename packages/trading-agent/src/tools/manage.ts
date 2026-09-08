@@ -18,6 +18,7 @@ import {
 	multiAssetsModeSchema,
 	requireFuturesSymbol,
 	type TradingProvider,
+	venueFields,
 } from "./shared.ts";
 
 export function createGetFundingRateHistoryTool(
@@ -36,6 +37,7 @@ export function createGetFundingRateHistoryTool(
 				(record) => record.rate === undefined || !Number.isFinite(record.rate),
 			);
 			return jsonResult({
+				...venueFields(trading),
 				symbol: params.symbol,
 				count: records.length,
 				records: records.map((record) => ({
@@ -73,6 +75,7 @@ export function createGetFundingRateTool(
 			const hasRate = funding.rate !== undefined && Number.isFinite(funding.rate);
 			const available = trading.mode === "live" ? hasRate : hasRate && funding.rate !== 0;
 			return jsonResult({
+				...venueFields(trading),
 				...funding,
 				rate: finiteOrNull(funding.rate),
 				dataQuality: {

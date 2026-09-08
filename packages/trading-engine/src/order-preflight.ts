@@ -49,7 +49,16 @@ function exchangeAmount(
 	market: MarketInfo,
 	futures: boolean,
 ): { amount: number; unit: "base" | "contracts" } {
-	if (!futures) return { amount: plan.amount, unit: "base" };
+	if (!futures) {
+		const step = market.amountStep;
+		if (step !== undefined && Number.isFinite(step) && step > 0) {
+			const units = plan.amount / step;
+			if (!Number.isFinite(units) || Math.abs(units - Math.round(units)) > 1e-9) {
+				reject(`Spot order amount ${plan.amount} is not aligned to precision step ${step}`);
+			}
+		}
+		return { amount: plan.amount, unit: "base" };
+	}
 	const contractSize = market.contractSize;
 	if (contractSize === undefined || !Number.isFinite(contractSize) || contractSize <= 0) {
 		reject("Futures contractSize is unavailable during order preflight", true);

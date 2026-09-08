@@ -1,6 +1,6 @@
 # Ti Market Lab
 
-`ti-market-lab` 是 Ti 的只读市场分析扩展。它从 Binance 公共现货 K 线接口读取已收盘 K 线，计算技术指标并返回市场偏向；不会读取 Ti 凭证，不访问账户，不下单、不撤单，也不修改风险配置。
+`ti-market-lab` 是 Ti 的只读市场分析扩展。数据源固定为 Binance 公共现货（SPOT）已收盘 K 线，不跟随 Ti 当前交易所配置，也不读取期货/合约行情。它计算技术指标并返回市场偏向；不会读取 Ti 凭证，不访问账户，不下单、不撤单，也不修改风险配置。
 
 ## 加载
 
@@ -17,9 +17,7 @@ ti --extension ./extensions/market-lab/index.ts
 ## 工具
 
 - `calculate_indicators`：计算快/慢 EMA、RSI、MACD、ATR、Bollinger Bands，以及成交量均值和成交量比率。可选 `emaFast`、`emaSlow`、`rsiPeriod`、`atrPeriod`（整数 2–200）；默认仍是 EMA20/50、RSI14、ATR14。样本不够的字段为 `null`，不编造。
-- `analyze_market_structure`：返回近期 20 根 K 线区间、趋势偏向和指标摘要。
-- `generate_trade_signal`：默认用 `ema-cross` 返回非绑定的 bullish/bearish/neutral/insufficient-data 偏向。它是分析，不是交易授权。
-- `evaluate_strategy`：对命名预设评分：`ema-cross`、`rsi-revert`、`macd-hist`。只返回 `bias`、`event`、`reasons` 和失效参考，不下单。
+- `evaluate_strategy`：对命名预设评分：`ema-cross`、`rsi-revert`、`macd-hist`。内部分析路径与 `/indicators`、`/signal` 相同，只返回 `bias`、`event`、`reasons` 和失效参考，不下单。
 - `screen_markets`：对最多 8 个现货标的做只读扫描，按事件排序；单个标的失败不影响其余结果。
 - `simulate_rule`：在已收盘 K 线上回放命名预设。只统计 discrete 事件（交叉、超买超卖），非重叠持有 `horizon` 根 K 线（默认 5）。返回交易次数、胜率和平均收益，不含手续费、滑点和成交；不是回测，也不下单。
 
@@ -51,4 +49,4 @@ ti --extension ./extensions/market-lab/index.ts
 
 ## 当前边界
 
-第一版使用 Binance 公共现货数据，因此不支持 Binance USDⓈ-M 合约 K 线，也不自动跟随 Ti 当前交易所配置。未来若接入 Ti 的只读行情桥接，应保持本扩展没有交易客户端和账户权限的边界。
+数据源是 Binance 公共现货已收盘 K 线（`https://api.binance.com` `/api/v3/klines`），不是 Ti 当前交易所、也不是期货/合约市场。因此不支持 Binance USDⓈ-M 合约 K 线，也不自动跟随 Ti 的 `exchange` / `market` 配置。未来若接入 Ti 的只读行情桥接，应保持本扩展没有交易客户端和账户权限的边界。

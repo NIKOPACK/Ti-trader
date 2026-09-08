@@ -1,5 +1,6 @@
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import {
+import marketLabExtension, {
 	analyze,
 	binanceSymbol,
 	fetchCandles,
@@ -50,6 +51,23 @@ function fallingCandles(count: number): Candle[] {
 afterEach(() => vi.restoreAllMocks());
 
 describe("market-lab", () => {
+	it("registers remaining lab tools and not the removed duplicates", () => {
+		const tools: string[] = [];
+		const commands: string[] = [];
+		marketLabExtension({
+			registerTool: (tool: { name: string }) => {
+				tools.push(tool.name);
+			},
+			registerCommand: (name: string) => {
+				commands.push(name);
+			},
+		} as unknown as ExtensionAPI);
+		expect(tools).toEqual(["calculate_indicators", "evaluate_strategy", "screen_markets", "simulate_rule"]);
+		expect(commands).toEqual(["indicators", "signal", "screen", "replay"]);
+		expect(tools).not.toContain("analyze_market_structure");
+		expect(tools).not.toContain("generate_trade_signal");
+	});
+
 	it("normalizes only supported spot symbols", () => {
 		expect(binanceSymbol("btc/usdt")).toBe("BTCUSDT");
 		expect(() => binanceSymbol("BTC/USDT:USDT")).toThrow();

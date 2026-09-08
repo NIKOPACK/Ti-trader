@@ -49,9 +49,9 @@ Ti 与 pi 使用完全独立的配置目录。Ti 首次启动会创建 `~/.ti-tr
 - **执行恢复与运维**：启动及运行时替换会对未决执行做有界查询，不会自动重发订单；`/recovery` 查看和处置，`/audit` 查看脱敏审计记录，`/health` 查看本地阻断和观测健康
 - **Binance USDⓈ-M 合约**：Binance 专用 swap 模式；Paper 支持独立合约账户、杠杆、逐仓/全仓、单向/双向持仓、reduceOnly、平仓、盈亏和保证金模拟，实盘支持交易所提供的合约订单参数及资金费率查询
 - **市场数据完整性**：`get_order_book`、`get_market_info`、`get_contract_stats` 分别读取订单簿、Binance `exchangeInfo` 市场规则、`premiumIndex`/资金费率及未平仓量；live futures 可能提供 premium-index、资金费率和未平仓量字段；Paper futures 只返回其 ticker 模拟可提供的字段，不可用字段以 `warnings`/`null` 标记，不模拟资金费率或未平仓量观测；缺失数据返回 `null` 和 `warnings`，不会伪装为 0
-- **默认只读量化**：会话自动加载 market-lab，提供 `calculate_indicators`、`analyze_market_structure`、`generate_trade_signal`、`evaluate_strategy`、`screen_markets`、`simulate_rule` 以及 `/indicators` `/signal` `/screen` `/replay`。数据来自 Binance 公共现货已收盘 K 线，不会下单
+- **默认只读量化与图表**：会话自动加载 market-lab 和 market-chart。market-lab 提供 `calculate_indicators`、`evaluate_strategy`、`screen_markets`、`simulate_rule` 以及 `/indicators` `/signal` `/screen` `/replay`，数据来自 Binance 公共现货已收盘 K 线；market-chart 提供 `show_market_view` 和 `/chart`，读取当前 Ti 运行时快照。二者都不会下单
 
-默认注入 agent 的交易工具共 25 个：行情 `get_price`、`get_order_book`、`get_market_info`、`get_contract_stats`、`get_klines`、`get_top_markets`；能力与账户 `get_trading_capabilities`、`get_balance`、`get_positions`、`get_portfolio_snapshot`、`get_open_orders`、`get_order_history`；订单查询与预检 `get_order_status`、`get_order_list_status`、`check_order`；执行 `buy`、`sell`、`place_oco`、`cancel_order`、`cancel_order_list`；风控与合约设置 `get_risk_status`、`get_funding_rate_history`、`set_leverage`、`set_margin_mode`、`set_multi_assets_mode`。另有 6 个只读量化工具由内置 market-lab 扩展注入：`calculate_indicators`、`analyze_market_structure`、`generate_trade_signal`、`evaluate_strategy`、`screen_markets`、`simulate_rule`。`get_funding_rate` 和 `get_futures_positions` 仍可由程序调用其 factory，但不再进入默认工具集，避免与统一的 `get_contract_stats`/`get_positions` 重复。
+默认注入 agent 的交易工具共 25 个：行情 `get_price`、`get_order_book`、`get_market_info`、`get_contract_stats`、`get_klines`、`get_top_markets`；能力与账户 `get_trading_capabilities`、`get_balance`、`get_positions`、`get_portfolio_snapshot`、`get_open_orders`、`get_order_history`；订单查询与预检 `get_order_status`、`get_order_list_status`、`check_order`；执行 `buy`、`sell`、`place_oco`、`cancel_order`、`cancel_order_list`；风控与合约设置 `get_risk_status`、`get_funding_rate_history`、`set_leverage`、`set_margin_mode`、`set_multi_assets_mode`。另有 4 个只读量化工具由内置 market-lab 扩展注入：`calculate_indicators`、`evaluate_strategy`、`screen_markets`、`simulate_rule`；market-chart 注入 `show_market_view`。`get_funding_rate` 和 `get_futures_positions` 仍可由程序调用其 factory，但不再进入默认工具集，避免与统一的 `get_contract_stats`/`get_positions` 重复。
 
 ## 构建
 
@@ -80,7 +80,13 @@ node packages/trading-agent/dist/cli.js --mode paper --exchange binance
 
 首次运行用 `/login` 配置模型 Provider；使用 `/settings` 或 `/exchange-login` 配置交易所 API。交易所支持 Binance（币安）、OKX、Bybit。语言、模式和市场类型在 `/settings` 中切换，设置保存于 `~/.ti-trader/agent/trading.json`。模型认证存于 `~/.ti-trader/agent/auth.json`，交易所 API key 存于 `~/.ti-trader/agent/keys.json`，与 pi coding agent 隔离。
 
-可选扩展位于仓库根目录 `extensions/`。使用 `--extension <path>` 加载用户扩展，可重复指定；使用 `--no-extensions` 禁用自动发现的用户扩展。公开互联网研究扩展位于 `extensions/web-search/`；知乎全网搜索扩展位于 `extensions/zhihu-research/`，需要通过 `ZHIHU_ACCESS_SECRET` 配置官方 OpenAPI 凭据。交易所 ccxt 连接、订单规划、风控和保护逻辑属于 `@nikopack/ti-trading-engine`；agent 通过 `marketData` 读取市场和账户数据，通过 `tradingEngine` 执行规划、风控与订单编排。
+可选扩展位于仓库根目录 `extensions/`，发布包仍全部打进 `ti-trader/dist/`。默认自动加载只有 `market-lab` 和 `market-chart`。其余三个按条件加载，也可用 `--extension <path>` 显式加载（可重复指定）；`--no-extensions` 禁用自动发现的用户扩展：
+
+- `web-search`：`TAVILY_API_KEY` 去空白后非空
+- `zhihu-research`：`ZHIHU_ACCESS_SECRET` 去空白后非空，或密钥文件存在且含非空白内容。默认文件为 `~/.ti-trader/agent/zhihu-access-secret`，可用 `TI_ZHIHU_ACCESS_SECRET_FILE` 覆盖
+- `market-research`：`TI_MARKET_RESEARCH` 为 `1`、`true` 或 `yes`（去空白、不区分大小写）
+
+交易所 ccxt 连接、订单规划、风控和保护逻辑属于 `@nikopack/ti-trading-engine`；agent 通过 `marketData` 读取市场和账户数据，通过 `tradingEngine` 执行规划、风控与订单编排。
 
 ## 配置
 
@@ -244,6 +250,9 @@ src/
 
 packages/trading-engine/  独立交易引擎：规范化合约、ccxt/paper 适配器、规划、风控和保护逻辑
 extensions/
-  web-search/           可选只读公开互联网研究扩展（独立安全策略）
-  zhihu-research/       可选只读知乎全网搜索扩展（官方 OpenAPI）
+  market-lab/           默认只读量化（指标、筛选、回放）
+  market-chart/         默认只读图表（show_market_view /chart）
+  market-research/      按需加载的市场研究子代理（TI_MARKET_RESEARCH）
+  web-search/           按需加载的公开互联网研究（TAVILY_API_KEY）
+  zhihu-research/       按需加载的知乎全网搜索（ZHIHU_ACCESS_SECRET 或密钥文件）
 ```

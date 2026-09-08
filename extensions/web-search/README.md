@@ -33,7 +33,7 @@ ti --extension ~/.ti-trader/extensions/my-web-search.ts
 
 Ti 专用扩展可在 `package.json` 中使用 `ti.extensions`。为兼容 Pi，可同时声明同内容的 `pi.extensions`；Pi 只读取 `pi` 字段。仅有 `pi.extensions` 的现有 Pi 扩展包也可直接由 Ti 加载。
 
-配置 Tavily：
+扩展可以在没有 `TAVILY_API_KEY` 的情况下加载，此时不会向 LLM 注册工具。设置非空的 `TAVILY_API_KEY` 后才会注册 `web_search` 和 `fetch_source`：
 
 ```bash
 export TAVILY_API_KEY='your-key'

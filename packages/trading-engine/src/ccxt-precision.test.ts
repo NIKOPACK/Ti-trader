@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { amountStepFromCcxtPrecision } from "./ccxt-precision.ts";
+import { amountStepFromCcxtPrecision, truncateToAmountStep } from "./ccxt-precision.ts";
 
 describe("amountStepFromCcxtPrecision", () => {
 	it("treats TICK_SIZE integers as the lot step", () => {
@@ -16,5 +16,18 @@ describe("amountStepFromCcxtPrecision", () => {
 		expect(amountStepFromCcxtPrecision(1, 3)).toBeUndefined();
 		expect(amountStepFromCcxtPrecision(1, undefined)).toBeUndefined();
 		expect(amountStepFromCcxtPrecision(undefined, 4)).toBeUndefined();
+	});
+});
+
+describe("truncateToAmountStep", () => {
+	it("truncates like ccxt amountToPrecision instead of rounding", () => {
+		expect(truncateToAmountStep(0.00025, 0.0001)).toBe(0.0002);
+		expect(truncateToAmountStep(25 / 108_234.56, 0.0001)).toBe(0.0002);
+		expect(truncateToAmountStep(0.0002, 0.0001)).toBe(0.0002);
+	});
+
+	it("rejects amounts that fall below one lot", () => {
+		expect(truncateToAmountStep(0.00004, 0.0001)).toBeUndefined();
+		expect(truncateToAmountStep(0, 0.0001)).toBeUndefined();
 	});
 });

@@ -37,7 +37,6 @@ const marketFields = {
 		Type.Integer({ minimum: 20, maximum: MAX_CANDLES, description: "Closed candles to use. Default 100." }),
 	),
 };
-const marketSchema = Type.Object(marketFields);
 const indicatorSchema = Type.Object({
 	...marketFields,
 	emaFast: periodSchema,
@@ -439,7 +438,7 @@ export default function marketLabExtension(pi: ExtensionAPI): void {
 	const register = (
 		name: string,
 		description: string,
-		parameters: typeof marketSchema | typeof indicatorSchema | typeof strategySchema,
+		parameters: typeof indicatorSchema | typeof strategySchema,
 		handler: (params: MarketParams, signal?: AbortSignal) => Promise<unknown>,
 	): void => {
 		pi.registerTool({
@@ -474,18 +473,6 @@ export default function marketLabExtension(pi: ExtensionAPI): void {
 				],
 			};
 		},
-	);
-	register(
-		"analyze_market_structure",
-		"Analyze recent range, EMA trend, RSI, MACD, and ATR using closed public candles. Read-only.",
-		marketSchema,
-		analyze,
-	);
-	register(
-		"generate_trade_signal",
-		"Generate a non-binding, read-only market bias and invalidation candidates. Never places an order.",
-		marketSchema,
-		analyze,
 	);
 	register(
 		"evaluate_strategy",

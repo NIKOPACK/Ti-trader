@@ -20,6 +20,7 @@ import {
 	type TradingProvider,
 	topMarketsSchema,
 	unavailableMarketCapability,
+	venueFields,
 } from "./shared.ts";
 
 const CONTRACT_STAT_METRICS = [
@@ -62,6 +63,7 @@ export function createGetPriceTool(
 			const trading = tradingProvider();
 			const t = await trading.tradingEngine.getTicker(params.symbol);
 			return jsonResult({
+				...venueFields(trading),
 				symbol: t.symbol,
 				last: t.last ?? null,
 				bid: t.bid ?? null,
@@ -99,6 +101,7 @@ export function createGetOrderBookTool(
 			const trading = tradingProvider();
 			const book = await trading.tradingEngine.getOrderBook(params.symbol, params.limit ?? 20);
 			return jsonResult({
+				...venueFields(trading),
 				...book,
 				time: new Date(book.timestamp).toISOString(),
 				dataQuality: { bids: book.bids.length > 0, asks: book.asks.length > 0 },
@@ -123,6 +126,7 @@ export function createGetMarketInfoTool(
 			const trading = tradingProvider();
 			const info = await trading.tradingEngine.getMarketInfo(params.symbol);
 			return jsonResult({
+				...venueFields(trading),
 				...info,
 				dataQuality: {
 					marketType: true,
@@ -293,7 +297,7 @@ export function createGetContractStatsTool(
 			const trading = tradingProvider();
 			requireFuturesSymbol(trading, params.symbol, "Contract stats");
 			const stats = await trading.tradingEngine.getContractStats(params.symbol);
-			return jsonResult(serializeContractStats(stats));
+			return jsonResult({ ...venueFields(trading), ...serializeContractStats(stats) });
 		},
 	};
 }
@@ -313,6 +317,7 @@ export function createGetKlinesTool(
 			const limit = Math.min(Math.max(Math.floor(params.limit ?? 100), 1), 200);
 			const klines = await trading.tradingEngine.getKlines(params.symbol, params.timeframe ?? "1h", limit);
 			return jsonResult({
+				...venueFields(trading),
 				symbol: params.symbol,
 				timeframe: params.timeframe ?? "1h",
 				count: klines.length,

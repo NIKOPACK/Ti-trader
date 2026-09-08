@@ -971,3 +971,67 @@ describe("futures quoteAmount contract lots", () => {
 		expect(plan.input.amount).toBe(243);
 	});
 });
+
+describe("spot lot precision", () => {
+	const market = {
+		symbol: "BTC/USDT",
+		base: "BTC",
+		quote: "USDT",
+		marketType: "spot" as const,
+		contract: false,
+		active: true,
+		amountStep: 0.0001,
+	};
+
+	it.each(["paper", "live"] as const)("truncates $mode spot buy and sell onto the same amountStep", async (mode) => {
+		const trading = new TradingEngine(
+			{ ...config, mode },
+			client({
+				mode,
+				getTicker: async () => ({ symbol: "BTC/USDT", timestamp: 1, last: 100_000 }),
+				getMarketInfo: async () => market,
+			}),
+			stateStore(),
+		);
+		const buy = await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", quoteAmount: 25 });
+		const sell = await trading.prepareOrder("sell", { symbol: "BTC/USDT", type: "market", amount: 0.00025 });
+		expect(buy.amount).toBe(0.0002);
+		expect(buy.input.amount).toBe(0.0002);
+		expect(sell.amount).toBe(0.0002);
+		expect(sell.input.amount).toBe(0.0002);
+	});
+
+	it("truncates a spot OCO amount onto amountStep", async () => {
+		const trading = makeEngine({ getMarketInfo: async () => market });
+		const plan = await trading.prepareOcoOrder({
+			symbol: "BTC/USDT",
+			side: "sell",
+			amount: 0.00025,
+			stopLossPrice: 90,
+			takeProfitPrice: 110,
+		});
+		expect(plan.input.amount).toBe(0.0002);
+	});
+
+	it("rejects a spot quoteAmount when amountStep is unavailable", async () => {
+		const trading = makeEngine();
+		await expect(
+			trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", quoteAmount: 25 }),
+		).rejects.toThrow(/amount precision is unavailable/);
+	});
+
+	it("reports uncertain spot metadata while converting quoteAmount", async () => {
+		const trading = makeEngine({
+			getMarketInfo: async () => {
+				throw new Error("market metadata refresh failed");
+			},
+		});
+		await expect(
+			trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", quoteAmount: 25 }),
+		).rejects.toMatchObject({
+			name: "OrderPreparationError",
+			uncertain: true,
+			message: expect.stringContaining("market metadata refresh failed"),
+		});
+	});
+});

@@ -21,10 +21,9 @@ ti --extension ./extensions/zhihu-research
 
 ## 工具和命令
 
-- `zhihu_global_search`：参数 `query`、`maxResults`（1-20）、可选 `filter`（站点/发布时间高级筛选）和 `searchDB`（`all`/`realtime`/`static`），返回标题、摘要、URL、内容类型、作者、互动数、精选评论、排序分数和权威等级。
-- `zhihu_search`：上述工具的兼容别名。
-- `/zhihu QUERY`：在 Ti 中快速查看全网搜索前 5 条结果。
-- `/zhihu-login`：通过掩码输入保存知乎开放平台 Access Secret。
+- `zhihu_global_search`：参数 `query`、`maxResults`（1-20）、可选 `filter`（站点/发布时间高级筛选）和 `searchDB`（`all`/`realtime`/`static`），返回标题、摘要、URL、内容类型、作者、互动数、精选评论、排序分数和权威等级。该 LLM 工具仅在 `/zhihu-login` 已保存密钥，或设置了非空 `ZHIHU_ACCESS_SECRET` 之后才会注册。
+- `/zhihu QUERY`：在 Ti 中快速查看全网搜索前 5 条结果。未配置密钥时会提示先运行 `/zhihu-login`，不会抛出未捕获错误。
+- `/zhihu-login`：始终注册。通过掩码输入保存知乎开放平台 Access Secret。
 
 搜索结果标记为不可信外部数据。它们只能帮助形成研究上下文，不能替代交易所行情、账户状态、风险检查或交易确认。任何交易仍必须使用 Ti 原生交易工具并遵守现有风控。
 

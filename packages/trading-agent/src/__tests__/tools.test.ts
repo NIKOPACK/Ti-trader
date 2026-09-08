@@ -26,6 +26,7 @@ import {
 	createGetFuturesPositionsTool,
 	createGetPortfolioSnapshotTool,
 	createGetPositionsTool,
+	createGetPriceTool,
 	createGetRiskStatusTool,
 	createGetTopMarketsTool,
 	createGetTradingCapabilitiesTool,
@@ -841,6 +842,18 @@ describe("trading order tools", () => {
 		).rejects.toThrow(/submission status unknown.*Do not retry/);
 		expect(runtime.tradingEngine.getExecutionStatus().unresolved).toHaveLength(1);
 		expect(runtime.tradingEngine.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
+	});
+
+	it("stamps get_price with the configured exchange", async () => {
+		const { runtime } = createRuntime();
+		const result = await createGetPriceTool(() => runtime).execute(
+			"price",
+			{ symbol: "BTC/USDT" },
+			undefined,
+			undefined,
+			context,
+		);
+		expect(result.details).toMatchObject({ exchange: "okx", mode: "paper", symbol: "BTC/USDT", last: 100 });
 	});
 
 	it("returns bounded top-market candidates from the exchange adapter", async () => {

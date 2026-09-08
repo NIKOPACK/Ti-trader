@@ -4,6 +4,10 @@ import type { TradingRuntime } from "../context.ts";
 
 export type TradingProvider = () => TradingRuntime;
 
+export function venueFields(trading: TradingRuntime): { exchange: string; mode: TradingRuntime["mode"] } {
+	return { exchange: trading.tradingEngine.id, mode: trading.mode };
+}
+
 export function jsonResult(data: unknown): AgentToolResult<unknown> {
 	return {
 		content: [{ type: "text", text: JSON.stringify(data, null, 2) }],

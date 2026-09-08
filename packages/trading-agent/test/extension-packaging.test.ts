@@ -15,22 +15,23 @@ interface PackageManifest {
 }
 
 const extensionNames = ["market-lab", "market-chart", "market-research", "web-search", "zhihu-research"] as const;
-const publishedExtensions = extensionNames.map((name) => `./dist/${name}/index.js`);
+const defaultAutoloadExtensions = ["./dist/market-lab/index.js", "./dist/market-chart/index.js"];
 
 function readManifest(relativeUrl: string): PackageManifest {
 	return JSON.parse(readFileSync(fileURLToPath(new URL(relativeUrl, import.meta.url)), "utf8")) as PackageManifest;
 }
 
 describe("extension packaging", () => {
-	it("publishes ti-trader as a Pi package with all extension resources", () => {
+	it("publishes ti-trader with default lab and chart autoload only", () => {
 		const manifest = readManifest("../package.json");
 
 		expect(manifest.keywords).toContain("pi-package");
 		expect(manifest.pi).toEqual({
-			extensions: publishedExtensions,
-			skills: ["./dist/market-research/SKILL.md"],
+			extensions: defaultAutoloadExtensions,
 		});
 		expect(manifest.ti).toEqual(manifest.pi);
+		expect(manifest.pi?.skills).toBeUndefined();
+		expect(manifest.ti?.skills).toBeUndefined();
 	});
 
 	it.each(extensionNames)("keeps the %s source package on one TypeScript entry", (name) => {

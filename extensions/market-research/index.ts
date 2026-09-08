@@ -9,8 +9,7 @@ import { Type } from "typebox";
 const CHILD_TIMEOUT_MS = 60_000;
 const FORCE_KILL_DELAY_MS = 2_000;
 const MAX_OUTPUT_BYTES = 512 * 1024;
-const RESEARCH_TOOLS =
-	"calculate_indicators,analyze_market_structure,generate_trade_signal,evaluate_strategy,screen_markets,simulate_rule";
+const RESEARCH_TOOLS = "calculate_indicators,evaluate_strategy,screen_markets,simulate_rule";
 
 const parameters = Type.Object({
 	question: Type.String({ minLength: 1, maxLength: 2000, description: "Market research question" }),

@@ -1,6 +1,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type Order, type Position, protectionCoverage, reduceSide } from "@nikopack/ti-trading-engine";
 import { getTrading } from "./context.ts";
+import { t, translate } from "./i18n.ts";
 import {
 	createFileMonitoringStore,
 	deliverMonitoringNotifications,
@@ -109,7 +110,7 @@ export function createOrderMonitorExtension(options: OrderMonitorOptions = {}) {
 			if (lastError?.message === message && now - lastError.reportedAt < 60_000) return;
 			lastError = { message, reportedAt: now };
 			console.error(`[order monitor] ${message}`);
-			if (ctx.hasUI) ctx.ui.notify(`Order monitor error: ${message}`, "warning");
+			if (ctx.hasUI) ctx.ui.notify(translate(getTrading().config.language, "monitorError", { message }), "warning");
 		};
 
 		const recordFills = (
@@ -488,15 +489,22 @@ export function createOrderMonitorExtension(options: OrderMonitorOptions = {}) {
 				if (arg === "on" || arg === "off") {
 					await trading.patchConfig({ monitor: { enabled: arg === "on" } });
 				} else if (arg !== "status") {
-					ctx.ui.notify("Usage: /monitor [on|off]", "warning");
+					ctx.ui.notify(t(trading.config.language, "monitorUsage"), "warning");
 					return;
 				}
 				const cfg = trading.config.monitor;
-				const status = cfg.enabled ? "on" : "off";
+				const language = trading.config.language;
 				const known = findMonitoringScope(store.read(), getScope(trading))?.orders.known ?? [];
 				ctx.ui.notify(
-					`Order monitor ${status} (interval ${cfg.intervalSec}s, wakeAgent ${cfg.wakeAgent}, watching ${known.length} open orders; ` +
-						`position guard ${cfg.guardPositions ? "on" : "off"}, loss alert -${cfg.alertLossPct}%, cooldown ${cfg.alertCooldownSec}s)`,
+					translate(language, "monitorStatus", {
+						status: t(language, cfg.enabled ? "on" : "off"),
+						interval: cfg.intervalSec,
+						wake: t(language, cfg.wakeAgent ? "on" : "off"),
+						count: known.length,
+						guard: t(language, cfg.guardPositions ? "on" : "off"),
+						alert: cfg.alertLossPct,
+						cooldown: cfg.alertCooldownSec,
+					}),
 					"info",
 				);
 			},

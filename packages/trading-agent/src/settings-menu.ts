@@ -3,7 +3,7 @@ import { getSelectListTheme, getSettingsListTheme } from "@earendil-works/pi-cod
 import { type Component, type SelectItem, SelectList, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
 import { AccountSwitchConfirmationRequired, getTrading } from "./context.ts";
 import { exchangeLabel, isSupportedExchangeId, SUPPORTED_EXCHANGES } from "./exchanges.ts";
-import { t } from "./i18n.ts";
+import { t, translate } from "./i18n.ts";
 import {
 	loadExchangeKeys,
 	type MarketType,
@@ -11,11 +11,16 @@ import {
 	type TradingLanguage,
 	type TradingMode,
 } from "./state.ts";
+import { formatTradingVenue } from "./venue.ts";
 
 export type TradingSettingsResult = { type: "closed" } | { type: "login"; exchange: string };
 
 function lang(): TradingLanguage {
-	return getTrading().config.language;
+	try {
+		return getTrading().config.language;
+	} catch {
+		return "en-US";
+	}
 }
 
 function onOff(language: TradingLanguage, value: boolean): string {
@@ -284,7 +289,10 @@ export class TradingSettingsPanel implements Component {
 					}
 					const confirmed = await this.ctx.ui.confirm(
 						t(language, "paperReset"),
-						`All simulated balances, open orders and trade history will be wiped. New starting balance: ${trading.config.paper.startQuote} ${trading.config.quoteCurrency}.`,
+						translate(language, "paperResetWipe", {
+							amount: String(trading.config.paper.startQuote),
+							quote: trading.config.quoteCurrency,
+						}),
 					);
 					if (!confirmed) break;
 					await trading.resetPaperAccount(undefined, { confirmExposure: true });
@@ -292,13 +300,14 @@ export class TradingSettingsPanel implements Component {
 				}
 				case "paper-start": {
 					const startQuote = Number(value.split(/\s+/)[0]);
-					if (!Number.isFinite(startQuote) || startQuote <= 0) throw new Error("Invalid paper start balance");
+					if (!Number.isFinite(startQuote) || startQuote <= 0) throw new Error(t(language, "paperStartInvalid"));
 					await trading.patchConfig({ paper: { startQuote } });
 					break;
 				}
 				case "paper-fee": {
 					const feeRate = Number(value.replace("%", "")) / 100;
-					if (!Number.isFinite(feeRate) || feeRate < 0 || feeRate >= 1) throw new Error("Invalid paper fee rate");
+					if (!Number.isFinite(feeRate) || feeRate < 0 || feeRate >= 1)
+						throw new Error(t(language, "paperFeeInvalid"));
 					await trading.patchConfig({ paper: { feeRate } });
 					break;
 				}
@@ -382,7 +391,7 @@ export class TradingSettingsPanel implements Component {
 						cfg.mode,
 						"live",
 						t(language, "confirmLiveTitle"),
-						`${t(language, "confirmLiveMessage")} ${cfg.exchange}. ${t(language, "confirmLive")}: ${onOff(language, cfg.confirmLiveOrders)}.`,
+						`${translate(language, "confirmLiveMessage", { exchange: cfg.exchange })} ${translate(language, "confirmLiveOrdersState", { state: onOff(language, cfg.confirmLiveOrders) })}`,
 						t(language, "confirmLiveYes"),
 						t(language, "confirmLiveNo"),
 						(value) => done(value),
@@ -742,13 +751,17 @@ export class TradingSettingsPanel implements Component {
 	}
 
 	render(width: number): string[] {
-		const cfg = getTrading().config;
-		const language = cfg.language;
+		const trading = getTrading();
+		const language = trading.config.language;
 		const title = this.theme.bold(this.theme.fg("accent", t(language, "settingsTitle")));
-		const status = this.theme.fg(
-			"dim",
-			`${cfg.mode.toUpperCase()} · ${cfg.exchange} · ${cfg.marketType} · ${cfg.quoteCurrency}`,
-		);
+		const venue = formatTradingVenue({
+			language,
+			mode: trading.mode,
+			exchangeId: trading.config.exchange,
+			marketType: trading.config.marketType,
+			quoteCurrency: trading.config.quoteCurrency,
+		});
+		const status = this.theme.fg("dim", `${venue.identity}  ·  ${venue.source}`);
 		return [title, status, "", ...this.list.render(width)];
 	}
 
@@ -774,26 +787,35 @@ function parentSettingId(id: string): string {
 }
 
 export async function loginExchange(exchange: string, ctx: ExtensionCommandContext): Promise<void> {
+	const language = lang();
 	const inputOptions = { secret: true };
-	const apiKey = await ctx.ui.input(`API key for ${exchange}`, "paste API key", inputOptions);
+	const apiKey = await ctx.ui.input(
+		translate(language, "loginApiKeyTitle", { exchange }),
+		t(language, "loginApiKeyPlaceholder"),
+		inputOptions,
+	);
 	if (!apiKey) {
-		ctx.ui.notify("Cancelled", "info");
+		ctx.ui.notify(t(language, "cancelled"), "info");
 		return;
 	}
-	const secret = await ctx.ui.input(`Secret for ${exchange}`, "paste API secret", inputOptions);
+	const secret = await ctx.ui.input(
+		translate(language, "loginSecretTitle", { exchange }),
+		t(language, "loginSecretPlaceholder"),
+		inputOptions,
+	);
 	if (!secret) {
-		ctx.ui.notify("Cancelled", "info");
+		ctx.ui.notify(t(language, "cancelled"), "info");
 		return;
 	}
 	const password = await ctx.ui.input(
-		`Password/passphrase for ${exchange} (optional)`,
-		"leave empty if none",
+		translate(language, "loginPasswordTitle", { exchange }),
+		t(language, "loginPasswordPlaceholder"),
 		inputOptions,
 	);
 	const keys = loadExchangeKeys();
 	keys[exchange] = { apiKey: apiKey.trim(), secret: secret.trim(), password: password?.trim() || undefined };
 	saveExchangeKeys(keys);
-	ctx.ui.notify(`Keys for ${exchange} saved to ~/.ti-trader/agent/keys.json (mode 600)`, "info");
+	ctx.ui.notify(translate(language, "loginKeysSaved", { exchange }), "info");
 }
 
 export async function openTradingSettings(ctx: ExtensionCommandContext, onStatus: () => void): Promise<void> {
@@ -809,7 +831,7 @@ export async function openTradingSettings(ctx: ExtensionCommandContext, onStatus
 		if (result.type === "login") {
 			const exchange = result.exchange;
 			if (!isSupportedExchangeId(exchange)) {
-				ctx.ui.notify(`Unsupported exchange: ${exchange}`, "error");
+				ctx.ui.notify(translate(lang(), "unsupportedExchange", { exchange }), "error");
 				continue;
 			}
 			await loginExchange(exchange, ctx);
