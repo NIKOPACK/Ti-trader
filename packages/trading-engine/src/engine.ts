@@ -4,7 +4,7 @@ import {
 	RiskLedger,
 	type RiskReservation,
 	type RiskStateStore,
-} from "@earendil-works/ti-trading-risk";
+} from "@nikopack/ti-trading-risk";
 import type { FuturesPositionMode } from "./client-types.ts";
 import {
 	ExecutionJournal,

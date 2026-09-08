@@ -9,26 +9,26 @@
 
 ## 安装
 
-当前工作区和 package 版本为 `0.1.9`；本次迁移不执行 npm 发布。注册表用户请安装最新已发布版本：
+已发布版本为 `ti-trader@0.1.10`。需要 Node.js `>= 22.19.0`。
 
 ```bash
-npm install -g ti-trader@latest
-ti --version
-ti            # 交互模式（默认 paper 模拟盘）
-ti -p "..."   # 一次性无头模式
+npm install -g ti-trader
+ti --version    # ti 0.1.10
+ti              # 交互模式（默认 paper 模拟盘）
+ti -p "..."     # 一次性无头模式
 ```
 
-`ti-trader` 通过 npm 的 `bin` 配置自动提供 `ti` 命令。npm 全局目录必须位于当前用户可写且已加入 `PATH`；不建议让安装脚本修改 shell 配置或使用 root 权限覆盖系统 npm。普通用户可以使用用户级 npm 目录：
+`ti` 由 npm `bin` 提供。全局目录必须可写且在 `PATH` 中。不要用 `sudo` 往系统 npm 里装。若出现 `EACCES`：
 
 ```bash
 mkdir -p ~/.npm-global
 npm config set prefix "$HOME/.npm-global"
-echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.bashrc
-source ~/.bashrc
+echo 'export PATH="$HOME/.npm-global/bin:$PATH"' >> ~/.zshrc
+source ~/.zshrc
 npm install -g ti-trader
 ```
 
-如果 npm 全局目录已经正确配置，也可以直接使用 `npm install -g ti-trader`。若已安装旧版本，请执行 `npm install -g ti-trader@latest` 更新。若提示 `EACCES`，请先执行上面的用户级 npm 配置，不要对项目目录执行 `sudo npm install`。安装后用 `ti --version` 确认版本。
+已安装旧版本时用 `npm install -g ti-trader@latest`。安装后用 `ti --version` 确认。
 
 Ti 与 pi 使用完全独立的配置目录。Ti 首次启动会创建 `~/.ti-trader/agent/`，不会读取或修改 pi 的 `~/.pi/` 配置、认证或会话文件。模型使用 pi 内置的 `/login`；交易所 API 使用 Ti 的 `/exchange-login`。安装 pi 后再安装 Ti 不需要迁移或删除 pi 文件。
 
@@ -80,7 +80,7 @@ node packages/trading-agent/dist/cli.js --mode paper --exchange binance
 
 首次运行用 `/login` 配置模型 Provider；使用 `/settings` 或 `/exchange-login` 配置交易所 API。交易所支持 Binance（币安）、OKX、Bybit。语言、模式和市场类型在 `/settings` 中切换，设置保存于 `~/.ti-trader/agent/trading.json`。模型认证存于 `~/.ti-trader/agent/auth.json`，交易所 API key 存于 `~/.ti-trader/agent/keys.json`，与 pi coding agent 隔离。
 
-可选扩展位于仓库根目录 `extensions/`。使用 `--extension <path>` 加载用户扩展，可重复指定；使用 `--no-extensions` 禁用自动发现的用户扩展。公开互联网研究扩展位于 `extensions/web-search/`；知乎全网搜索扩展位于 `extensions/zhihu-research/`，需要通过 `ZHIHU_ACCESS_SECRET` 配置官方 OpenAPI 凭据。交易所 ccxt 连接、订单规划、风控和保护逻辑属于 `@earendil-works/ti-trading-engine`；agent 通过 `marketData` 读取市场和账户数据，通过 `tradingEngine` 执行规划、风控与订单编排。
+可选扩展位于仓库根目录 `extensions/`。使用 `--extension <path>` 加载用户扩展，可重复指定；使用 `--no-extensions` 禁用自动发现的用户扩展。公开互联网研究扩展位于 `extensions/web-search/`；知乎全网搜索扩展位于 `extensions/zhihu-research/`，需要通过 `ZHIHU_ACCESS_SECRET` 配置官方 OpenAPI 凭据。交易所 ccxt 连接、订单规划、风控和保护逻辑属于 `@nikopack/ti-trading-engine`；agent 通过 `marketData` 读取市场和账户数据，通过 `tradingEngine` 执行规划、风控与订单编排。
 
 ## 配置
 

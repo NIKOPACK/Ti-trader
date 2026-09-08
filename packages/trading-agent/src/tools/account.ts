@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { Balance, Order, Position } from "@earendil-works/ti-trading-engine";
+import type { Balance, Order, Position } from "@nikopack/ti-trading-engine";
 import { getTrading } from "../context.ts";
 import {
 	distinctOrderNotionals,

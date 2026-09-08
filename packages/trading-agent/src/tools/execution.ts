@@ -1,5 +1,5 @@
 import type { AgentToolResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { MarketInfo } from "@earendil-works/ti-trading-engine";
+import type { MarketInfo } from "@nikopack/ti-trading-engine";
 import {
 	ExecutionRecoveryError,
 	futuresAmountStep,
@@ -9,7 +9,7 @@ import {
 	type PreparedOrder,
 	preflightOco,
 	RiskCommitError,
-} from "@earendil-works/ti-trading-engine";
+} from "@nikopack/ti-trading-engine";
 import type { TradingRuntime } from "../context.ts";
 import { paperFuturesOrderUnsupported } from "./capabilities.ts";
 import {

@@ -10,7 +10,7 @@ vi.mock("../settings-menu.ts", () => ({
 	openTradingSettings: vi.fn(async () => {}),
 }));
 
-import type { Order, Position } from "@earendil-works/ti-trading-engine";
+import type { Order, Position } from "@nikopack/ti-trading-engine";
 import type { TradingRuntime } from "../context.ts";
 import { createOrderMonitorExtension, isProtection, protectionCoverage } from "../monitor.ts";
 import {

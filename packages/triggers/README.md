@@ -1,6 +1,6 @@
 # Ti Triggers
 
-`@earendil-works/ti-triggers` is an experimental, deterministic conditional-trigger package. It evaluates trigger inputs without side effects: evaluation is pure with respect to its inputs and does not perform network, account, order, persistence, or other external I/O.
+`@nikopack/ti-triggers` is an experimental, deterministic conditional-trigger package. It evaluates trigger inputs without side effects: evaluation is pure with respect to its inputs and does not perform network, account, order, persistence, or other external I/O.
 
 Actions are limited to `notify` and `wake_agent`. This package does not submit, cancel, or manage orders, and must not be treated as trading authorization or risk approval. Any order still has to go through the trading-engine risk and execution path, including live-order confirmation.
 

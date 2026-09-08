@@ -1,4 +1,4 @@
-import type { RiskClock, RiskStateStore, TradingRiskState } from "@earendil-works/ti-trading-risk";
+import type { RiskClock, RiskStateStore, TradingRiskState } from "@nikopack/ti-trading-risk";
 import { describe, expect, it, vi } from "vitest";
 import { TradingEngine as BaseTradingEngine, PreparedPlanError, type TradingEngineConfig } from "./engine.ts";
 import type { OrderIntent, PreparedOrder } from "./order-plan.ts";

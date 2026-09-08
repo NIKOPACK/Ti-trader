@@ -1,6 +1,6 @@
 import { closeSync, existsSync, openSync, renameSync, rmSync, unlinkSync } from "node:fs";
 import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type ExchangeClient, TradingEngine, type TradingEngineConfig } from "@earendil-works/ti-trading-engine";
+import { type ExchangeClient, TradingEngine, type TradingEngineConfig } from "@nikopack/ti-trading-engine";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
 const configFiles = vi.hoisted(() => new Map<string, unknown>());
@@ -25,7 +25,7 @@ vi.mock("../config.ts", () => ({
 	},
 }));
 
-import type { Order, Position } from "@earendil-works/ti-trading-engine";
+import type { Order, Position } from "@nikopack/ti-trading-engine";
 import { parseTradingArgs } from "../args.ts";
 import { TRADING_CONFIG_PATH, TRADING_STATE_PATH } from "../config.ts";
 import { TradingRuntime } from "../context.ts";

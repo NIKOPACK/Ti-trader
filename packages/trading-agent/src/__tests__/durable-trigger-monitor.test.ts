@@ -1,6 +1,6 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Position } from "@earendil-works/ti-trading-engine";
-import type { Condition, TriggerDefinition, TriggerPolicy } from "@earendil-works/ti-triggers";
+import type { Position } from "@nikopack/ti-trading-engine";
+import type { Condition, TriggerDefinition, TriggerPolicy } from "@nikopack/ti-triggers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const runtime = vi.hoisted(() => ({

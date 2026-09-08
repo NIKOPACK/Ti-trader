@@ -1,8 +1,14 @@
 # Changelog
 
-All notable changes to `@earendil-works/ti-trading-engine` are documented in this file.
+All notable changes to `@nikopack/ti-trading-engine` are documented in this file.
 
 ## [Unreleased]
+
+## [0.3.0] - 2026-09-08
+
+### Breaking Changes
+
+- Published the package as `@nikopack/ti-trading-engine` and pinned `@nikopack/ti-trading-risk` `0.2.0`. The `@earendil-works` npm scope is owned by upstream Pi and cannot be used for Ti releases.
 
 ## [0.2.0] - 2026-09-08
 

@@ -1,6 +1,6 @@
 {
-  "name": "@earendil-works/ti-trading-risk",
-  "version": "0.1.2",
+  "name": "@nikopack/ti-trading-risk",
+  "version": "0.2.0",
   "description": "Trading risk-control ledger for Ti: order and daily notional limits with atomic, durable reservations",
   "type": "module",
   "main": "./dist/index.js",
@@ -11,6 +11,7 @@
       "import": "./dist/index.js"
     }
   },
+  "publishConfig": { "access": "public" },
   "files": ["dist", "README.md", "CHANGELOG.md"],
   "scripts": {
     "clean": "shx rm -rf dist",

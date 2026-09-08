@@ -4,6 +4,12 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.10] - 2026-09-08
+
+### Changed
+
+- Pinned `@nikopack/ti-trading-engine` `0.3.0` and `@nikopack/ti-triggers` `0.1.0` after moving Ti packages out of the upstream `@earendil-works` npm scope.
+
 ## [0.1.9] - 2026-09-08
 
 ### Added
@@ -182,7 +188,8 @@ Initial public release.
 - Coding tools disabled; system prompt fully replaced with a trading-domain prompt
 - Configuration and state under `~/.ti/agent/`, isolated from the pi coding agent's `~/.pi`
 
-[Unreleased]: https://github.com/NIKOPACK/Ti/compare/v0.1.9...HEAD
+[Unreleased]: https://github.com/NIKOPACK/Ti/compare/v0.1.10...HEAD
+[0.1.10]: https://github.com/NIKOPACK/Ti/compare/v0.1.9...v0.1.10
 [0.1.9]: https://github.com/NIKOPACK/Ti/compare/v0.1.8...v0.1.9
 [0.1.8]: https://github.com/NIKOPACK/Ti/compare/v0.1.7...v0.1.8
 [0.1.7]: https://github.com/NIKOPACK/Ti/compare/v0.1.6...v0.1.7

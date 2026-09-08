@@ -1,4 +1,4 @@
-import type { Kline, Order, Position, Ticker } from "@earendil-works/ti-trading-engine";
+import type { Kline, Order, Position, Ticker } from "@nikopack/ti-trading-engine";
 
 export type Bias = "long" | "short" | "neutral";
 export type PriceZone = { low: number; high: number };

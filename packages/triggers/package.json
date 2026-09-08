@@ -1,5 +1,5 @@
 {
-  "name": "@earendil-works/ti-triggers",
+  "name": "@nikopack/ti-triggers",
   "version": "0.1.0",
   "description": "Deterministic conditional trigger engine for Ti",
   "type": "module",
@@ -11,6 +11,7 @@
       "import": "./dist/index.js"
     }
   },
+  "publishConfig": { "access": "public" },
   "files": ["dist", "README.md"],
   "scripts": {
     "clean": "shx rm -rf dist",

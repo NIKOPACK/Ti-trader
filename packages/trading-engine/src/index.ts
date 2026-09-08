@@ -22,7 +22,7 @@ export {
 	type TradingMode,
 	type TradingRiskState,
 	validateTradingSymbol,
-} from "@earendil-works/ti-trading-risk";
+} from "@nikopack/ti-trading-risk";
 export * from "./capabilities.ts";
 export { CcxtExchangeClient } from "./ccxt-client.ts";
 export type { ExchangeCredentials, FuturesMarginType, FuturesPositionMode, MarketType } from "./client-types.ts";

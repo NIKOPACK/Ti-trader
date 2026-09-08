@@ -1,5 +1,5 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import { type ContractStats, getTradingCapabilities, type MarketInfo } from "@earendil-works/ti-trading-engine";
+import { type ContractStats, getTradingCapabilities, type MarketInfo } from "@nikopack/ti-trading-engine";
 import { getTrading } from "../context.ts";
 import {
 	allCapabilities,

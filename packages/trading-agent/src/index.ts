@@ -23,7 +23,7 @@ export type {
 	PlaceOrderType,
 	Position,
 	Ticker,
-} from "@earendil-works/ti-trading-engine";
+} from "@nikopack/ti-trading-engine";
 export { createTradingExtension } from "./commands.ts";
 export {
 	AGENT_DIR,

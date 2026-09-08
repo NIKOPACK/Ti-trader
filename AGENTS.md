@@ -132,14 +132,14 @@ Attribution:
 
 ## Releasing
 
-`packages/trading-risk` (`@earendil-works/ti-trading-risk`), `packages/trading-engine` (`@earendil-works/ti-trading-engine`), and `packages/trading-agent` (`ti-trader`) are publishable packages. Their direct dependencies, including the engine's exact risk dependency and the agent's exact engine dependency, must remain pinned to exact versions. Publish risk first, then the engine, then `ti-trader`. The upstream pi packages remain private workspace dependencies. Do not publish to npm without explicit maintainer authority and the required external credentials.
+`packages/trading-risk` (`@nikopack/ti-trading-risk`), `packages/trading-engine` (`@nikopack/ti-trading-engine`), and `packages/trading-agent` (`ti-trader`) are publishable packages. Their direct dependencies, including the engine's exact risk dependency and the agent's exact engine dependency, must remain pinned to exact versions. Publish risk first, then the engine, then `ti-trader`. The upstream pi packages remain private workspace dependencies. Do not publish to npm without explicit maintainer authority and the required external credentials.
 
 1. Update the relevant package changelog(s): move `[Unreleased]` entries into a new version section.
-2. Bump the relevant package version (patch = fixes + additions, minor = breaking changes). When releasing a new risk version, update the engine's exact `@earendil-works/ti-trading-risk` dependency; when releasing a new engine version, update the agent's exact engine dependency.
+2. Bump the relevant package version (patch = fixes + additions, minor = breaking changes). When releasing a new risk version, update the engine's exact `@nikopack/ti-trading-risk` dependency; when releasing a new engine version, update the agent's exact engine dependency.
 3. Refresh the lockfile: `npm install --package-lock-only --ignore-scripts`.
 4. Run `npm run check` and `./test.sh`.
 5. Commit, tag the release, and push only with maintainer authorization.
-6. Publish risk first with `cd packages/trading-risk && npm publish`, then the engine with `cd packages/trading-engine && npm publish`, then the agent with `cd packages/trading-agent && npm publish`. Each command runs its package build through `prepublishOnly`; local migration work must not perform real publication.
+6. Publish risk first with `cd packages/trading-risk && npm publish --access public`, then the engine with `cd packages/trading-engine && npm publish --access public`, then the agent with `cd packages/trading-agent && npm publish`. Each command runs its package build through `prepublishOnly`; local migration work must not perform real publication. Scoped packages must use public access. Do not publish under `@earendil-works`.
 
 ## User Override
 

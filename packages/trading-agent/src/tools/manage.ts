@@ -1,6 +1,6 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { Order } from "@earendil-works/ti-trading-engine";
-import { isFuturesSymbol } from "@earendil-works/ti-trading-engine";
+import type { Order } from "@nikopack/ti-trading-engine";
+import { isFuturesSymbol } from "@nikopack/ti-trading-engine";
 import { getTrading } from "../context.ts";
 import {
 	confirmLiveRiskChange,

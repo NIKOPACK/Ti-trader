@@ -1,4 +1,4 @@
-import { validateTradingSymbol } from "@earendil-works/ti-trading-risk";
+import { validateTradingSymbol } from "@nikopack/ti-trading-risk";
 import { evaluateOrderCapability, getTradingCapabilities, type TradingCapabilityContext } from "./capabilities.ts";
 import type { FuturesPositionMode, MarketType } from "./client-types.ts";
 import { futuresAmountsEqual } from "./contract-size.ts";

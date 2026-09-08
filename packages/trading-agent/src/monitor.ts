@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { type Order, type Position, protectionCoverage, reduceSide } from "@earendil-works/ti-trading-engine";
+import { type Order, type Position, protectionCoverage, reduceSide } from "@nikopack/ti-trading-engine";
 import { getTrading } from "./context.ts";
 import {
 	createFileMonitoringStore,
@@ -18,7 +18,7 @@ import {
 } from "./monitoring-state.ts";
 import { openTradingSettings } from "./settings-menu.ts";
 
-export { isProtection, protectionCoverage, reduceSide } from "@earendil-works/ti-trading-engine";
+export { isProtection, protectionCoverage, reduceSide } from "@nikopack/ti-trading-engine";
 
 const MAX_MISSING_HISTORY_CHECKS = 3;
 const MAX_TRACKED_UNRESOLVED_ORDERS = 256;

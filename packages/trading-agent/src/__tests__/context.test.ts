@@ -1,4 +1,4 @@
-import type { Order, Position } from "@earendil-works/ti-trading-engine";
+import type { Order, Position } from "@nikopack/ti-trading-engine";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { getTrading, TradingRuntime } from "../context.ts";
 
@@ -130,7 +130,7 @@ vi.mock("../state.ts", () => ({
 	normalizeTradingConfig: stateMocks.normalizeTradingConfig,
 }));
 
-vi.mock("@earendil-works/ti-trading-engine", () => ({
+vi.mock("@nikopack/ti-trading-engine", () => ({
 	CcxtExchangeClient: engineMocks.CapturingExchangeClient,
 	PaperExchangeClient: engineMocks.CapturingExchangeClient,
 	TradingEngine: engineMocks.StubTradingEngine,

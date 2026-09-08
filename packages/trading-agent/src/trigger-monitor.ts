@@ -7,7 +7,7 @@ import {
 	type FactValue,
 	transitionTrigger,
 	validateTriggerDefinition,
-} from "@earendil-works/ti-triggers";
+} from "@nikopack/ti-triggers";
 import { getTrading } from "./context.ts";
 import {
 	cancelTriggerNotifications,

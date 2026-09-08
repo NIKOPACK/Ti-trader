@@ -8,7 +8,7 @@ import {
 	type Position,
 	TradingEngine,
 	type TradingRiskState,
-} from "@earendil-works/ti-trading-engine";
+} from "@nikopack/ti-trading-engine";
 import { describe, expect, it, vi } from "vitest";
 import type { TradingRuntime } from "../context.ts";
 import { DEFAULT_CONFIG, type TradingConfig } from "../state.ts";

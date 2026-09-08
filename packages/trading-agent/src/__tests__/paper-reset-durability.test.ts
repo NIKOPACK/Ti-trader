@@ -1,6 +1,6 @@
 import type * as Fs from "node:fs";
 import { existsSync, readFileSync, rmSync } from "node:fs";
-import { writeJsonFile } from "@earendil-works/ti-trading-engine";
+import { writeJsonFile } from "@nikopack/ti-trading-engine";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TradingRuntime } from "../context.ts";
 import { DEFAULT_CONFIG, saveTradingConfig } from "../state.ts";

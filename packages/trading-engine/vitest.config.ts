@@ -5,9 +5,9 @@ const riskSourceIndex = fileURLToPath(new URL("../trading-risk/src/index.ts", im
 
 export default defineConfig({
 	server: {
-		deps: { inline: [/^@earendil-works\/ti-trading-risk$/] },
+		deps: { inline: [/^@nikopack\/ti-trading-risk$/] },
 	},
 	resolve: {
-		alias: [{ find: /^@earendil-works\/ti-trading-risk$/, replacement: riskSourceIndex }],
+		alias: [{ find: /^@nikopack\/ti-trading-risk$/, replacement: riskSourceIndex }],
 	},
 });

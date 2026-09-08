@@ -1,1 +1,1 @@
-export { syncFileAndDirectory as syncTradingStateFile } from "@earendil-works/ti-trading-engine";
+export { syncFileAndDirectory as syncTradingStateFile } from "@nikopack/ti-trading-engine";

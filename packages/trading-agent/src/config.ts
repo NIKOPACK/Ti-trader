@@ -1,10 +1,7 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import {
-	readJsonFile as readPersistedJson,
-	writeJsonFile as writePersistedJson,
-} from "@earendil-works/ti-trading-engine";
+import { readJsonFile as readPersistedJson, writeJsonFile as writePersistedJson } from "@nikopack/ti-trading-engine";
 
 export const APP_NAME = "ti";
 /** Ti owns a separate home from pi so both applications can be installed together. */

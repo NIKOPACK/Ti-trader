@@ -6,7 +6,7 @@ import {
 	type OrderIntent,
 	OrderPreparationError,
 	type PreparedOrder,
-} from "@earendil-works/ti-trading-engine";
+} from "@nikopack/ti-trading-engine";
 import { getTrading } from "../context.ts";
 import {
 	cancelOrderListSchema,

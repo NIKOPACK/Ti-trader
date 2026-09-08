@@ -1,5 +1,5 @@
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import type { Balance, Order, Position } from "@earendil-works/ti-trading-engine";
+import type { Balance, Order, Position } from "@nikopack/ti-trading-engine";
 import type { TradingRuntime } from "../context.ts";
 
 export type TradingProvider = () => TradingRuntime;

@@ -13,7 +13,7 @@ import {
 	validateExecutionRiskState,
 	validateTradingSymbol,
 	withFileLockSync,
-} from "@earendil-works/ti-trading-engine";
+} from "@nikopack/ti-trading-engine";
 import { KEYS_PATH, readJsonFile, TRADING_CONFIG_PATH, TRADING_STATE_PATH, writeJsonFile } from "./config.ts";
 import { syncTradingStateFile } from "./state-durability.ts";
 

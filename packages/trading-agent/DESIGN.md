@@ -1,6 +1,6 @@
 # Ti 功能设计文档
 
-> 版本：0.1.9（当前开发工作区版本，未声明已发布）　·　基于 pi agent harness（`@earendil-works/pi-coding-agent` 0.84.3）二开
+> 版本：0.1.10（当前开发工作区版本，未声明已发布）　·　基于 pi agent harness（`@earendil-works/pi-coding-agent` 0.84.3）二开
 > 最后更新：2026-09-08
 
 ---
@@ -27,7 +27,7 @@ Ti 是一个 **AI 驱动的加密货币现货与 Binance USDⓈ-M 合约交易 a
 ├─────────────────────────────────────────────────────────┤
 │  pi-agent-core（agent 运行时）· pi-ai（多模型统一 API）     │
 ├─────────────────────────────────────────────────────────┤
-│  @earendil-works/ti-trading-engine（适配器 · 规划 · 风控） │
+│  @nikopack/ti-trading-engine（适配器 · 规划 · 风控） │
 │  ccxt（交易所统一 API，100+ 交易所）                        │
 └─────────────────────────────────────────────────────────┘
 ```
@@ -44,7 +44,7 @@ Ti 是一个 **AI 驱动的加密货币现货与 Binance USDⓈ-M 合约交易 a
 |---|---|---|
 | 交易工具 | 行情、账户、订单生命周期、下单预检、能力查询、候选市场、组合快照和风控，共 25 个 | ✅ |
 | 交易命令 | Ti 命令（余额、持仓、订单、市场、模式、交易所、市场类型、风控含 reconcile、Paper、监控、实验性 `/trigger`、语言和交易所登录） | ✅ |
-| 交易引擎 | `@earendil-works/ti-trading-engine`：ccxt 实盘客户端、模拟盘客户端、统一 `ExchangeClient`、规划、保护和风控 | ✅ |
+| 交易引擎 | `@nikopack/ti-trading-engine`：ccxt 实盘客户端、模拟盘客户端、统一 `ExchangeClient`、规划、保护和风控 | ✅ |
 | 模拟盘 | 真实行情撮合、手续费、均价成本、PnL、跨进程持久化 | ✅ |
 | 风控 | 单笔/单日名义限额、币种白名单、日计数持久化、未结算 reservation 对账 | ✅ |
 | 安全 | paper 默认、live 三重门（key/切换确认/逐单确认；配置持久化后下次启动不再确认）、无头保护 | ✅ |
@@ -217,7 +217,7 @@ packages/trading-engine/src/
 
 ### 5.1 统一接口
 
-统一 `ExchangeClient`、适配器、订单规划、保护和风控由 `@earendil-works/ti-trading-engine` 提供。
+统一 `ExchangeClient`、适配器、订单规划、保护和风控由 `@nikopack/ti-trading-engine` 提供。
 
 ```ts
 interface ExchangeClient {
@@ -263,7 +263,7 @@ interface ExchangeClient {
 
 ## 6. 风控系统
 
-风控由 `@earendil-works/ti-trading-engine` 的 `TradingEngine` 强制执行，**LLM 无法绕过**（与提示词里的软约束形成双保险）。`TradingRuntime` 负责配置加载、持久化和 client/engine 生命周期，并将 `marketData` 与 `tradingEngine` 分开暴露。
+风控由 `@nikopack/ti-trading-engine` 的 `TradingEngine` 强制执行，**LLM 无法绕过**（与提示词里的软约束形成双保险）。`TradingRuntime` 负责配置加载、持久化和 client/engine 生命周期，并将 `marketData` 与 `tradingEngine` 分开暴露。
 
 ```json
 "risk": {
@@ -347,7 +347,7 @@ ti [options] [message...]
 
 ## 11. 构建与验证
 
-发布时先发布 `@earendil-works/ti-trading-engine`，再更新其 exact dependency 并发布 `ti-trader`；真实 npm 发布需要 maintainer authority。
+发布时先发布 `@nikopack/ti-trading-engine`，再更新其 exact dependency 并发布 `ti-trader`；真实 npm 发布需要 maintainer authority。
 
 ```bash
 npm install --ignore-scripts
@@ -435,7 +435,7 @@ Paper spot 触发单按触发价成交、限价单按限价成交（与真实滑
 
 ## 13.8 实验性 `/trigger`
 
-`@earendil-works/ti-triggers` 是无副作用求值器：输入定义、上一状态、事实快照和时间，输出状态迁移，不做 IO、不下单。`ti-trader` 用 `trigger-monitor.ts` 注册 `/trigger add|list|remove|clear`。
+`@nikopack/ti-triggers` 是无副作用求值器：输入定义、上一状态、事实快照和时间，输出状态迁移，不做 IO、不下单。`ti-trader` 用 `trigger-monitor.ts` 注册 `/trigger add|list|remove|clear`。
 
 - 定义和运行时状态只在当前会话内存中；不是跨会话/跨进程的耐久存储。
 - 只读 `marketData.getTicker` 和持仓浮亏。价格事实用 ticker 时间戳；缺失或非法时间戳跳过。求值器将超过五分钟的观测视为 unknown，不触发。

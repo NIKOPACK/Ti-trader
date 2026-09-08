@@ -1,12 +1,12 @@
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { withFileLockSync } from "@earendil-works/ti-trading-engine";
+import { withFileLockSync } from "@nikopack/ti-trading-engine";
 import {
 	type Condition,
 	type RuntimeState,
 	type TriggerDefinition,
 	validateTriggerDefinition,
-} from "@earendil-works/ti-triggers";
+} from "@nikopack/ti-triggers";
 import { readJsonFile, TRADING_STATE_PATH, writeJsonFile } from "./config.ts";
 
 export const MONITORING_MAX_AGE_MS = 5 * 60_000;

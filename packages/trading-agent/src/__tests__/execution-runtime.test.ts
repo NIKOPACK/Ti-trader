@@ -1,8 +1,8 @@
 import { createHash } from "node:crypto";
 import { existsSync, readFileSync, rmSync, statSync, utimesSync } from "node:fs";
 import { resolve } from "node:path";
-import type { ExchangeClient, Order, PlaceOrderInput } from "@earendil-works/ti-trading-engine";
-import * as EngineModule from "@earendil-works/ti-trading-engine";
+import type { ExchangeClient, Order, PlaceOrderInput } from "@nikopack/ti-trading-engine";
+import * as EngineModule from "@nikopack/ti-trading-engine";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as StateDurability from "../state-durability.ts";
 
@@ -73,7 +73,7 @@ const fixtures = vi.hoisted(() => {
 	};
 });
 
-vi.mock("@earendil-works/ti-trading-engine", async (importOriginal) => ({
+vi.mock("@nikopack/ti-trading-engine", async (importOriginal) => ({
 	...(await importOriginal<typeof EngineModule>()),
 	PaperExchangeClient: fixtures.FakePaper,
 	CcxtExchangeClient: fixtures.FakeLive,

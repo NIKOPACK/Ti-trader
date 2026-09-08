@@ -1,4 +1,4 @@
-import type { TradingMode } from "@earendil-works/ti-trading-engine";
+import type { TradingMode } from "@nikopack/ti-trading-engine";
 
 export interface OperationalObservation {
 	source: string;

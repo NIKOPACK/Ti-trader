@@ -6,11 +6,11 @@ import { fileURLToPath } from "node:url";
 import { isolatedReadinessEnvironment } from "./trading-readiness.mjs";
 
 export const INSTALL_PACKAGES = [
-	{ key: "risk", dir: "packages/trading-risk", name: "@earendil-works/ti-trading-risk" },
-	{ key: "engine", dir: "packages/trading-engine", name: "@earendil-works/ti-trading-engine" },
+	{ key: "risk", dir: "packages/trading-risk", name: "@nikopack/ti-trading-risk" },
+	{ key: "engine", dir: "packages/trading-engine", name: "@nikopack/ti-trading-engine" },
 	{ key: "agent", dir: "packages/trading-agent", name: "ti-trader" },
 ];
-export const SUPPORTING_PACKAGES = [{ dir: "packages/triggers", name: "@earendil-works/ti-triggers" }];
+export const SUPPORTING_PACKAGES = [{ dir: "packages/triggers", name: "@nikopack/ti-triggers" }];
 
 const record = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value) => typeof value === "string" && value.trim().length > 0;
@@ -50,7 +50,7 @@ export function resolveInstalledPackage(installDir, name) {
 	const candidates = [
 		join(installDir, "node_modules", ...name.split("/")),
 		join(installDir, "node_modules", "ti-trader", "node_modules", ...name.split("/")),
-		join(installDir, "node_modules", "@earendil-works", "ti-trading-engine", "node_modules", ...name.split("/")),
+		join(installDir, "node_modules", "@nikopack", "ti-trading-engine", "node_modules", ...name.split("/")),
 	];
 	for (const path of candidates) {
 		if (existsSync(join(path, "package.json"))) return path;
@@ -68,8 +68,8 @@ export function inspectInstalledVersions(installDir) {
 	return {
 		paths,
 		versions: Object.fromEntries(Object.entries(manifests).map(([key, pkg]) => [key, pkg.version])),
-		engineRiskDependency: manifests.engine.dependencies?.["@earendil-works/ti-trading-risk"],
-		agentEngineDependency: manifests.agent.dependencies?.["@earendil-works/ti-trading-engine"],
+		engineRiskDependency: manifests.engine.dependencies?.["@nikopack/ti-trading-risk"],
+		agentEngineDependency: manifests.agent.dependencies?.["@nikopack/ti-trading-engine"],
 	};
 }
 
@@ -209,7 +209,7 @@ function main(args) {
 		}
 		const tarballs = [
 			...INSTALL_PACKAGES.map((pkg) => join(tarballDir, tarballFileName(pkg.name, versions[pkg.key]))),
-			join(tarballDir, tarballFileName("@earendil-works/ti-triggers", readPackage(join(repo, "packages/triggers")).version)),
+			join(tarballDir, tarballFileName("@nikopack/ti-triggers", readPackage(join(repo, "packages/triggers")).version)),
 		];
 		for (const tarball of tarballs) {
 			if (!existsSync(tarball)) throw new Error(`missing packed tarball ${tarball}`);

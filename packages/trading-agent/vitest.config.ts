@@ -19,13 +19,13 @@ const nodeBuiltinAliases = [
 
 export default defineConfig({
 	server: {
-		deps: { inline: [/^@earendil-works\/ti-trading-risk$/] },
+		deps: { inline: [/^@nikopack\/ti-trading-risk$/] },
 	},
 	resolve: {
 		alias: [
 			{ find: /^@earendil-works\/pi-tui$/, replacement: tuiSourceIndex },
-			{ find: /^@earendil-works\/ti-trading-engine$/, replacement: engineSourceIndex },
-			{ find: /^@earendil-works\/ti-trading-risk$/, replacement: riskSourceIndex },
+			{ find: /^@nikopack\/ti-trading-engine$/, replacement: engineSourceIndex },
+			{ find: /^@nikopack\/ti-trading-risk$/, replacement: riskSourceIndex },
 			...nodeBuiltinAliases,
 		],
 	},

@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Position } from "@earendil-works/ti-trading-engine";
+import type { Position } from "@nikopack/ti-trading-engine";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 const NOW = Date.parse("2026-01-01T00:00:00Z");

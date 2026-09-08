@@ -1,8 +1,14 @@
 # Changelog
 
-All notable changes to `@earendil-works/ti-trading-risk` are documented in this file.
+All notable changes to `@nikopack/ti-trading-risk` are documented in this file.
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-09-08
+
+### Breaking Changes
+
+- Published the package as `@nikopack/ti-trading-risk`. The `@earendil-works` npm scope is owned by upstream Pi and cannot be used for Ti releases.
 
 ## [0.1.2] - 2026-09-08
 

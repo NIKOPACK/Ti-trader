@@ -13,7 +13,7 @@ import {
 	type RiskStateStore,
 	TradingEngine,
 	type TradingEngineConfig,
-} from "@earendil-works/ti-trading-engine";
+} from "@nikopack/ti-trading-engine";
 import { PAPER_DIR } from "./config.ts";
 import type { MonitoringScope } from "./monitoring-state.ts";
 import {

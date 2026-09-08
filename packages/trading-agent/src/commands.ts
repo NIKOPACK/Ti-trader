@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import type { Balance } from "@earendil-works/ti-trading-engine";
+import type { Balance } from "@nikopack/ti-trading-engine";
 import { AccountSwitchConfirmationRequired, getTrading } from "./context.ts";
 import { isSupportedExchangeId } from "./exchanges.ts";
 import { t, translate } from "./i18n.ts";

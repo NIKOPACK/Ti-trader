@@ -1,6 +1,6 @@
 # Ti Trading Risk
 
-`@earendil-works/ti-trading-risk` is the framework-independent trading risk-control package used by Ti. It owns the `RiskLedger`: per-order and daily notional limits, symbol allowlists, and atomic in-flight reservations backed by a caller-provided durable `RiskStateStore`.
+`@nikopack/ti-trading-risk` is the framework-independent trading risk-control package used by Ti. It owns the `RiskLedger`: per-order and daily notional limits, symbol allowlists, and atomic in-flight reservations backed by a caller-provided durable `RiskStateStore`.
 
 The ledger is independent of exchange adapters, persistence formats, prompts, and UI. Applications supply a `RiskConfig` (mode, market type, quote currency, and limits), a state store with an atomic `transact()`, and optionally a `RiskClock`; the ledger enforces quotas and settles reservations exactly once. Position mode and other engine identity belong to the caller.
 
@@ -41,4 +41,4 @@ npm pack --dry-run --workspace packages/trading-risk
 
 ## Release order
 
-Release and publish this package before `@earendil-works/ti-trading-engine`, which depends on it with an exact version. Real npm publication is a maintainer action and is not performed by local migration work.
+Release and publish this package before `@nikopack/ti-trading-engine`, which depends on it with an exact version. Real npm publication is a maintainer action and is not performed by local migration work.

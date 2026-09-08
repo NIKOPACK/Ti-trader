@@ -7,7 +7,7 @@ import {
 	type RiskStateStore,
 	type TradingAuditEvent,
 	type TradingRiskState,
-} from "@earendil-works/ti-trading-risk";
+} from "@nikopack/ti-trading-risk";
 import { ORDER_TYPES } from "./capabilities.ts";
 import type { Order, PlaceOcoOrderInput, PlaceOrderInput } from "./types.ts";
 

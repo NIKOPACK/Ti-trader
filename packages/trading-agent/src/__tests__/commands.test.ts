@@ -1,5 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import type { ExecutionMaintenance, ExecutionRecord, RiskNewExposurePause } from "@earendil-works/ti-trading-engine";
+import type { ExecutionMaintenance, ExecutionRecord, RiskNewExposurePause } from "@nikopack/ti-trading-engine";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const trading = vi.hoisted(() => ({

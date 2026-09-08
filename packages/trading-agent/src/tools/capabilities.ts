@@ -4,7 +4,7 @@ import {
 	isFuturesSymbol,
 	type MarketFamily,
 	type MarketInfo,
-} from "@earendil-works/ti-trading-engine";
+} from "@nikopack/ti-trading-engine";
 import type { TradingRuntime } from "../context.ts";
 
 export {
@@ -16,7 +16,7 @@ export {
 	ORDER_TYPE_ALIASES,
 	orderTypeFromMarketInfo,
 	unavailableMarketCapability,
-} from "@earendil-works/ti-trading-engine";
+} from "@nikopack/ti-trading-engine";
 
 export function marketFamily(trading: TradingRuntime, symbol: string | undefined): MarketFamily {
 	if (symbol !== undefined) {
