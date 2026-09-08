@@ -4,9 +4,11 @@ All notable changes to `@nikopack/ti-trading-engine` are documented in this file
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-09-08
+
 ### Fixed
 
-- Paper and live buy/sell plans now truncate spot amounts onto the same venue `amountStep` that both adapters already apply (`amountToPrecision` uses TRUNCATE, not round). A `quoteAmount` without a published step is rejected instead of leaving settlement to infer a paper-only lot.
+- Paper and live buy/sell plans now truncate spot amounts onto the same venue `amountStep` that both adapters already apply (`amountToPrecision` uses TRUNCATE, not round). A `quoteAmount` without a published step is rejected instead of leaving settlement to infer a paper-only lot. Explicit spot `amount` orders still prepare when market metadata is unavailable; preflight then reports unknown.
 
 ## [0.3.1] - 2026-09-08
 

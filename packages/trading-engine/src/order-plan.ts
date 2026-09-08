@@ -436,11 +436,21 @@ export async function prepareOrder(
 	}
 	if (!Number.isFinite(amount) || amount <= 0) rejectOrder("Order amount must be positive");
 	if (!futuresOrder && !closePosition) {
-		amount = snapSpotLot(
-			amount,
-			await loadMarketInfo(trading, params.symbol, "Spot"),
-			params.quoteAmount !== undefined,
-		);
+		const requireStep = params.quoteAmount !== undefined;
+		let market: MarketInfo | undefined;
+		try {
+			market = await trading.exchange.getMarketInfo(params.symbol);
+		} catch (error) {
+			if (error instanceof OrderPreparationError) throw error;
+			if (requireStep) {
+				rejectOrder(
+					`Spot market metadata unavailable: ${error instanceof Error ? error.message : String(error)}`,
+					true,
+				);
+			}
+		}
+		if (market) amount = snapSpotLot(amount, market, requireStep);
+		else if (requireStep) rejectOrder("Spot amount precision is unavailable; refusing to guess a lot size", true);
 	}
 	if (futuresOrder && !closePosition) {
 		// Fetch one metadata snapshot for the sizing path. A second request could

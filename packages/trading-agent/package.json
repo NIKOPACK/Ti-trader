@@ -1,6 +1,6 @@
 {
 	"name": "ti-trader",
-	"version": "0.1.11",
+	"version": "0.2.0",
 	"description": "Ti — AI trading agent CLI with native buy/sell tools, trading commands, and paper or live crypto trading",
 	"type": "module",
 	"piConfig": {
@@ -49,7 +49,7 @@
 		"prepublishOnly": "npm run build"
 	},
 	"dependencies": {
-		"@nikopack/ti-trading-engine": "0.3.1",
+		"@nikopack/ti-trading-engine": "0.3.2",
 		"@nikopack/ti-triggers": "0.1.0",
 		"@earendil-works/pi-coding-agent": "0.84.3",
 		"@earendil-works/pi-tui": "0.84.3",

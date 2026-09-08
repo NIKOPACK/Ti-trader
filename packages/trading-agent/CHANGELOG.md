@@ -4,6 +4,14 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-08
+
+### Breaking Changes
+
+- Duplicate market-lab tools `analyze_market_structure` and `generate_trade_signal` are removed. Use `evaluate_strategy`.
+- The `zhihu_search` alias is removed. Use `zhihu_global_search`.
+- Default `ti` sessions autoload only market-lab and market-chart. `web-search`, `zhihu-research`, and `market-research` load when `TAVILY_API_KEY`, a Zhihu secret, or `TI_MARKET_RESEARCH` is set, or via `--extension`.
+
 ### Added
 
 - Show the active exchange and market-data source on one line above the editor. Slash command tables keep the same venue stamp so a scrolled transcript still names the source. Paper labels public exchange market data separately from the simulated ledger.
@@ -11,13 +19,8 @@ All notable changes to `ti-trader` are documented in this file.
 ### Changed
 
 - Slash command tables, empty states, confirms, and notifications now use the same zh-CN/en-US catalog as Settings.
-- Default `ti` sessions autoload only market-lab and market-chart. `web-search`, `zhihu-research`, and `market-research` load when `TAVILY_API_KEY`, a Zhihu secret, or `TI_MARKET_RESEARCH` is set, or via `--extension`.
 - The trading prompt treats market-lab as Binance public spot analysis, not a fillable signal for another venue. `show_market_view` is TUI-only and does not invent levels. `web_search`, `zhihu_global_search`, and `market_research` may be absent.
-
-### Removed
-
-- Duplicate market-lab tools `analyze_market_structure` and `generate_trade_signal`. Use `evaluate_strategy`.
-- The `zhihu_search` alias. Use `zhihu_global_search`.
+- Pinned `@nikopack/ti-trading-engine` `0.3.2`.
 
 ## [0.1.11] - 2026-09-08
 

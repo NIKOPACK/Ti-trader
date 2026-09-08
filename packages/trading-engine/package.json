@@ -1,6 +1,6 @@
 {
   "name": "@nikopack/ti-trading-engine",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "description": "Framework-independent trading engine for Ti exchange integrations",
   "type": "module",
   "main": "./dist/index.js",
