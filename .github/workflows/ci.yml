@@ -47,12 +47,21 @@ jobs:
           node -e 'const fs = require("node:fs"); for (const name of ["trading-risk", "trading-engine"]) { const pack = JSON.parse(fs.readFileSync(`/tmp/ti-${name}-pack.json`, "utf8")); const files = pack.flatMap((entry) => entry.files.map((file) => file.path)); const tests = files.filter((file) => /\.test\.(js|d\.ts|js\.map)$/.test(file)); if (tests.length > 0) { console.error(`${name} package contains test modules: ${tests.join(", ")}`); process.exit(1); } }'
           npm pack --dry-run --json --workspace packages/trading-agent > /tmp/ti-trading-agent-pack.json
       - run: npm run check
+      - name: Run isolated trading readiness gates
+        run: node scripts/trading-readiness.mjs --report "$RUNNER_TEMP/ti-offline-readiness.json"
+      - name: Test market-chart extension
+        run: node node_modules/vitest/dist/cli.js --run extensions/market-chart --config extensions/market-chart/vitest.config.ts
       - name: Install native search tools for coding-agent tests
         run: |
           sudo apt-get update
           sudo apt-get install --yes fd-find ripgrep
           sudo ln -sf "$(command -v fdfind)" /usr/local/bin/fd
       - run: ./test.sh
+      - name: Run trading-agent runtime smoke checks
+        run: |
+          smoke_dir="$(mktemp -d)"
+          trap 'rm -rf "$smoke_dir"' EXIT
+          TI_DATA_DIR="$smoke_dir" npm run smoke --workspace=ti-trader
       - name: Verify npm package contents
         working-directory: packages/trading-agent
         run: npm pack --dry-run

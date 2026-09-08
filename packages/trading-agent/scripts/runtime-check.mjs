@@ -15,7 +15,9 @@ const { createTradingTools } = await import("../dist/tools/index.js");
 const { createTradingExtension } = await import("../dist/commands.js");
 const { createOrderMonitorExtension } = await import("../dist/monitor.js");
 const { buildTradingPrompt } = await import("../dist/prompt.js");
-const { resolveBundledMarketLabExtension } = await import("../dist/bundled-extensions.js");
+const { resolveBundledMarketChartExtension, resolveBundledMarketLabExtension } = await import(
+	"../dist/bundled-extensions.js",
+);
 
 const agentDir = join(homedir(), ".ti-trader", "agent");
 const cwd = process.cwd();
@@ -41,7 +43,7 @@ const createRuntime = async ({ cwd, agentDir, sessionManager, sessionStartEvent 
 			noContextFiles: true,
 			noSkills: true,
 			noExtensions: true,
-			additionalExtensionPaths: [resolveBundledMarketLabExtension()],
+			additionalExtensionPaths: [resolveBundledMarketLabExtension(), resolveBundledMarketChartExtension()],
 			systemPrompt: buildTradingPrompt(trading.config),
 			extensionFactories: [createTradingExtension(), createOrderMonitorExtension()],
 		},
@@ -65,6 +67,7 @@ const toolNames = toolList.map((t) => t.name ?? t);
 console.log("active tools:", toolNames.join(", "));
 const codingTools = ["read", "bash", "edit", "write", "grep", "find", "ls"].filter((t) => toolNames.includes(t));
 const tradingTools = [
+	"show_market_view",
 	"calculate_indicators",
 	"analyze_market_structure",
 	"generate_trade_signal",

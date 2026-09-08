@@ -17,10 +17,12 @@ import {
 	SettingsManager,
 } from "@earendil-works/pi-coding-agent";
 import { parseTradingArgs, printHelp } from "./args.ts";
-import { resolveBundledMarketLabExtension } from "./bundled-extensions.ts";
+import { resolveBundledMarketChartExtension, resolveBundledMarketLabExtension } from "./bundled-extensions.ts";
 import { createTradingExtension } from "./commands.ts";
 import { AGENT_DIR, APP_NAME, CONFIG_DIR_NAME, ensureAgentDir } from "./config.ts";
 import { getTrading, initTrading } from "./context.ts";
+import { createOperationalHealthExtension } from "./health.ts";
+import { localizeDescription } from "./i18n.ts";
 import { createOrderMonitorExtension } from "./monitor.ts";
 import { buildTradingPrompt } from "./prompt.ts";
 import { createTradingTools } from "./tools/index.ts";
@@ -158,7 +160,11 @@ export async function main(argv: string[]): Promise<void> {
 				noPromptTemplates: true,
 				noExtensions: parsed.noExtensions,
 				// Bundled by path so trading-agent's build rootDir stays src/.
-				additionalExtensionPaths: [...parsed.extensions, resolveBundledMarketLabExtension()],
+				additionalExtensionPaths: [
+					...parsed.extensions,
+					resolveBundledMarketLabExtension(),
+					resolveBundledMarketChartExtension(),
+				],
 				systemPrompt: buildTradingPrompt(trading.config),
 				extensionFactories: [
 					{
@@ -171,6 +177,7 @@ export async function main(argv: string[]): Promise<void> {
 						},
 					},
 					{ name: "ti-trading", hidden: true, factory: createTradingExtension() },
+					{ name: "ti-health", hidden: true, factory: createOperationalHealthExtension() },
 					{ name: "ti-order-monitor", hidden: true, factory: createOrderMonitorExtension() },
 					{ name: "ti-trigger-monitor", hidden: true, factory: createTriggerMonitorExtension() },
 				],
@@ -228,6 +235,8 @@ export async function main(argv: string[]): Promise<void> {
 			startupAssistantText:
 				"Ti can explain its trading features and look up its docs. Ask it how to use or extend Ti.",
 		},
+		descriptionLocalizer: (key, fallback, params) =>
+			localizeDescription(getTrading().config.language, key, fallback, params),
 	});
 	await interactiveMode.run();
 	await getTrading().close();

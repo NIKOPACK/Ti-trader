@@ -128,7 +128,7 @@ import {
 } from "./components/oauth-selector.ts";
 import { ScopedModelsSelectorComponent } from "./components/scoped-models-selector.ts";
 import { SessionSelectorComponent } from "./components/session-selector.ts";
-import { SettingsSelectorComponent } from "./components/settings-selector.ts";
+import { type DescriptionLocalizer, SettingsSelectorComponent } from "./components/settings-selector.ts";
 import { SkillInvocationMessageComponent } from "./components/skill-invocation-message.ts";
 import {
 	BranchSummaryStatusIndicator,
@@ -338,6 +338,8 @@ const DEFAULT_STARTUP_ASSISTANT_TEXT =
 	"Pi can explain its own features and look up its docs. Ask it how to use or extend Pi.";
 
 export interface InteractiveModeOptions {
+	/** Optional localization hook for settings descriptions. */
+	descriptionLocalizer?: DescriptionLocalizer;
 	/** Optional application branding. Omitted values retain Pi's defaults. */
 	branding?: InteractiveModeBranding;
 	/** Providers that were migrated to auth.json (shows warning) */
@@ -466,6 +468,7 @@ export class InteractiveMode {
 	private readonly appName: string;
 	private readonly appTitle: string;
 	private readonly startupAssistantText: string;
+	private readonly descriptionLocalizer: DescriptionLocalizer | undefined;
 	private isInitialized = false;
 	private onInputCallback?: (text: string) => void;
 	private pendingUserInputs: string[] = [];
@@ -590,6 +593,7 @@ export class InteractiveMode {
 		this.appName = options.branding?.appName ?? APP_NAME;
 		this.appTitle = options.branding?.appTitle ?? APP_TITLE;
 		this.startupAssistantText = options.branding?.startupAssistantText ?? DEFAULT_STARTUP_ASSISTANT_TEXT;
+		this.descriptionLocalizer = options.descriptionLocalizer;
 		this.autoTrustOnReloadCwd = options.autoTrustOnReloadCwd;
 		this.runtimeHost.setBeforeSessionInvalidate(() => {
 			this.resetExtensionUI();
@@ -4799,6 +4803,7 @@ export class InteractiveMode {
 						this.ui.requestRender();
 					},
 				},
+				this.descriptionLocalizer,
 			);
 			return { component: selector, focus: selector.getSettingsList() };
 		});

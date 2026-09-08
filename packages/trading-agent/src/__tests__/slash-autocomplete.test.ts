@@ -20,6 +20,6 @@ describe("pinSlashSuggestions", () => {
 		const result = pinSlashSuggestions(items, "s");
 		expect(result.map((entry) => entry.value)).toEqual(["settings", "session"]);
 		expect(result[0]?.description).toBe(MENU_EN.cmdSettings);
-		expect(result[1]?.description).toBe("Show session info");
+		expect(result[1]?.description).toBe(MENU_EN.cmdSession);
 	});
 });

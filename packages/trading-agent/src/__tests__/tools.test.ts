@@ -8,7 +8,6 @@ import type {
 	PlaceOcoOrderInput,
 	PlaceOrderInput,
 	Position,
-	RiskReservation,
 	Ticker,
 	TradingRiskState,
 } from "@earendil-works/ti-trading-engine";
@@ -19,6 +18,8 @@ import { DEFAULT_CONFIG, type TradingConfig } from "../state.ts";
 import { formatOrder } from "../tools/format.ts";
 import {
 	createBuyTool,
+	createCancelOrderListTool,
+	createCancelOrderTool,
 	createCheckOrderTool,
 	createGetBalanceTool,
 	createGetContractStatsTool,
@@ -38,6 +39,7 @@ type SellToolParams = Parameters<ReturnType<typeof createSellTool>["execute"]>[1
 function filledOrder(input: PlaceOrderInput): Order {
 	return {
 		id: "filled-1",
+		clientOrderId: input.clientOrderId,
 		symbol: input.symbol,
 		side: input.side,
 		type: input.type,
@@ -78,6 +80,9 @@ function createRuntime(
 			orders: [
 				{
 					id: "oco-stop",
+					clientOrderId: input.belowClientOrderId,
+					listClientOrderId: input.listClientOrderId,
+					orderListId: "list-1",
 					symbol: input.symbol,
 					side: input.side,
 					type: "stop_market",
@@ -91,6 +96,9 @@ function createRuntime(
 				},
 				{
 					id: "oco-take",
+					clientOrderId: input.aboveClientOrderId,
+					listClientOrderId: input.listClientOrderId,
+					orderListId: "list-1",
 					symbol: input.symbol,
 					side: input.side,
 					type: "take_profit_market",
@@ -105,6 +113,8 @@ function createRuntime(
 			],
 		}),
 	);
+	const cancelOrder = vi.fn(async (_id: string, _symbol?: string) => {});
+	const cancelOrderList = vi.fn(async (_orderListId: string, _symbol?: string) => {});
 	const getPositions = vi.fn(async () => options.positions ?? []);
 	const getBalances = vi.fn(async () => {
 		if (options.balancesError) throw options.balancesError;
@@ -113,13 +123,17 @@ function createRuntime(
 	const getOpenOrders = vi.fn(async () => options.openOrders ?? []);
 	const getMarketInfo = vi.fn(async (symbol: string): Promise<MarketInfo> => {
 		if (options.marketInfoError) throw options.marketInfoError;
+		const futures = symbol.endsWith(`/${config.quoteCurrency}:${config.quoteCurrency}`);
 		return (
 			options.marketInfo ?? {
 				symbol,
 				base: symbol.split("/")[0],
 				quote: config.quoteCurrency,
-				marketType: "spot",
-				contract: false,
+				settle: futures ? config.quoteCurrency : undefined,
+				marketType: futures ? "swap" : "spot",
+				contract: futures,
+				linear: futures ? true : undefined,
+				contractSize: futures ? 1 : undefined,
 				active: true,
 			}
 		);
@@ -161,18 +175,12 @@ function createRuntime(
 		getOrderListByClientId: unsupportedRead,
 		getFundingRate: unsupportedRead,
 		getFundingRateHistory: unsupportedRead,
+		getEffectiveLeverage: () => config.leverage,
 		placeOrder,
 		placeOcoOrder,
+		cancelOrder,
+		cancelOrderList,
 	} as unknown as ExchangeClient;
-	const commit = vi.fn();
-	const release = vi.fn();
-	const reserveRisk = vi.fn(
-		(_symbol: string, _notional: number, _options: { countTowardsDailyLimit?: boolean } = {}): RiskReservation => ({
-			id: "test-reservation",
-			commit,
-			release,
-		}),
-	);
 	const checkRisk = vi.fn(() => null as string | null);
 	let riskState: TradingRiskState = {
 		paper: { date: "2026-08-28", usedDailyNotional: 0 },
@@ -200,16 +208,16 @@ function createRuntime(
 		},
 		exchange,
 		stateStore,
+		undefined,
+		{ accountId: "fixture-account", durability: "memory" },
 	);
 	vi.spyOn(engine.risk, "check").mockImplementation(checkRisk);
-	vi.spyOn(engine.risk, "reserve").mockImplementation(reserveRisk);
 	const runtime = {
 		config,
 		mode: config.mode,
 		tradingEngine: engine,
 	} as unknown as TradingRuntime;
 	return {
-		commit,
 		getBalances,
 		getContractStats,
 		getMarketInfo,
@@ -218,8 +226,8 @@ function createRuntime(
 		getTopMarkets,
 		placeOrder,
 		placeOcoOrder,
-		release,
-		reserveRisk,
+		cancelOrder,
+		cancelOrderList,
 		checkRisk,
 		runtime,
 	};
@@ -239,7 +247,7 @@ function serializedText(result: { content: Array<{ type: string; text?: string }
 
 describe("trading order tools", () => {
 	it("shares the order plan between check_order and sell without reserving or submitting", async () => {
-		const { placeOrder, reserveRisk, runtime } = createRuntime({
+		const { placeOrder, runtime } = createRuntime({
 			balances: [{ asset: "BTC", free: 2, used: 0, total: 2, quoteValue: 200 }],
 		});
 		const sell = createSellTool(() => runtime);
@@ -261,11 +269,11 @@ describe("trading order tools", () => {
 			price: 98,
 		});
 		expect(preview.resolution).toMatchObject({ amount: 1, estimatedNotional: 98, referenceSource: "limit_price" });
-		expect(reserveRisk).not.toHaveBeenCalled();
+		expect(runtime.tradingEngine.listExecutions()).toEqual([]);
 		expect(placeOrder).not.toHaveBeenCalled();
 
 		await sell.execute("sell", params, undefined, undefined, context);
-		expect(placeOrder).toHaveBeenCalledWith(preview.input);
+		expect(placeOrder).toHaveBeenCalledWith({ ...preview.input, clientOrderId: expect.stringMatching(/^ti/) });
 	});
 
 	it("exposes check_order as a single object schema without allOf", () => {
@@ -287,7 +295,7 @@ describe("trading order tools", () => {
 	});
 
 	it("returns a structured preflight rejection for invalid order intent", async () => {
-		const { placeOrder, reserveRisk, runtime } = createRuntime();
+		const { placeOrder, runtime } = createRuntime();
 		const check = createCheckOrderTool(() => runtime);
 
 		const result = await check.execute(
@@ -299,7 +307,7 @@ describe("trading order tools", () => {
 		);
 		const data = result.details as { status: string; reason: string };
 		expect(data).toMatchObject({ status: "rejected", reason: "limit orders require a positive price" });
-		expect(reserveRisk).not.toHaveBeenCalled();
+		expect(runtime.tradingEngine.listExecutions()).toEqual([]);
 		expect(placeOrder).not.toHaveBeenCalled();
 	});
 
@@ -617,6 +625,7 @@ describe("trading order tools", () => {
 				contract: true,
 				linear: true,
 				inverse: false,
+				contractSize: 1,
 				active: true,
 			},
 		});
@@ -770,7 +779,7 @@ describe("trading order tools", () => {
 	});
 
 	it("uses the worst-case buy OCO leg for risk while reporting observed notional", async () => {
-		const { commit, placeOcoOrder, reserveRisk, runtime } = createRuntime({
+		const { placeOcoOrder, runtime } = createRuntime({
 			balances: [{ asset: "USDT", free: 1_000, used: 0, total: 1_000, quoteValue: 1_000 }],
 		});
 		const tool = createPlaceOcoTool(() => runtime);
@@ -794,19 +803,25 @@ describe("trading order tools", () => {
 		};
 		expect(data.status).toBe("ok");
 		expect(data.preflight).toMatchObject({ estimatedNotional: 110, observedNotional: 100 });
-		expect(reserveRisk).toHaveBeenCalledWith("BTC/USDT", 110, { countTowardsDailyLimit: true });
+		expect(runtime.tradingEngine.listExecutions()[0]).toMatchObject({
+			notional: 110,
+			reservationId: expect.any(String),
+		});
 		expect(placeOcoOrder).toHaveBeenCalledWith({
 			symbol: "BTC/USDT",
 			side: "buy",
 			amount: 1,
 			stopLossPrice: 110,
 			takeProfitPrice: 90,
+			listClientOrderId: expect.stringMatching(/^tl/),
+			aboveClientOrderId: expect.stringMatching(/^ta/),
+			belowClientOrderId: expect.stringMatching(/^tb/),
 		});
-		expect(commit).toHaveBeenCalledOnce();
+		expect(runtime.tradingEngine.risk.usage()).toMatchObject({ used: 110, reserved: 0 });
 	});
 
-	it("marks an unknown OCO submission as non-retryable after committing its risk claim", async () => {
-		const { commit, placeOcoOrder, release, runtime } = createRuntime({
+	it("marks an unknown OCO submission as non-retryable with a durable entry block", async () => {
+		const { placeOcoOrder, runtime } = createRuntime({
 			balances: [{ asset: "BTC", free: 2, used: 0, total: 2, quoteValue: 200 }],
 		});
 		const submissionError = new Error(
@@ -823,9 +838,9 @@ describe("trading order tools", () => {
 				undefined,
 				context,
 			),
-		).rejects.toThrow(/OCO submission status is unknown.*risk quota remains reserved.*Do not retry/);
-		expect(commit).toHaveBeenCalledOnce();
-		expect(release).not.toHaveBeenCalled();
+		).rejects.toThrow(/submission status unknown.*Do not retry/);
+		expect(runtime.tradingEngine.getExecutionStatus().unresolved).toHaveLength(1);
+		expect(runtime.tradingEngine.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
 	});
 
 	it("returns bounded top-market candidates from the exchange adapter", async () => {
@@ -853,7 +868,7 @@ describe("trading order tools", () => {
 			quoteValue: 75,
 			positionSide: "BOTH",
 		};
-		const { commit, placeOrder, reserveRisk, runtime } = createRuntime({
+		const { placeOrder, runtime } = createRuntime({
 			config: { ...DEFAULT_CONFIG, exchange: "binance", marketType: "usdm-futures" },
 			positions: [position],
 		});
@@ -867,12 +882,14 @@ describe("trading order tools", () => {
 			context,
 		);
 
-		expect(reserveRisk).toHaveBeenCalledWith(position.symbol, 75, { countTowardsDailyLimit: false });
+		expect(runtime.tradingEngine.listExecutions()[0]).toMatchObject({ notional: 75 });
+		expect(runtime.tradingEngine.listExecutions()[0].reservationId).toBeUndefined();
 		expect(placeOrder).toHaveBeenCalledWith({
 			symbol: position.symbol,
 			side: "sell",
 			type: "market",
 			amount: 0.75,
+			clientOrderId: expect.stringMatching(/^ti/),
 			price: undefined,
 			reduceOnly: true,
 			positionSide: undefined,
@@ -880,7 +897,7 @@ describe("trading order tools", () => {
 			trailingPercent: undefined,
 			closePosition: true,
 		});
-		expect(commit).toHaveBeenCalledOnce();
+		expect(runtime.tradingEngine.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
 	});
 
 	it("labels closePosition previews as closing the entire matching position", async () => {
@@ -1184,7 +1201,9 @@ describe("trading order tools", () => {
 	});
 
 	it("does not charge spot sell protection against the entry quota", async () => {
-		const { reserveRisk, runtime } = createRuntime();
+		const { runtime } = createRuntime({
+			balances: [{ asset: "BTC", free: 1, used: 0, total: 1, quoteValue: 100 }],
+		});
 		const tool = createSellTool(() => runtime);
 
 		await tool.execute(
@@ -1195,7 +1214,8 @@ describe("trading order tools", () => {
 			context,
 		);
 
-		expect(reserveRisk).toHaveBeenCalledWith("BTC/USDT", 90, { countTowardsDailyLimit: false });
+		expect(runtime.tradingEngine.listExecutions()[0]).toMatchObject({ notional: 90 });
+		expect(runtime.tradingEngine.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
 	});
 
 	it("cancels a live order when placeOrder policy confirm returns false", async () => {
@@ -1227,6 +1247,119 @@ describe("trading order tools", () => {
 		expect(placeOrder).not.toHaveBeenCalled();
 		expect(runtime.tradingEngine.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
 		expect(notify).toHaveBeenCalledWith("Order cancelled by user", "info");
+	});
+
+	it("confirms live order and order-list cancellations before submitting", async () => {
+		const { cancelOrder, cancelOrderList, runtime } = createRuntime({
+			config: { ...DEFAULT_CONFIG, mode: "live", confirmLiveOrders: true },
+		});
+		const confirm = vi.fn(async () => true);
+		const liveContext = { hasUI: true, ui: { confirm, notify: vi.fn() } } as unknown as ExtensionContext;
+
+		const orderResult = await createCancelOrderTool(() => runtime).execute(
+			"live-cancel",
+			{ id: "order-1", symbol: "BTC/USDT" },
+			undefined,
+			undefined,
+			liveContext,
+		);
+		const listResult = await createCancelOrderListTool(() => runtime).execute(
+			"live-cancel-list",
+			{ orderListId: "list-1", symbol: "BTC/USDT" },
+			undefined,
+			undefined,
+			liveContext,
+		);
+
+		expect(orderResult.details).toMatchObject({ status: "ok", cancelled: "order-1" });
+		expect(listResult.details).toMatchObject({ status: "ok", cancelledOrderListId: "list-1" });
+		expect(cancelOrder).toHaveBeenCalledWith("order-1", "BTC/USDT");
+		expect(cancelOrderList).toHaveBeenCalledWith("list-1", "BTC/USDT");
+		expect(confirm).toHaveBeenCalledTimes(2);
+		expect(confirm).toHaveBeenNthCalledWith(1, expect.stringContaining("LIVE"), expect.stringContaining("order-1"));
+	});
+
+	it("does not cancel live orders when confirmation is rejected", async () => {
+		const { cancelOrder, cancelOrderList, runtime } = createRuntime({
+			config: { ...DEFAULT_CONFIG, mode: "live", confirmLiveOrders: true },
+		});
+		const confirm = vi.fn(async () => false);
+		const notify = vi.fn();
+		const liveContext = { hasUI: true, ui: { confirm, notify } } as unknown as ExtensionContext;
+
+		const orderResult = await createCancelOrderTool(() => runtime).execute(
+			"live-cancel-reject",
+			{ id: "order-2", symbol: "BTC/USDT" },
+			undefined,
+			undefined,
+			liveContext,
+		);
+		const listResult = await createCancelOrderListTool(() => runtime).execute(
+			"live-cancel-list-reject",
+			{ orderListId: "list-2", symbol: "BTC/USDT" },
+			undefined,
+			undefined,
+			liveContext,
+		);
+
+		expect(orderResult.details).toMatchObject({ status: "cancelled", reason: "user rejected confirmation" });
+		expect(listResult.details).toMatchObject({ status: "cancelled", reason: "user rejected confirmation" });
+		expect(cancelOrder).not.toHaveBeenCalled();
+		expect(cancelOrderList).not.toHaveBeenCalled();
+		expect(notify).toHaveBeenCalledTimes(2);
+	});
+
+	it("rejects headless live order cancellations when confirmation is enabled", async () => {
+		const { cancelOrder, cancelOrderList, runtime } = createRuntime({
+			config: { ...DEFAULT_CONFIG, mode: "live", confirmLiveOrders: true },
+		});
+		const orderTool = createCancelOrderTool(() => runtime);
+		const listTool = createCancelOrderListTool(() => runtime);
+
+		await expect(
+			orderTool.execute("headless-cancel", { id: "order-3", symbol: "BTC/USDT" }, undefined, undefined, context),
+		).rejects.toThrow(/no UI is available/);
+		await expect(
+			listTool.execute(
+				"headless-cancel-list",
+				{ orderListId: "list-3", symbol: "BTC/USDT" },
+				undefined,
+				undefined,
+				context,
+			),
+		).rejects.toThrow(/no UI is available/);
+
+		expect(cancelOrder).not.toHaveBeenCalled();
+		expect(cancelOrderList).not.toHaveBeenCalled();
+	});
+
+	it("keeps paper cancellations confirmation-free", async () => {
+		const { cancelOrder, cancelOrderList, runtime } = createRuntime({
+			config: { ...DEFAULT_CONFIG, mode: "paper", confirmLiveOrders: true },
+		});
+		const confirm = vi.fn(async () => {
+			throw new Error("paper cancellation should not prompt");
+		});
+		const paperContext = { hasUI: false, ui: { confirm, notify: vi.fn() } } as unknown as ExtensionContext;
+
+		await createCancelOrderTool(() => runtime).execute(
+			"paper-cancel",
+			{ id: "order-4", symbol: "BTC/USDT" },
+			undefined,
+			undefined,
+			paperContext,
+		);
+		await createCancelOrderListTool(() => runtime).execute(
+			"paper-cancel-list",
+			{ orderListId: "list-4", symbol: "BTC/USDT" },
+			undefined,
+			undefined,
+			paperContext,
+		);
+
+		expect(confirm).not.toHaveBeenCalled();
+		expect(cancelOrder).toHaveBeenCalledWith("order-4", "BTC/USDT");
+		expect(cancelOrderList).toHaveBeenCalledWith("list-4", "BTC/USDT");
 	});
 
 	it("submits a live order when placeOrder policy confirm returns true", async () => {
@@ -1261,7 +1394,6 @@ describe("trading order tools", () => {
 			balances: [{ asset: "USDT", free: 10_000, used: 0, total: 10_000, quoteValue: 10_000 }],
 		});
 		vi.spyOn(runtime.tradingEngine.risk, "reserve").mockRestore();
-		const reserve = vi.spyOn(runtime.tradingEngine.risk, "reserve");
 		const tool = createBuyTool(() => runtime);
 
 		await expect(
@@ -1274,7 +1406,10 @@ describe("trading order tools", () => {
 			),
 		).rejects.toThrow(/no UI is available/);
 
-		expect(reserve).toHaveBeenCalledOnce();
+		expect(runtime.tradingEngine.listExecutions()[0]).toMatchObject({
+			status: "definite-rejection",
+			reservationId: expect.any(String),
+		});
 		expect(placeOrder).not.toHaveBeenCalled();
 		expect(runtime.tradingEngine.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
 	});

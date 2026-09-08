@@ -62,7 +62,12 @@ describe("issues #7027 and #7113 credential refresh hang", () => {
 			},
 		};
 		const credentials = AuthStorage.inMemory();
-		const runtime = await ModelRuntime.create({ credentials, modelsPath: null, allowModelNetwork: false });
+		const runtime = await ModelRuntime.create({
+			credentials,
+			modelsPath: null,
+			allowModelNetwork: false,
+			enableModelNetwork: true,
+		});
 		runtime.registerNativeProvider(provider);
 		await runtime.refresh({ allowNetwork: false, providers: [provider.id] });
 
@@ -101,6 +106,7 @@ describe("issues #7027 and #7113 credential refresh hang", () => {
 			maybeWarnAboutAnthropicSubscriptionAuth: vi.fn(),
 			checkDaxnutsEasterEgg: vi.fn(),
 			ui: { requestRender: vi.fn() },
+			runtimeHost: { services: { agentDir: "/tmp" } },
 		};
 		const complete = Reflect.get(InteractiveMode.prototype, "completeProviderAuthentication") as (
 			this: object,

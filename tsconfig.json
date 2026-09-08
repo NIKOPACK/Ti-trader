@@ -30,7 +30,8 @@
 			"@earendil-works/pi-tui/*": ["./packages/tui/src/*"],
 			"@earendil-works/ti-trading-engine": ["./packages/trading-engine/src/index.ts"],
 			"@earendil-works/ti-trading-risk": ["./packages/trading-risk/src/index.ts"],
-			"@earendil-works/ti-triggers": ["./packages/triggers/src/index.ts"]
+			"@earendil-works/ti-triggers": ["./packages/triggers/src/index.ts"],
+			"ti-trader": ["./packages/trading-agent/src/index.ts"]
 		}
 	},
 	"include": ["packages/*/src/**/*", "packages/*/test/**/*", "extensions/**/*.ts", "packages/coding-agent/examples/**/*"],

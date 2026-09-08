@@ -56,17 +56,12 @@ export async function createBinanceSpotOco(
 	>;
 }
 
-export async function createBinanceSpotTrailingOrder(
+export function assertBinanceSpotTrailingOrder(
 	exchange: Exchange,
 	symbol: string,
 	side: "buy" | "sell",
-	amount: number,
 	trailingPercent: number,
-	stopPrice?: number,
-	clientOrderId?: string,
-): Promise<Record<string, unknown>> {
-	const endpoint = (exchange as unknown as Record<string, unknown>).privatePostOrder;
-	if (typeof endpoint !== "function") throw new Error("Binance ccxt adapter does not expose the spot order endpoint");
+): void {
 	const exchangeMarket = exchange.markets[symbol];
 	const trailingDelta = trailingPercent * 100;
 	if (!Number.isInteger(trailingDelta))
@@ -80,10 +75,9 @@ export async function createBinanceSpotTrailingOrder(
 		| Record<string, unknown>
 		| undefined;
 	if (!filter) throw new Error(`Binance Spot ${symbol} market has no TRAILING_DELTA filter`);
-	// Binance selects the TRAILING_DELTA range from the submitted order
-	// type, not from the optional activation price's relation to the market:
-	// STOP_LOSS uses the below range and TAKE_PROFIT uses the above range.
-	const above = side === "buy";
+	// Both sides use TAKE_PROFIT: SELL tracks a rise then a fall (Above),
+	// while BUY tracks a fall then a rise (Below).
+	const above = side === "sell";
 	const boundary = above ? "Above" : "Below";
 	const min = Number(filter[`minTrailing${boundary}Delta`]);
 	const max = Number(filter[`maxTrailing${boundary}Delta`]);
@@ -93,10 +87,27 @@ export async function createBinanceSpotTrailingOrder(
 		throw new Error(
 			`Binance Spot trailingDelta ${trailingDelta} is outside ${above ? "above" : "below"} range ${min}-${max}`,
 		);
+}
+
+export async function createBinanceSpotTrailingOrder(
+	exchange: Exchange,
+	symbol: string,
+	side: "buy" | "sell",
+	amount: number,
+	trailingPercent: number,
+	stopPrice?: number,
+	clientOrderId?: string,
+): Promise<Record<string, unknown>> {
+	const endpoint = (exchange as unknown as Record<string, unknown>).privatePostOrder;
+	if (typeof endpoint !== "function") throw new Error("Binance ccxt adapter does not expose the spot order endpoint");
+	assertBinanceSpotTrailingOrder(exchange, symbol, side, trailingPercent);
+	const exchangeMarket = exchange.markets[symbol];
+	const trailingDelta = trailingPercent * 100;
 	const params: Record<string, string> = {
 		symbol: exchangeMarket.id,
 		side: side.toUpperCase(),
-		type: side === "sell" ? "STOP_LOSS" : "TAKE_PROFIT",
+		// TAKE_PROFIT activates SELL above market and BUY below market.
+		type: "TAKE_PROFIT",
 		quantity: exchange.amountToPrecision(symbol, amount),
 		trailingDelta: String(trailingDelta),
 		...(clientOrderId ? { newClientOrderId: clientOrderId } : {}),
@@ -152,6 +163,7 @@ export function binanceReportToOrder(
 	return {
 		id: String(r.orderId ?? r.clientOrderId ?? "unknown"),
 		symbol,
+		clientOrderId: typeof r.clientOrderId === "string" ? r.clientOrderId : undefined,
 		side,
 		type: rawType.includes("STOP") ? (rawType.includes("LIMIT") ? "stop" : "stop_market") : "limit",
 		price: Number(r.price) || undefined,

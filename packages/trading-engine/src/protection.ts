@@ -20,8 +20,9 @@ export function protectionCoverage(
 	const amount = Math.abs(position.amount);
 	if (amount <= 0) return "none";
 	if (order.closePosition === true) return "protected";
-	if (Math.abs(order.amount) <= 0) return "none";
-	return Math.abs(order.amount) >= amount * (coveragePct / 100) ? "protected" : "partial";
+	const remaining = Math.max(0, Math.abs(order.amount) - Math.max(0, order.filled));
+	if (remaining <= 0) return "none";
+	return remaining >= amount * (coveragePct / 100) ? "protected" : "partial";
 }
 
 export function isProtection(

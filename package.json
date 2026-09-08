@@ -12,9 +12,10 @@
 	"scripts": {
 		"clean": "npm run clean --workspaces",
 		"build": "cd packages/tui && npm run build && cd ../telemetry && npm run build && cd ../ai && npm run build && cd ../agent && npm run build && cd ../protocol && npm run build && cd ../client && npm run build && cd ../coding-agent && npm run build && cd ../trading-risk && npm run build && cd ../trading-engine && npm run build && cd ../trading-agent && npm run build",
-		"build:trading": "cd packages/triggers && npm run build && cd ../trading-risk && npm run build && cd ../trading-engine && npm run build && cd ../trading-agent && npm run build",
+		"build:trading": "cd packages/tui && npm run build && cd ../triggers && npm run build && cd ../trading-risk && npm run build && cd ../trading-engine && npm run build && cd ../trading-agent && npm run build",
 		"build:offline": "cd packages/tui && npm run build && cd ../telemetry && npm run build && cd ../ai && npm run build:offline && cd ../agent && npm run build && cd ../protocol && npm run build && cd ../client && npm run build && cd ../coding-agent && npm run build",
-		"check": "biome check --write --error-on-warnings . && npm run check:pinned-deps && npm run check:ts-imports && tsgo --noEmit && npm run check:browser-smoke",
+		"check": "biome check --error-on-warnings . && npm run check:pinned-deps && npm run check:ts-imports && tsgo --noEmit && npm run check:browser-smoke",
+		"format:fix": "biome check --write --error-on-warnings .",
 		"check:browser-smoke": "node scripts/check-browser-smoke.mjs",
 		"check:pinned-deps": "node scripts/check-pinned-deps.mjs",
 		"check:ts-imports": "node scripts/check-ts-relative-imports.mjs",

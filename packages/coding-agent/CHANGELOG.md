@@ -8,10 +8,18 @@
 - Added masked extension input dialogs via `ctx.ui.input(..., { secret: true })`, including an RPC hint for clients.
 - Added `/tui-settings` and `/settings tui` so an extension can own `/settings` while the agent TUI settings remain reachable.
 
+### Changed
+
+- Improved the built-in dark theme's Markdown contrast for headings, links, code, lists, quotes, and separators on light terminal backgrounds.
+
 ### Fixed
 
+- Fixed `/model` skipping a local `models.json` reload when catalog network access is disabled (`PI_OFFLINE`), so newly added local models still appear.
 - Fixed Ti package manifests replacing the entire Pi manifest instead of falling back per missing resource field.
 - Fixed extension messages sent with `triggerTurn: false` while the agent is running being inserted between a tool call and its result, which made providers that validate message order reject the replayed history. They are now appended once the turn's tool results are in ([#8537](https://github.com/earendil-works/pi/issues/8537)).
+- Remote session operations now restore lifecycle state after synchronous failures, dispose connection listeners, and settings read/modify/write operations serialize even when the settings file is created for the first time.
+- Session rewrites now write a complete temporary JSONL snapshot and atomically rename it, preventing a failed rewrite from truncating the active session.
+- Settings storage supports fresh nested agent directories and writable project configuration directories under read-only project roots. Reads require no write access; locked updates atomically replace complete snapshots while preserving symlinks and file modes, without losing concurrent first writes.
 
 ## [0.84.3] - 2026-08-24
 

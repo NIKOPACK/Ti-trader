@@ -1,11 +1,9 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
-import type { ContractStats, MarketInfo } from "@earendil-works/ti-trading-engine";
+import { type ContractStats, getTradingCapabilities, type MarketInfo } from "@earendil-works/ti-trading-engine";
 import { getTrading } from "../context.ts";
 import {
 	allCapabilities,
-	capability,
 	capabilitySchema,
-	conditionalCapability,
 	depthSchema,
 	errorMessage,
 	finiteOrNull,
@@ -17,13 +15,10 @@ import {
 	marketFamily,
 	marketInfoMatchesFamily,
 	marketInfoSchema,
-	normalizedOrderTypes,
-	orderTypeFromMarketInfo,
 	requireFuturesSymbol,
 	round,
 	type TradingProvider,
 	topMarketsSchema,
-	trailingCapability,
 	unavailableMarketCapability,
 } from "./shared.ts";
 
@@ -180,117 +175,14 @@ export function createGetTradingCapabilitiesTool(
 					marketInfo !== undefined &&
 					marketInfoMatchesFamily(marketInfo, params.symbol, family, trading.config.quoteCurrency));
 			const unavailable = unavailableMarketCapability(family, metadataValid, marketInfo);
-			const stop = conditionalCapability(trading, family, marketInfo, "stop", metadataValid);
-			const stopMarket = conditionalCapability(trading, family, marketInfo, "stop_market", metadataValid);
-			const takeProfit = conditionalCapability(trading, family, marketInfo, "take_profit", metadataValid);
-			const takeProfitMarket = conditionalCapability(
-				trading,
-				family,
+			const matrix = getTradingCapabilities({
+				exchangeId: trading.tradingEngine.id,
+				mode: trading.mode,
+				marketFamily: family,
+				positionMode: trading.config.positionMode,
 				marketInfo,
-				"take_profit_market",
 				metadataValid,
-			);
-			const trailing = trailingCapability(trading, family, marketInfo, metadataValid);
-			const marketInfoOrderTypes = normalizedOrderTypes(marketInfo);
-			const basicLimit =
-				unavailable ??
-				(family === "mixed"
-					? capability("unknown", "Specify a symbol to distinguish spot and futures support")
-					: family === "futures" && trading.mode === "paper"
-						? capability("unsupported", "Paper futures currently accept market orders only")
-						: (() => {
-								const fromInfo = orderTypeFromMarketInfo(marketInfo, ["limit"]);
-								if (fromInfo !== undefined)
-									return capability(fromInfo, "Reported by the exchange market metadata");
-								if (trading.mode === "paper" && family === "spot")
-									return capability("supported", "Paper spot adapter supports limit orders");
-								if (trading.mode === "live" && trading.tradingEngine.id === "binance")
-									return capability("supported", "Binance adapter supports limit orders");
-								return capability("unknown", "The adapter did not expose an explicit limit-order capability");
-							})());
-			const basicMarket =
-				unavailable ??
-				(family === "mixed"
-					? capability("unknown", "Specify a symbol to distinguish spot and futures support")
-					: (() => {
-							const fromInfo = orderTypeFromMarketInfo(marketInfo, ["market"]);
-							if (fromInfo !== undefined)
-								return capability(fromInfo, "Reported by the exchange market metadata");
-							return capability("supported", "The trading adapters support market orders");
-						})());
-			const ocoSell =
-				unavailable ??
-				(family === "mixed"
-					? capability("unknown", "Specify a symbol to distinguish spot and futures support")
-					: family === "futures"
-						? capability("unsupported", "OCO is not available for futures")
-						: trading.mode === "paper"
-							? capability("supported", "Paper spot simulates OCO brackets")
-							: trading.tradingEngine.id === "binance"
-								? capability("supported", "Binance Spot native OCO supports sell brackets")
-								: marketInfoOrderTypes?.some((type) => type === "oco")
-									? capability("supported", "Reported by the exchange market metadata")
-									: capability("unknown", "OCO support varies by live exchange"));
-			const ocoBuy =
-				unavailable ??
-				(family === "mixed"
-					? capability("unknown", "Specify a symbol to distinguish spot and futures support")
-					: family === "futures"
-						? capability("unsupported", "OCO is not available for futures")
-						: trading.mode === "paper"
-							? capability("supported", "Paper spot simulates OCO brackets")
-							: trading.tradingEngine.id === "binance"
-								? capability("unsupported", "Binance Spot native OCO buy brackets are not supported")
-								: marketInfoOrderTypes?.some((type) => type === "oco")
-									? capability("supported", "Reported by the exchange market metadata")
-									: capability("unknown", "OCO support varies by live exchange"));
-			const clientOrderIdLookup =
-				unavailable ??
-				(trading.mode === "paper"
-					? capability("supported", "Paper orders retain client ids locally")
-					: family === "spot" && trading.tradingEngine.id === "binance"
-						? capability("supported", "Binance Spot exposes client-id order lookup")
-						: family === "futures" && trading.tradingEngine.id === "binance"
-							? capability("supported", "Binance USDⓈ-M futures exposes client-id order lookup")
-							: family === "mixed"
-								? capability("unknown", "Specify a symbol; live futures client-id lookup is adapter-dependent")
-								: family === "invalid"
-									? capability("unsupported", "The requested symbol is not enabled")
-									: capability(
-											"unsupported",
-											`Live ${trading.tradingEngine.id} client-id lookup is not implemented by this adapter`,
-										));
-			const orderListLookup =
-				unavailable ??
-				(trading.mode === "paper"
-					? capability("supported", "Paper order lists are retained locally")
-					: family === "spot" && trading.tradingEngine.id === "binance"
-						? capability("supported", "Binance Spot exposes native order-list lookup")
-						: family === "mixed"
-							? capability("unknown", "Specify a spot symbol; live futures order-list lookup is unsupported")
-							: capability(
-									"unsupported",
-									`Live ${trading.tradingEngine.id} order-list lookup is not implemented by this adapter`,
-								));
-			const futuresFields =
-				unavailable ??
-				(family === "spot"
-					? capability("unsupported", "reduceOnly, positionSide and closePosition are futures-only")
-					: family === "futures"
-						? capability("supported", "The configured futures adapter accepts futures position controls")
-						: capability("unknown", "Specify a symbol to distinguish spot and futures controls"));
-			const funding =
-				unavailable ??
-				(family === "spot"
-					? capability("unsupported", "Funding rates are unavailable for spot markets")
-					: family === "mixed"
-						? capability("unknown", "Specify a futures symbol to query funding")
-						: trading.mode === "paper"
-							? capability(
-									"unknown",
-									"Paper futures do not simulate funding; returned zero is not a market observation",
-								)
-							: capability("supported", "Live futures adapter queries funding rates"));
+			});
 
 			const warnings = [
 				...(params.symbol === undefined && family === "mixed"
@@ -306,21 +198,20 @@ export function createGetTradingCapabilitiesTool(
 				...(params.symbol !== undefined && marketInfo !== undefined && !metadataValid
 					? ["Returned market metadata does not match the requested symbol or configured market family"]
 					: []),
+				...matrix.limitations,
 			];
 			const capabilitySet = {
-				market: basicMarket,
-				limit: basicLimit,
-				stop,
-				stop_market: stopMarket,
-				take_profit: takeProfit,
-				take_profit_market: takeProfitMarket,
-				trailing_stop_market: trailing,
-				oco_sell: ocoSell,
-				oco_buy: ocoBuy,
-				clientOrderIdLookup,
-				orderListLookup,
-				futuresPositionControls: futuresFields,
-				fundingRates: funding,
+				...matrix.orderTypes,
+				oco_sell: matrix.oco.sell,
+				oco_buy: matrix.oco.buy,
+				clientOrderIdLookup: matrix.queryOrderByClientId,
+				orderListLookup: matrix.queryOrderListById,
+				orderListClientIdLookup: matrix.queryOrderListByClientId,
+				orderIdLookup: matrix.queryOrderById,
+				cancelOrder: matrix.cancelOrder,
+				cancelOrderList: matrix.cancelOrderList,
+				futuresPositionControls: matrix.reduceOnly,
+				fundingRates: matrix.fundingRates,
 			};
 			const unknownCapabilities = allCapabilities(capabilitySet).filter((item) => item.status === "unknown");
 			return jsonResult({
@@ -330,6 +221,8 @@ export function createGetTradingCapabilitiesTool(
 				quoteCurrency: trading.config.quoteCurrency,
 				symbol: params.symbol ?? null,
 				marketFamily: family,
+				positionMode: trading.config.positionMode,
+				matrixProfile: matrix.profile,
 				marketInfo: marketInfo
 					? {
 							symbol: marketInfo.symbol,
@@ -354,8 +247,16 @@ export function createGetTradingCapabilitiesTool(
 					},
 					oco: { sell: capabilitySet.oco_sell, buy: capabilitySet.oco_buy },
 					clientOrderIdLookup: capabilitySet.clientOrderIdLookup,
+					orderIdLookup: capabilitySet.orderIdLookup,
 					orderListLookup: capabilitySet.orderListLookup,
+					orderListClientIdLookup: capabilitySet.orderListClientIdLookup,
+					cancelOrder: capabilitySet.cancelOrder,
+					cancelOrderList: capabilitySet.cancelOrderList,
 					futuresPositionControls: capabilitySet.futuresPositionControls,
+					positionModes: matrix.positionModes,
+					reduceOnly: matrix.reduceOnly,
+					closePosition: matrix.closePosition,
+					quantity: matrix.quantity,
 					fundingRates: capabilitySet.fundingRates,
 				},
 				overallStatus:
@@ -371,7 +272,7 @@ export function createGetTradingCapabilitiesTool(
 				},
 				dataQuality: {
 					marketMetadata: marketInfo !== undefined || params.symbol === undefined,
-					capabilityConfidence: warnings.length === 0 && unknownCapabilities.length === 0,
+					capabilityConfidence: metadataValid && unknownCapabilities.length === 0,
 				},
 				warnings,
 			});

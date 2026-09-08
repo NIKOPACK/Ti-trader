@@ -23,6 +23,84 @@ export interface RiskReservationState {
 	mode: TradingMode;
 	symbol: string;
 	notional: number;
+	executionId?: string;
+}
+
+export interface TradingAuditEvent {
+	id: string;
+	at: string;
+	kind: "risk-pause" | "risk-resume" | "risk-reset" | "risk-reconcile" | "config-change" | "execution";
+	mode: TradingMode;
+	executionId?: string;
+	action?: string;
+	evidenceReference?: string;
+	settlement?: { outcome: "commit" | "release"; notional: number };
+}
+
+export interface TradingAuditState {
+	version: 1;
+	events: TradingAuditEvent[];
+}
+
+export const AUDIT_HISTORY_LIMIT = 500;
+
+export function isTradingAuditState(value: unknown): value is TradingAuditState {
+	return (
+		isRecord(value) &&
+		value.version === 1 &&
+		Array.isArray(value.events) &&
+		value.events.length <= AUDIT_HISTORY_LIMIT &&
+		value.events.every(
+			(event) =>
+				isRecord(event) &&
+				typeof event.id === "string" &&
+				/^[a-zA-Z0-9_-]{1,80}$/.test(event.id) &&
+				typeof event.at === "string" &&
+				Number.isFinite(Date.parse(event.at)) &&
+				new Date(event.at).toISOString() === event.at &&
+				["risk-pause", "risk-resume", "risk-reset", "risk-reconcile", "config-change", "execution"].includes(
+					String(event.kind),
+				) &&
+				(event.mode === "paper" || event.mode === "live") &&
+				(event.executionId === undefined ||
+					(typeof event.executionId === "string" && /^[a-zA-Z0-9_-]{1,80}$/.test(event.executionId))) &&
+				(event.action === undefined || (typeof event.action === "string" && /^[a-z-]{1,80}$/.test(event.action))) &&
+				(event.evidenceReference === undefined ||
+					(typeof event.evidenceReference === "string" &&
+						/^[a-zA-Z0-9_-]{1,80}$/.test(event.evidenceReference))) &&
+				(event.settlement === undefined ||
+					(isRecord(event.settlement) &&
+						(event.settlement.outcome === "commit" || event.settlement.outcome === "release") &&
+						typeof event.settlement.notional === "number" &&
+						Number.isFinite(event.settlement.notional) &&
+						event.settlement.notional >= 0 &&
+						(event.settlement.outcome !== "release" || event.settlement.notional === 0) &&
+						Object.keys(event.settlement).every((key) => key === "outcome" || key === "notional"))) &&
+				Object.keys(event).every((key) =>
+					["id", "at", "kind", "mode", "executionId", "action", "evidenceReference", "settlement"].includes(key),
+				),
+		)
+	);
+}
+
+export function appendTradingAuditEvent(
+	state: TradingRiskState,
+	event: Omit<TradingAuditEvent, "id" | "at">,
+	at = new Date().toISOString(),
+): void {
+	if (state.audit !== undefined && !isTradingAuditState(state.audit)) throw stateError("Invalid audit history");
+	const audit: TradingAuditState = {
+		version: 1,
+		events: [...(state.audit?.events ?? []), { ...event, id: randomUUID(), at }].slice(-AUDIT_HISTORY_LIMIT),
+	};
+	if (!isTradingAuditState(audit)) throw stateError("Invalid audit event");
+	state.audit = audit;
+}
+
+export interface RiskNewExposurePause {
+	id: string;
+	reason: string;
+	pausedAt: string;
 }
 
 export interface RiskUsageState {
@@ -32,11 +110,15 @@ export interface RiskUsageState {
 	reservedDailyNotional?: number;
 	/** Claims are keyed by their stable reservation id. */
 	reservations?: Record<string, RiskReservationState>;
+	newExposurePause?: RiskNewExposurePause;
+	/** Execution journal records, including exits, that must be reconciled before new entries. */
+	executionBlocks?: Record<string, true>;
 }
 
 export interface TradingRiskState {
 	paper: RiskUsageState;
 	live: RiskUsageState;
+	audit?: TradingAuditState;
 }
 
 export type RiskStateMutator<T> = (state: TradingRiskState) => T;
@@ -58,7 +140,8 @@ export interface RiskClock {
 
 export interface RiskReservation {
 	readonly id: string;
-	commit(): void;
+	/** Commit the observed filled notional when the exchange returned one. */
+	commit(committedNotional?: number): void;
 	release(): void;
 }
 
@@ -73,8 +156,8 @@ export interface RiskReconciliationInfo {
 
 /**
  * Indicates that a durable reservation could not be settled after an exchange
- * submission. The claim is intentionally retained so a later reconciliation
- * can settle it without submitting another order.
+ * submission. Callers must verify the exchange and reconcile the risk state
+ * before retrying; the claim may still be retained or may have disappeared.
  */
 export class RiskCommitError extends Error {
 	readonly submissionStatus = "unknown" as const;
@@ -87,7 +170,7 @@ export class RiskCommitError extends Error {
 		super(
 			`Risk accounting failed after exchange submission ` +
 				`[errorCategory=RISK_SETTLEMENT_PERSISTENCE] reservationId=${reconciliation.reservationId}. ` +
-				`Do not retry; verify the exchange order and settle the retained reservation for ${reconciliation.symbol}. ` +
+				`Do not retry; verify the exchange order and reconcile risk for ${reconciliation.symbol}. ` +
 				`${cause instanceof Error ? cause.message : String(cause)}`,
 		);
 		this.name = "RiskCommitError";
@@ -149,6 +232,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+export function isRiskNewExposurePause(value: unknown): value is RiskNewExposurePause {
+	return (
+		isRecord(value) &&
+		typeof value.id === "string" &&
+		value.id.trim() !== "" &&
+		typeof value.reason === "string" &&
+		value.reason.trim() !== "" &&
+		value.reason.length <= 500 &&
+		typeof value.pausedAt === "string" &&
+		Number.isFinite(Date.parse(value.pausedAt)) &&
+		new Date(value.pausedAt).toISOString() === value.pausedAt
+	);
+}
+
 function cloneReservation(reservation: RiskReservationState): RiskReservationState {
 	return { ...reservation };
 }
@@ -166,6 +263,8 @@ function cloneUsage(usage: RiskUsageState): RiskUsageState {
 	return {
 		...usage,
 		reservations: cloneReservations(usage.reservations),
+		...(usage.executionBlocks === undefined ? {} : { executionBlocks: { ...usage.executionBlocks } }),
+		...(usage.newExposurePause === undefined ? {} : { newExposurePause: { ...usage.newExposurePause } }),
 	};
 }
 
@@ -173,6 +272,7 @@ function cloneState(state: TradingRiskState): TradingRiskState {
 	return {
 		paper: cloneUsage(state.paper),
 		live: cloneUsage(state.live),
+		...(state.audit === undefined ? {} : { audit: structuredClone(state.audit) }),
 	};
 }
 
@@ -233,7 +333,19 @@ function validateReservationState(reservation: unknown, key: string, mode: Tradi
 		throw stateError(`reservation symbol must be a non-empty string`, key);
 	}
 	const notional = finitePositive(reservation.notional, "reservation notional", key);
-	return { id: reservation.id, mode, symbol: reservation.symbol, notional };
+	if (
+		reservation.executionId !== undefined &&
+		(typeof reservation.executionId !== "string" || !/^[a-zA-Z0-9_-]{1,80}$/.test(reservation.executionId))
+	) {
+		throw stateError("Invalid execution correlation", key);
+	}
+	return {
+		id: reservation.id,
+		mode,
+		symbol: reservation.symbol,
+		notional,
+		...(reservation.executionId === undefined ? {} : { executionId: reservation.executionId }),
+	};
 }
 
 function normalizedUsage(usage: unknown, mode: TradingMode): RiskUsageState {
@@ -241,7 +353,26 @@ function normalizedUsage(usage: unknown, mode: TradingMode): RiskUsageState {
 	if (typeof usage.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(usage.date)) {
 		throw stateError(`Invalid ${mode} risk usage date`);
 	}
+	let newExposurePause: RiskNewExposurePause | undefined;
+	if (usage.newExposurePause !== undefined) {
+		const pause = usage.newExposurePause;
+		if (!isRiskNewExposurePause(pause)) {
+			throw stateError(
+				`${mode}.newExposurePause must contain an id, a 1 to 500 character reason and an ISO UTC timestamp`,
+			);
+		}
+		newExposurePause = { id: pause.id, reason: pause.reason, pausedAt: pause.pausedAt };
+	}
 	const used = finiteNonNegative(usage.usedDailyNotional, `${mode}.usedDailyNotional`);
+	if (
+		usage.executionBlocks !== undefined &&
+		(!isRecord(usage.executionBlocks) ||
+			Object.entries(usage.executionBlocks).some(
+				([id, blocked]) => !/^[a-zA-Z0-9_-]{1,80}$/.test(id) || blocked !== true,
+			))
+	) {
+		throw stateError("Invalid execution entry blocks");
+	}
 	const reserved =
 		usage.reservedDailyNotional === undefined
 			? 0
@@ -275,23 +406,30 @@ function normalizedUsage(usage: unknown, mode: TradingMode): RiskUsageState {
 		usedDailyNotional: used,
 		reservedDailyNotional: sum,
 		reservations,
+		...(newExposurePause === undefined ? {} : { newExposurePause }),
+		...(usage.executionBlocks === undefined
+			? {}
+			: { executionBlocks: { ...(usage.executionBlocks as Record<string, true>) } }),
 	};
 }
 
 function normalizedState(state: unknown): TradingRiskState {
 	if (!isRecord(state)) throw stateError("Invalid trading risk state");
+	if (state.audit !== undefined && !isTradingAuditState(state.audit)) throw stateError("Invalid audit history");
 	return {
 		paper: normalizedUsage(state.paper, "paper"),
 		live: normalizedUsage(state.live, "live"),
+		...(state.audit === undefined ? {} : { audit: structuredClone(state.audit as TradingAuditState) }),
 	};
 }
 
 function copyStateInto(target: TradingRiskState, source: TradingRiskState): void {
 	target.paper = cloneUsage(source.paper);
 	target.live = cloneUsage(source.live);
+	if (source.audit !== undefined) target.audit = structuredClone(source.audit);
 }
 
-function validateSymbol(symbol: string, marketType: MarketType, quoteCurrency: string): string | null {
+export function validateTradingSymbol(symbol: string, marketType: MarketType, quoteCurrency: string): string | null {
 	if (typeof symbol !== "string") return "Order symbol must be a string";
 	const parts = symbol.split("/");
 	const valid =
@@ -333,7 +471,7 @@ function validateConfig(config: RiskConfig): RiskConfig {
 	}
 	if (
 		config.risk.allowedSymbols.some(
-			(symbol) => validateSymbol(symbol, config.marketType, config.quoteCurrency) !== null,
+			(symbol) => validateTradingSymbol(symbol, config.marketType, config.quoteCurrency) !== null,
 		)
 	) {
 		throw new Error(`risk.allowedSymbols must contain ${config.quoteCurrency} symbols`);
@@ -397,6 +535,54 @@ export class RiskLedger {
 		this.config = next;
 	}
 
+	pauseNewExposure(reason: string): RiskNewExposurePause {
+		if (typeof reason !== "string" || reason.trim() === "" || reason.trim().length > 500) {
+			throw new Error("New exposure pause reason must contain 1 to 500 characters");
+		}
+		return this.transact((state) => {
+			const now = this.clock.now();
+			if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
+				throw new Error("Risk clock returned an invalid date");
+			}
+			const pause = { id: randomUUID(), reason: reason.trim(), pausedAt: now.toISOString() };
+			state[this.config.mode].newExposurePause = pause;
+			appendTradingAuditEvent(state, { kind: "risk-pause", mode: this.config.mode }, now.toISOString());
+			return { ...pause };
+		});
+	}
+
+	resumeNewExposure(pauseId: string): void {
+		if (typeof pauseId !== "string" || pauseId.trim() === "") {
+			throw new Error("New exposure pause id must be a non-empty string");
+		}
+		this.transact((state) => {
+			const usage = state[this.config.mode];
+			const pause = usage.newExposurePause;
+			if (pause === undefined) throw new Error("New exposure is not paused");
+			if (pause.id !== pauseId) throw new Error("New exposure pause id does not match the current pause");
+			if (Object.keys(usage.executionBlocks ?? {}).length > 0)
+				throw new Error("Cannot resume with unresolved executions; use /recovery");
+			if (Object.keys(usage.reservations ?? {}).length > 0 || (usage.reservedDailyNotional ?? 0) > 0) {
+				throw new Error("Cannot resume new exposure while reservations are in flight; reconcile them first");
+			}
+			delete usage.newExposurePause;
+			appendTradingAuditEvent(state, { kind: "risk-resume", mode: this.config.mode });
+		});
+	}
+
+	assertNewExposureAllowed(exceptExecutionId?: string): void {
+		const state = this.loadLatest();
+		const usage = state[this.config.mode];
+		if (
+			[state.paper, state.live].some((entry) =>
+				Object.keys(entry.executionBlocks ?? {}).some((id) => id !== exceptExecutionId),
+			)
+		)
+			throw new Error("New exposure is blocked by unresolved executions; use /recovery");
+		const pause = usage.newExposurePause;
+		if (pause !== undefined) throw new Error(`New exposure is paused: ${pause.reason}`);
+	}
+
 	check(symbol: string, notional: number, options: { countTowardsDailyLimit?: boolean } = {}): string | null {
 		const count = options.countTowardsDailyLimit ?? true;
 		const inputError = this.validateOrder(symbol, notional);
@@ -405,7 +591,11 @@ export class RiskLedger {
 
 		const { mode, risk, quoteCurrency } = this.config;
 		this.refresh(mode);
-		const usage = this.loadLatest()[mode];
+		const state = this.loadLatest();
+		const usage = state[mode];
+		if ([state.paper, state.live].some((entry) => Object.keys(entry.executionBlocks ?? {}).length > 0))
+			return "New exposure is blocked by unresolved executions; use /recovery";
+		if (usage.newExposurePause !== undefined) return `New exposure is paused: ${usage.newExposurePause.reason}`;
 		const total = addition(
 			addition(usage.usedDailyNotional, usage.reservedDailyNotional ?? 0, "risk daily usage"),
 			notional,
@@ -417,7 +607,11 @@ export class RiskLedger {
 		return null;
 	}
 
-	reserve(symbol: string, notional: number, options: { countTowardsDailyLimit?: boolean } = {}): RiskReservation {
+	reserve(
+		symbol: string,
+		notional: number,
+		options: { countTowardsDailyLimit?: boolean; executionId?: string } = {},
+	): RiskReservation {
 		const count = options.countTowardsDailyLimit ?? true;
 		const inputError = this.validateOrder(symbol, notional);
 		if (inputError) throw new Error(`Risk limit: ${inputError}`);
@@ -428,6 +622,11 @@ export class RiskLedger {
 			this.transact((state) => {
 				this.refreshDraft(state, mode);
 				const usage = state[mode];
+				if ([state.paper, state.live].some((entry) => Object.keys(entry.executionBlocks ?? {}).length > 0))
+					throw new Error("New exposure is blocked by unresolved executions; use /recovery");
+				if (usage.newExposurePause !== undefined) {
+					throw new Error(`Risk limit: New exposure is paused: ${usage.newExposurePause.reason}`);
+				}
 				const reserved = usage.reservedDailyNotional ?? 0;
 				const total = addition(
 					addition(usage.usedDailyNotional, reserved, "risk daily usage"),
@@ -443,7 +642,13 @@ export class RiskLedger {
 				if (Object.hasOwn(reservations, id)) {
 					throw stateError("generated reservation id already exists", id);
 				}
-				reservations[id] = { id, mode, symbol, notional };
+				reservations[id] = {
+					id,
+					mode,
+					symbol,
+					notional,
+					...(options.executionId ? { executionId: options.executionId } : {}),
+				};
 				usage.reservations = reservations;
 				usage.reservedDailyNotional = addition(reserved, notional, "reserved daily notional", id);
 			});
@@ -453,7 +658,12 @@ export class RiskLedger {
 	}
 
 	/** Settle or release an existing durable claim by id, without trusting caller-supplied notional. */
-	reconcileReservation(id: string, outcome: "commit" | "release"): void {
+	reconcileReservation(
+		id: string,
+		outcome: "commit" | "release",
+		committedNotional?: number,
+		executionId?: string,
+	): void {
 		if (typeof id !== "string" || id.length === 0) throw stateError("reservation id must be a non-empty string", id);
 		if (outcome !== "commit" && outcome !== "release") throw stateError("invalid reconciliation outcome", id);
 		this.transact((state) => {
@@ -467,6 +677,8 @@ export class RiskLedger {
 				}
 			}
 			if (found === undefined) throw stateError("reservation does not exist or has already been settled", id);
+			if (found.claim.executionId !== executionId)
+				throw stateError("Execution-linked reservations must be settled atomically through /recovery", id);
 			const usage = state[found.mode];
 			const reservations = usage.reservations;
 			if (reservations === undefined || reservations[id] === undefined)
@@ -478,14 +690,12 @@ export class RiskLedger {
 				id,
 			);
 			if (outcome === "commit") {
-				usage.usedDailyNotional = addition(
-					usage.usedDailyNotional,
-					found.claim.notional,
-					"used daily notional",
-					id,
-				);
+				const settledNotional = committedNotional ?? found.claim.notional;
+				validateRecordNotional(settledNotional);
+				usage.usedDailyNotional = addition(usage.usedDailyNotional, settledNotional, "used daily notional", id);
 			}
 			delete reservations[id];
+			appendTradingAuditEvent(state, { kind: "risk-reconcile", mode: found.mode, action: outcome, executionId });
 		});
 	}
 
@@ -518,14 +728,30 @@ export class RiskLedger {
 		this.transact((state) => {
 			this.refreshDraft(state, mode);
 			const usage = state[mode];
+			if (Object.keys(usage.executionBlocks ?? {}).length > 0)
+				throw new Error("Cannot reset with unresolved executions; use /recovery");
 			if (Object.keys(usage.reservations ?? {}).length > 0 || (usage.reservedDailyNotional ?? 0) > 0) {
 				throw new Error("Cannot reset risk usage while reservations are in flight");
 			}
-			state[mode] = { date: this.today(), usedDailyNotional: 0, reservedDailyNotional: 0, reservations: {} };
+			state[mode] = {
+				...usage,
+				date: this.today(),
+				usedDailyNotional: 0,
+				reservedDailyNotional: 0,
+				reservations: {},
+			};
+			appendTradingAuditEvent(state, { kind: "risk-reset", mode });
 		});
 	}
 
-	usage(): { date: string; used: number; reserved: number; limit: number; resetPolicy: "daily-auto" | "manual" } {
+	usage(): {
+		date: string;
+		used: number;
+		reserved: number;
+		limit: number;
+		resetPolicy: "daily-auto" | "manual";
+		newExposurePause?: RiskNewExposurePause;
+	} {
 		const mode = this.config.mode;
 		this.refresh(mode);
 		const usage = this.loadLatest()[mode];
@@ -535,12 +761,13 @@ export class RiskLedger {
 			reserved: usage.reservedDailyNotional ?? 0,
 			limit: this.config.risk.maxDailyNotional,
 			resetPolicy: mode === "paper" ? "manual" : "daily-auto",
+			newExposurePause: usage.newExposurePause === undefined ? undefined : { ...usage.newExposurePause },
 		};
 	}
 
 	private validateOrder(symbol: string, notional: number): string | null {
 		const { risk, quoteCurrency, marketType } = this.config;
-		const symbolError = validateSymbol(symbol, marketType, quoteCurrency);
+		const symbolError = validateTradingSymbol(symbol, marketType, quoteCurrency);
 		if (symbolError) return symbolError;
 		if (!Number.isFinite(notional) || notional <= 0) return "Order notional must be a positive finite number";
 		if (risk.allowedSymbols.length > 0 && !risk.allowedSymbols.includes(symbol)) {
@@ -562,16 +789,15 @@ export class RiskLedger {
 		let finalized = false;
 		return {
 			id,
-			commit: () => {
+			commit: (committedNotional?: number) => {
 				if (finalized) return;
 				if (!count) {
 					finalized = true;
 					return;
 				}
 				try {
-					this.reconcileReservation(id, "commit");
+					this.reconcileReservation(id, "commit", committedNotional);
 				} catch (error) {
-					if (error instanceof RiskReservationStateError) throw error;
 					throw new RiskCommitError(
 						{
 							reservationId: id,
@@ -648,6 +874,7 @@ export class RiskLedger {
 		if (current.date === today) return;
 		// Carry in-flight claims into the new day until exchange settlement.
 		state.live = {
+			...current,
 			date: today,
 			usedDailyNotional: 0,
 			reservedDailyNotional: current.reservedDailyNotional ?? 0,

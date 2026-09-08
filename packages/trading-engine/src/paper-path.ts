@@ -64,7 +64,8 @@ export function isFinitePositive(value: number | undefined): value is number {
 
 /**
  * Build the market path since the order was last checked: gap klines
- * (when the gap exceeds two minutes) followed by the current ticker price.
+ * (when the gap exceeds two minutes) followed by the current ticker price
+ * only once the historical gap is fully covered.
  */
 export async function buildMarketPath(
 	exchange: Pick<Exchange, "fetchOHLCV">,
@@ -85,50 +86,72 @@ export async function buildMarketPath(
 		const candleDurationMs = minutesPerCandle * 60_000;
 		checkedAt = since;
 		let candles = candleCache.get(order.symbol);
-		if (!candles) {
-			const limit = Math.min(Math.ceil(gapMinutes / minutesPerCandle) + 2, 500);
-			const ohlcv = await exchange.fetchOHLCV(order.symbol, timeframe, fetchSince, limit);
-			candles = ohlcv.map((k) => ({
-				timestamp: k[0] ?? 0,
-				open: k[1] ?? 0,
-				high: k[2] ?? 0,
-				low: k[3] ?? 0,
-				close: k[4] ?? 0,
-				volume: k[5] ?? 0,
-			}));
-			candleCache.set(order.symbol, candles);
-		}
-		const validCandles = candles
-			.filter(
-				(k) =>
-					Number.isFinite(k.timestamp) &&
-					k.timestamp >= since &&
-					k.timestamp <= now &&
-					Number.isFinite(k.high) &&
-					Number.isFinite(k.low) &&
-					k.high > 0 &&
-					k.low > 0,
-			)
-			.sort((a, b) => a.timestamp - b.timestamp);
+		let fetchCursor = candles === undefined ? fetchSince : undefined;
+		const checkpoints: number[] = [];
+		let tailPages = Math.ceil(120_000 / candleDurationMs) + 1;
 		let previousTimestamp: number | undefined;
-		for (const k of validCandles) {
-			// The first exchange candle may begin up to one timeframe after an
-			// arbitrary order timestamp. Once a candle is accepted, every later
-			// candle must start no later than the end of the preceding one. A
-			// sparse response therefore contributes only its continuous prefix;
-			// candles after a gap are retried on a later read instead of being
-			// evaluated out of chronological order.
-			const latestAllowedStart =
-				previousTimestamp === undefined ? since + candleDurationMs : previousTimestamp + candleDurationMs;
-			if (k.timestamp > latestAllowedStart) break;
-			if (previousTimestamp === k.timestamp) continue;
-			path.push({ high: k.high, low: k.low });
-			previousTimestamp = k.timestamp;
-			checkedAt = Math.min(now, k.timestamp + candleDurationMs);
+		while (true) {
+			if (fetchCursor !== undefined) {
+				const limit = Math.min(Math.ceil((now - fetchCursor) / candleDurationMs) + 2, 500);
+				const ohlcv = await exchange.fetchOHLCV(order.symbol, timeframe, fetchCursor, limit);
+				candles = [
+					...(candles ?? []),
+					...ohlcv.map((k) => ({
+						timestamp: k[0] ?? 0,
+						open: k[1] ?? 0,
+						high: k[2] ?? 0,
+						low: k[3] ?? 0,
+						close: k[4] ?? 0,
+						volume: k[5] ?? 0,
+					})),
+				];
+				candleCache.set(order.symbol, candles);
+			}
+			const validCandles = (candles ?? [])
+				.filter(
+					(k) =>
+						Number.isFinite(k.timestamp) &&
+						k.timestamp >= since &&
+						k.timestamp <= now &&
+						Number.isFinite(k.high) &&
+						Number.isFinite(k.low) &&
+						k.high > 0 &&
+						k.low > 0,
+				)
+				.sort((a, b) => a.timestamp - b.timestamp);
+			const previousCheckedAt = checkedAt;
+			for (const k of validCandles) {
+				if (previousTimestamp !== undefined && k.timestamp <= previousTimestamp) continue;
+				// A ticker cursor can fall inside a candle, but a historical
+				// boundary must not skip the first missing interval on a retry.
+				const latestAllowedStart =
+					previousTimestamp !== undefined
+						? previousTimestamp + candleDurationMs
+						: since === order.timestamp
+							? since + candleDurationMs
+							: Math.ceil(since / candleDurationMs) * candleDurationMs;
+				if (k.timestamp > latestAllowedStart) break;
+				checkpoints.push(checkedAt);
+				path.push({ high: k.high, low: k.low });
+				previousTimestamp = k.timestamp;
+				checkedAt = Math.min(now, k.timestamp + candleDurationMs);
+			}
+			if (checkedAt === now || now - checkedAt > 120_000 || checkedAt === previousCheckedAt || tailPages === 0)
+				break;
+			// Finish a paginated short tail before it can fall below the next
+			// read's two-minute backfill threshold.
+			fetchCursor = checkedAt;
+			tailPages--;
+		}
+		while (checkedAt < now && now - checkedAt <= 120_000 && checkpoints.length > 0) {
+			// An unavailable tail must still require backfill after a restart.
+			// Defer its segments and state together, retaining an older cursor.
+			path.pop();
+			checkedAt = checkpoints.pop() ?? since;
 		}
 		checkedAt = Math.max(since, checkedAt);
 	}
-	path.push({ high: last, low: last, tick: true });
+	if (checkedAt === now) path.push({ high: last, low: last, tick: true });
 	return { segments: path, checkedAt };
 }
 

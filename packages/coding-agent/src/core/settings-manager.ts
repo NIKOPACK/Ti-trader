@@ -2,7 +2,20 @@ import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
 import type { Transport } from "@earendil-works/pi-ai";
 import type { TuiMode as RendererTuiMode, ScrollViewScrollbar } from "@earendil-works/pi-tui";
 import { randomUUID } from "crypto";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "fs";
+import {
+	accessSync,
+	chmodSync,
+	constants,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	readFileSync,
+	realpathSync,
+	renameSync,
+	rmSync,
+	statSync,
+	writeFileSync,
+} from "fs";
 import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.ts";
@@ -189,7 +202,12 @@ export interface SettingsManagerCreateOptions {
 }
 
 export interface SettingsStorage {
-	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void;
+	/** Reads require no write access; updates lock before reading, including the first write. */
+	withLock(
+		scope: SettingsScope,
+		fn: (current: string | undefined) => string | undefined,
+		operation?: "read" | "update",
+	): void;
 }
 
 export interface SettingsError {
@@ -246,28 +264,42 @@ export class FileSettingsStorage implements SettingsStorage {
 		throw (lastError as Error) ?? new Error("Failed to acquire settings lock");
 	}
 
-	withLock(scope: SettingsScope, fn: (current: string | undefined) => string | undefined): void {
+	withLock(
+		scope: SettingsScope,
+		fn: (current: string | undefined) => string | undefined,
+		operation: "read" | "update" = "update",
+	): void {
 		const path = scope === "global" ? this.globalSettingsPath : this.projectSettingsPath;
 		const dir = dirname(path);
+		if (operation === "read") {
+			// Writers publish complete snapshots, so reading needs no lock file
+			// and works even when the configuration directory is read-only.
+			const current = existsSync(path) ? readFileSync(path, "utf-8") : undefined;
+			if (fn(current) !== undefined) throw new Error("Cannot write settings during a read operation");
+			return;
+		}
+		mkdirSync(dir, { recursive: true });
+		// Resolve existing symlinks so replacing a snapshot updates their target.
+		const writePath = lstatSync(path, { throwIfNoEntry: false }) ? realpathSync(path) : path;
 
 		let release: (() => void) | undefined;
 		try {
-			// Only create directory and lock if file exists or we need to write
-			const fileExists = existsSync(path);
-			if (fileExists) {
-				release = this.acquireLockSyncWithRetry(path);
-			}
-			const current = fileExists ? readFileSync(path, "utf-8") : undefined;
+			// Keep the lock beside the settings file: a writable configuration
+			// directory must not require write access to its parent project.
+			release = this.acquireLockSyncWithRetry(writePath);
+			const current = existsSync(writePath) ? readFileSync(writePath, "utf-8") : undefined;
 			const next = fn(current);
 			if (next !== undefined) {
-				// Only create directory when we actually need to write
-				if (!existsSync(dir)) {
-					mkdirSync(dir, { recursive: true });
+				const mode = current === undefined ? undefined : statSync(writePath).mode & 0o777;
+				if (current !== undefined) accessSync(writePath, constants.W_OK);
+				const temporaryPath = `${writePath}.${process.pid}.${randomUUID()}.tmp`;
+				try {
+					writeFileSync(temporaryPath, next, { encoding: "utf-8", flag: "wx", mode });
+					if (mode !== undefined) chmodSync(temporaryPath, mode);
+					renameSync(temporaryPath, writePath);
+				} finally {
+					rmSync(temporaryPath, { force: true });
 				}
-				if (!release) {
-					release = this.acquireLockSyncWithRetry(path);
-				}
-				writeFileSync(path, next, "utf-8");
 			}
 		} finally {
 			if (release) {
@@ -405,10 +437,14 @@ export class SettingsManager {
 		}
 
 		let content: string | undefined;
-		storage.withLock(scope, (current) => {
-			content = current;
-			return undefined;
-		});
+		storage.withLock(
+			scope,
+			(current) => {
+				content = current;
+				return undefined;
+			},
+			"read",
+		);
 
 		if (!content) {
 			return {};

@@ -18,6 +18,9 @@ const nodeBuiltinAliases = [
 ].map((name) => ({ find: name, replacement: `node:${name}` }));
 
 export default defineConfig({
+	server: {
+		deps: { inline: [/^@earendil-works\/ti-trading-risk$/] },
+	},
 	resolve: {
 		alias: [
 			{ find: /^@earendil-works\/pi-tui$/, replacement: tuiSourceIndex },

@@ -1,8 +1,8 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Balance } from "@earendil-works/ti-trading-engine";
-import { getTrading } from "./context.ts";
+import { AccountSwitchConfirmationRequired, getTrading } from "./context.ts";
 import { isSupportedExchangeId } from "./exchanges.ts";
-import { t } from "./i18n.ts";
+import { t, translate } from "./i18n.ts";
 import { loginExchange, openTradingSettings } from "./settings-menu.ts";
 import { wrapTradingAutocomplete } from "./slash-autocomplete.ts";
 import { loadExchangeKeys, type MarketType, type TradingLanguage, type TradingMode } from "./state.ts";
@@ -28,6 +28,30 @@ async function waitForIdleBeforeMutation(ctx: ExtensionCommandContext): Promise<
 	await ctx.waitForIdle();
 }
 
+async function runWithAccountSwitchConfirmation(
+	ctx: ExtensionCommandContext,
+	action: (confirmed: boolean) => Promise<void>,
+	initialConfirmed = false,
+): Promise<boolean> {
+	try {
+		await action(initialConfirmed);
+		return true;
+	} catch (error) {
+		if (!(error instanceof AccountSwitchConfirmationRequired)) throw error;
+		if (!ctx.hasUI) throw error;
+		const confirmed = await ctx.ui.confirm(
+			"Confirm account switch?",
+			"The previous account may still have orders or positions, or could not be fully verified. They will remain there but be hidden by the new configuration. Continue only after verifying them.",
+		);
+		if (!confirmed) {
+			ctx.ui.notify("Account switch cancelled", "info");
+			return false;
+		}
+		await action(true);
+		return true;
+	}
+}
+
 /**
  * Trading slash commands rendered as durable transcript entries (not sent to
  * the LLM). Registered as an inline extension factory at startup.
@@ -39,6 +63,7 @@ export function createTradingExtension() {
 
 		const observeMode = (ctx: ExtensionContext): void => {
 			const trading = getTrading();
+			updateStatus(ctx);
 			const mode = trading.mode;
 			if (lastObservedMode === undefined) {
 				lastObservedMode = mode;
@@ -65,6 +90,14 @@ export function createTradingExtension() {
 			lastObservedMode = getTrading().mode;
 			observeMode(ctx);
 			const pending = getTrading().tradingEngine.risk.listPendingReservations();
+			const trading = getTrading();
+			const pause = trading.tradingEngine.risk.usage().newExposurePause;
+			if (pause && ctx.hasUI) {
+				ctx.ui.notify(
+					translate(trading.config.language, "riskPauseNotice", { mode: trading.mode, reason: pause.reason }),
+					"warning",
+				);
+			}
 			if (pending.length > 0 && ctx.hasUI) {
 				ctx.ui.notify(
 					`Risk: ${pending.length} unsettled reservation(s). Verify exchange orders, then /risk reconcile <id> commit|release.`,
@@ -75,6 +108,13 @@ export function createTradingExtension() {
 		pi.on("input", async (_event, ctx) => observeMode(ctx));
 		pi.on("turn_start", async (_event, ctx) => observeMode(ctx));
 		pi.on("turn_end", async (_event, ctx) => observeMode(ctx));
+		// InteractiveMode exits the process from its shutdown path, so code after
+		// `interactiveMode.run()` is not guaranteed to execute. Close the exchange
+		// client through the session lifecycle instead of relying on the caller.
+		pi.on("session_shutdown", async (event) => {
+			if (event.reason !== "quit") return;
+			await getTrading().close();
+		});
 		pi.registerEntryRenderer<TableData>("trading:table", (entry, _opts, theme) =>
 			renderTradingTable(entry.data ?? { title: "trading", lines: [] }, theme),
 		);
@@ -85,9 +125,10 @@ export function createTradingExtension() {
 
 		const updateStatus = (ctx: ExtensionContext): void => {
 			const trading = getTrading();
+			const paused = trading.tradingEngine.risk.usage().newExposurePause !== undefined;
 			ctx.ui.setStatus(
 				"trading-status",
-				`${trading.mode === "live" ? "LIVE" : "PAPER"}  ${trading.config.exchange}  ${trading.config.marketType}  ${trading.config.quoteCurrency}  ${trading.config.language}`,
+				`${trading.mode === "live" ? "LIVE" : "PAPER"}  ${trading.config.exchange}  ${trading.config.marketType}  ${trading.config.quoteCurrency}  ${trading.config.language}${paused ? `  ${t(trading.config.language, "riskEntriesPaused")}` : ""}`,
 			);
 		};
 
@@ -129,7 +170,7 @@ export function createTradingExtension() {
 					return;
 				}
 				await waitForIdleBeforeMutation(ctx);
-				trading.setLanguage(language);
+				await trading.setLanguage(language);
 				updateStatus(ctx);
 				ctx.ui.notify(language === "zh-CN" ? "语言已切换为中文" : "Language changed to English", "info");
 			},
@@ -280,6 +321,7 @@ export function createTradingExtension() {
 					ctx.ui.notify(`Unknown mode "${target}". Use paper or live.`, "error");
 					return;
 				}
+				let liveConfirmed = false;
 				if (target === "live") {
 					const keys = loadExchangeKeys()[trading.config.exchange];
 					if (!keys) {
@@ -289,19 +331,22 @@ export function createTradingExtension() {
 						);
 						return;
 					}
-					const confirmed = await ctx.ui.confirm(
+					liveConfirmed = await ctx.ui.confirm(
 						"Switch to LIVE trading?",
 						`Real orders will be placed on ${trading.config.exchange} with real funds. ` +
 							`Confirm-live-orders is ${trading.config.confirmLiveOrders ? "ON" : "OFF"}.`,
 					);
-					if (!confirmed) {
+					if (!liveConfirmed) {
 						ctx.ui.notify("Stayed in paper mode", "info");
 						return;
 					}
 				}
 				try {
 					await waitForIdleBeforeMutation(ctx);
-					await trading.setMode(target as TradingMode);
+					const applied = await runWithAccountSwitchConfirmation(ctx, (confirmAccountSwitch) =>
+						trading.setMode(target as TradingMode, { confirmAccountSwitch }),
+					);
+					if (!applied) return;
 					updateStatus(ctx);
 					show("mode", [
 						{
@@ -327,7 +372,10 @@ export function createTradingExtension() {
 				}
 				try {
 					await waitForIdleBeforeMutation(ctx);
-					await trading.setExchange(target);
+					const applied = await runWithAccountSwitchConfirmation(ctx, (confirmAccountSwitch) =>
+						trading.setExchange(target, { confirmAccountSwitch }),
+					);
+					if (!applied) return;
 					updateStatus(ctx);
 					show("exchange", [`Switched to ${target} (${trading.mode} mode).`]);
 					ctx.ui.notify(`Exchange: ${target}`, "info");
@@ -359,16 +407,20 @@ export function createTradingExtension() {
 					return;
 				}
 				const isLiveFutures = trading.mode === "live" && target === "usdm-futures";
+				let futuresConfirmed = false;
 				if (isLiveFutures) {
-					const confirmed = await ctx.ui.confirm(
+					futuresConfirmed = await ctx.ui.confirm(
 						"Switch to Binance USDⓈ-M futures?",
 						"This uses the separate futures wallet and exposes leverage and liquidation risk. Existing spot orders and positions are not changed.",
 					);
-					if (!confirmed) return;
+					if (!futuresConfirmed) return;
 				}
 				try {
 					await waitForIdleBeforeMutation(ctx);
-					await trading.setMarketType(target);
+					const applied = await runWithAccountSwitchConfirmation(ctx, (confirmAccountSwitch) =>
+						trading.setMarketType(target, { confirmAccountSwitch }),
+					);
+					if (!applied) return;
 					updateStatus(ctx);
 					show("market", [
 						`Market type: ${target}`,
@@ -382,12 +434,68 @@ export function createTradingExtension() {
 		});
 
 		pi.registerCommand("risk", {
-			description: "Show risk limits and usage: /risk [show|reset|reconcile <id> commit|release]",
+			description:
+				"Risk limits and entry pause: /risk [show|pause [reason]|resume|reset|reconcile <id> commit|release]",
 			handler: async (args, ctx) => {
 				const trading = getTrading();
 				const arg = args?.trim();
 				if (!arg) {
 					await openSettings(ctx);
+					return;
+				}
+				const parts = arg.split(/\s+/).filter(Boolean);
+				const language = trading.config.language;
+				if (parts[0] === "pause") {
+					try {
+						// Pausing must not wait for a turn whose order is awaiting confirmation.
+						const pause = trading.tradingEngine.risk.pauseNewExposure(
+							arg.slice("pause".length).trim() || t(language, "riskPauseDefaultReason"),
+						);
+						updateStatus(ctx);
+						ctx.ui.notify(
+							translate(language, "riskPauseNotice", { mode: trading.mode, reason: pause.reason }),
+							"warning",
+						);
+					} catch (error) {
+						ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+					}
+					return;
+				}
+				if (arg === "resume") {
+					if (!ctx.hasUI) {
+						ctx.ui.notify(t(language, "riskResumeUiRequired"), "error");
+						return;
+					}
+					try {
+						const engine = trading.tradingEngine;
+						const pause = engine.risk.usage().newExposurePause;
+						if (!pause) {
+							ctx.ui.notify(t(language, "riskNotPaused"), "info");
+							return;
+						}
+						const confirmed = await ctx.ui.confirm(
+							t(language, "riskResumeTitle"),
+							translate(language, "riskResumeMessage", {
+								mode: trading.mode,
+								pausedAt: pause.pausedAt,
+								reason: pause.reason,
+							}),
+						);
+						if (!confirmed) {
+							ctx.ui.notify(t(language, "riskResumeCancelled"), "info");
+							return;
+						}
+						await waitForIdleBeforeMutation(ctx);
+						const current = getTrading();
+						if (current !== trading || current.tradingEngine !== engine) {
+							throw new Error(t(language, "riskRuntimeChanged"));
+						}
+						engine.risk.resumeNewExposure(pause.id);
+						updateStatus(ctx);
+						ctx.ui.notify(t(language, "riskResumeDone"), "info");
+					} catch (error) {
+						ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+					}
 					return;
 				}
 				if (arg === "reset") {
@@ -405,8 +513,12 @@ export function createTradingExtension() {
 					ctx.ui.notify("Used notional quota reset to 0", "info");
 					return;
 				}
-				const parts = arg.split(/\s+/).filter(Boolean);
 				if (parts[0] === "reconcile") {
+					if (!ctx.hasUI) {
+						ctx.ui.notify("Manual reconciliation requires interactive confirmation", "error");
+						return;
+					}
+					const engine = trading.tradingEngine;
 					const id = parts[1];
 					const outcome = parts[2];
 					if (parts.length !== 3 || (outcome !== "commit" && outcome !== "release")) {
@@ -430,7 +542,9 @@ export function createTradingExtension() {
 					}
 					await waitForIdleBeforeMutation(ctx);
 					try {
-						trading.tradingEngine.risk.reconcileReservation(id, outcome);
+						if (getTrading() !== trading || getTrading().tradingEngine !== engine)
+							throw new Error("Trading runtime changed during confirmation");
+						engine.risk.reconcileReservation(id, outcome);
 						ctx.ui.notify(
 							outcome === "commit" ? `Reservation ${id} committed to used quota` : `Reservation ${id} released`,
 							"info",
@@ -441,7 +555,7 @@ export function createTradingExtension() {
 					return;
 				}
 				if (arg !== "show") {
-					ctx.ui.notify("Usage: /risk [show|reset|reconcile <id> commit|release]", "warning");
+					ctx.ui.notify(t(language, "riskUsage"), "warning");
 					return;
 				}
 				const usage = trading.tradingEngine.risk.usage();
@@ -452,6 +566,11 @@ export function createTradingExtension() {
 						? `Used (cumulative): ${fmt(usage.used)} ${trading.config.quoteCurrency} — manual reset via /risk reset`
 						: `Used today:        ${fmt(usage.used)} ${trading.config.quoteCurrency} (${usage.date}, resets daily)`;
 				show("risk", [
+					`${t(language, "riskEntries")}: ${t(language, usage.newExposurePause ? "riskEntriesPaused" : "riskEntriesAllowed")}`,
+					...(usage.newExposurePause
+						? [`${usage.newExposurePause.pausedAt}  ${usage.newExposurePause.reason}`]
+						: []),
+					t(language, "riskPauseControls"),
 					`Max per order:     ${fmt(risk.maxOrderNotional)} ${trading.config.quoteCurrency}`,
 					`Max notional:      ${fmt(risk.maxDailyNotional)} ${trading.config.quoteCurrency} ${usage.resetPolicy === "manual" ? "(cumulative quota, paper)" : "(per day, live)"}`,
 					usedLabel,
@@ -472,6 +591,118 @@ export function createTradingExtension() {
 					"Settle stuck claims with /risk reconcile <id> commit|release after verifying the exchange.",
 				]);
 				ctx.ui.notify("Risk limits shown in transcript", "info");
+			},
+		});
+
+		pi.registerCommand("recovery", {
+			description: "Execution recovery: /recovery [run|resolve <id> commit|release <notional> <evidence-reference>]",
+			handler: async (args, ctx) => {
+				const trading = getTrading();
+				const engine = trading.tradingEngine;
+				const parts = args.trim().split(/\s+/).filter(Boolean);
+				try {
+					if (parts.length === 0) {
+						const records = engine.listExecutions();
+						const maintenance = engine.getExecutionStatus().maintenance;
+						show("recovery", [
+							...(maintenance
+								? [
+										`Maintenance ${maintenance.id}: ${maintenance.action}; all submissions blocked. Verify every writer is stopped and account/risk state is consistent before /recovery maintenance ${maintenance.id} <evidence-reference>.`,
+									]
+								: []),
+							...(records.length
+								? records.flatMap((entry) => [
+										`${entry.id}  ${entry.status}  revision=${entry.revision}  attempts=${entry.attempts}  ${entry.issue ?? ""}`,
+										`${entry.scope.mode} ${entry.scope.exchange} ${entry.scope.marketType} ${entry.scope.quoteCurrency} account=${entry.scope.accountId}`,
+										JSON.stringify(entry.intent),
+									])
+								: ["No execution records."]),
+						]);
+						return;
+					}
+					if (parts[0] === "maintenance") {
+						if (parts.length !== 3 || !/^[A-Za-z0-9_-]{1,80}$/.test(parts[2]))
+							throw new Error("Usage: /recovery maintenance <id> <evidence-reference>");
+						if (!ctx.hasUI) throw new Error("Maintenance resolution requires interactive human confirmation");
+						const maintenance = engine.getExecutionStatus().maintenance;
+						if (!maintenance || maintenance.id !== parts[1]) throw new Error("Account maintenance changed");
+						if (
+							!(await ctx.ui.confirm(
+								"Release abandoned account maintenance?",
+								`${maintenance.id}: ${maintenance.action}. Confirm every other writer is stopped and account, configuration and risk state have been independently verified consistent. This does not rerun or finish a reset. Evidence=${parts[2]}`,
+							))
+						)
+							return;
+						await waitForIdleBeforeMutation(ctx);
+						if (getTrading() !== trading || trading.tradingEngine !== engine)
+							throw new Error("Trading runtime changed during confirmation");
+						trading.resolveMaintenance(maintenance.id, parts[2]);
+						ctx.ui.notify("Maintenance fence released; manual entry pauses remain in effect", "info");
+						return;
+					}
+					if (parts.length === 1 && parts[0] === "run") {
+						const report = await trading.recoverExecutions();
+						show("recovery", [
+							`Examined ${report.examined}; reconciled ${report.reconciled}; unresolved ${report.unresolved}. No orders were resubmitted.`,
+							...report.issues.map((issue) => `${issue.executionId}: ${issue.issue}`),
+						]);
+						return;
+					}
+					const outcome = parts[2];
+					const notional = Number(parts[3]);
+					if (
+						parts.length !== 5 ||
+						parts[0] !== "resolve" ||
+						(outcome !== "commit" && outcome !== "release") ||
+						!Number.isFinite(notional) ||
+						notional < 0 ||
+						!/^[A-Za-z0-9_-]{1,80}$/.test(parts[4])
+					) {
+						throw new Error(
+							"Usage: /recovery resolve <id> commit|release <notional> <evidence-reference>. Evidence must be a non-secret reference, not raw exchange data.",
+						);
+					}
+					if (!ctx.hasUI) throw new Error("Manual execution resolution requires interactive human confirmation");
+					const entry = engine.listExecutions().find((item) => item.id === parts[1]);
+					if (!entry) throw new Error("Execution record not found");
+					const confirmed = await ctx.ui.confirm(
+						"Resolve execution with verified terminal evidence?",
+						`${entry.id}: ${entry.scope.mode} ${entry.scope.exchange} ${entry.intent.input.symbol}; account=${entry.scope.accountId}.\n` +
+							`Decision: ${outcome} ${notional} ${entry.scope.quoteCurrency}; evidence=${parts[4]}.\n` +
+							"Confirm all submitting processes are stopped or this request has finished, and exchange evidence proves terminal status and final filled notional. Release requires zero fills and no possibility of later acceptance. This NEVER retries an order.",
+					);
+					if (!confirmed) return;
+					await waitForIdleBeforeMutation(ctx);
+					if (getTrading() !== trading || trading.tradingEngine !== engine)
+						throw new Error("Trading runtime changed during confirmation");
+					trading.resolveExecution({
+						executionId: entry.id,
+						expectedRevision: entry.revision,
+						accountId: entry.scope.accountId,
+						outcome,
+						notional,
+						evidenceReference: parts[4],
+						verifiedTerminal: true,
+					});
+					ctx.ui.notify("Execution reconciled; any manual entry pause remains in effect", "info");
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : "Execution recovery failed", "error");
+				}
+			},
+		});
+
+		pi.registerCommand("audit", {
+			description: "Read bounded, redacted trading audit history",
+			handler: async (_args, _ctx) => {
+				show(
+					"audit",
+					getTrading()
+						.listAuditEvents()
+						.map(
+							(event) =>
+								`${event.at} ${event.mode} ${event.kind} ${event.action ?? ""} ${event.executionId ?? ""} ${event.evidenceReference ?? ""}`,
+						),
+				);
 			},
 		});
 
@@ -511,7 +742,7 @@ export function createTradingExtension() {
 					return;
 				}
 				await waitForIdleBeforeMutation(ctx);
-				const applied = await trading.resetPaperAccount(startQuote);
+				const applied = await trading.resetPaperAccount(startQuote, { confirmExposure: true });
 				show("paper", [`Paper account reset. Balance: ${fmt(applied)} ${trading.config.quoteCurrency}.`]);
 				ctx.ui.notify(`Paper account reset to ${fmt(applied)} ${trading.config.quoteCurrency}`, "info");
 			},

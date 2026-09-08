@@ -6,6 +6,7 @@ import type { ScopedModelsSelectorComponent } from "../../../src/modes/interacti
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
 import { initTheme } from "../../../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../../../src/utils/ansi.ts";
+import { allowNetwork } from "../../test-network-env.ts";
 import { createHarness, type Harness } from "../harness.ts";
 
 const showModelsSelector = Reflect.get(InteractiveMode.prototype, "showModelsSelector") as (this: object) => void;
@@ -74,6 +75,7 @@ describe("issue #7153 scoped models refresh", () => {
 	});
 
 	it("renders cached models immediately and updates after background refresh", async () => {
+		allowNetwork();
 		harness = await createHarness({
 			models: [
 				{ id: "cached", name: "Cached" },
@@ -96,6 +98,7 @@ describe("issue #7153 scoped models refresh", () => {
 	});
 
 	it("cancels the background refresh when the selector closes", async () => {
+		allowNetwork();
 		harness = await createHarness({ models: [{ id: "cached", name: "Cached" }] });
 		const refresh = openSelector(harness, harness.models);
 

@@ -34,8 +34,20 @@ export {
 	PAPER_DIR,
 	TRADING_CONFIG_PATH,
 } from "./config.ts";
-export { getTrading, initTrading, TradingRuntime } from "./context.ts";
+export {
+	AccountSwitchConfirmationRequired,
+	type AccountSwitchOptions,
+	getTrading,
+	initTrading,
+	TradingRuntime,
+} from "./context.ts";
+export { createOperationalHealthExtension, readOperationalHealth } from "./health.ts";
 export { main } from "./main.ts";
+export {
+	assessOperationalHealth,
+	type OperationalHealthInput,
+	type OperationalObservation,
+} from "./operational-health.ts";
 export { buildTradingPrompt } from "./prompt.ts";
 export {
 	DEFAULT_CONFIG,

@@ -37,6 +37,8 @@ export function packageTradingExtension(extensionName) {
 		.map((entry) => entry.name)
 		.sort();
 	if (!compiledFiles.includes("index.js")) throw new Error(`Missing compiled extension entry: ${extensionName}/index.js`);
+	const testFiles = compiledFiles.filter((file) => /(?:^|\.)test\.js$/.test(file));
+	if (testFiles.length > 0) throw new Error(`Compiled extension contains test modules: ${testFiles.join(", ")}`);
 
 	rmSync(targetDir, { force: true, recursive: true });
 	mkdirSync(targetDir, { recursive: true });

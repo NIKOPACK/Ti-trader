@@ -73,4 +73,50 @@ describe("parsePaperAccount", () => {
 			"balances must contain finite numbers",
 		);
 	});
+
+	it("rejects negative or overfilled persisted orders", () => {
+		const baseOrder = {
+			id: "1",
+			symbol: "BTC/USDT",
+			side: "buy",
+			type: "limit",
+			amount: 1,
+			filled: 0,
+			cost: 0,
+			status: "open",
+			timestamp: 1,
+		};
+		expect(() => parsePaperAccount(validAccount({ orders: [{ ...baseOrder, amount: -1 }] }), path)).toThrow(
+			"orders[0].amount must be positive",
+		);
+		expect(() => parsePaperAccount(validAccount({ orders: [{ ...baseOrder, filled: 2 }] }), path)).toThrow(
+			"orders[0].filled cannot exceed amount",
+		);
+	});
+
+	it("rejects negative persisted trade economics and inconsistent futures lots", () => {
+		const trade = {
+			id: "1",
+			symbol: "BTC/USDT",
+			side: "buy",
+			price: 100,
+			amount: 1,
+			cost: 100,
+			fee: -1,
+			timestamp: 1,
+		};
+		expect(() => parsePaperAccount(validAccount({ trades: [trade] }), path)).toThrow(
+			"trades[0].fee must be non-negative",
+		);
+		expect(() =>
+			parsePaperAccount(
+				validAccount({
+					entries: {
+						BTC: { amount: 2, cost: 200, lots: [{ amount: 1, price: 100, leverage: 1, marginType: "cross" }] },
+					},
+				}),
+				path,
+			),
+		).toThrow("entries.BTC.lots amounts must equal the absolute entry amount");
+	});
 });

@@ -1,5 +1,6 @@
 import type { ToolDefinition } from "@earendil-works/pi-coding-agent";
 import {
+	evaluateOrderCapability,
 	isBinanceCloseAllTrigger,
 	isFuturesSymbol,
 	type OrderIntent,
@@ -11,6 +12,7 @@ import {
 	cancelOrderListSchema,
 	cancelOrderSchema,
 	checkOrderSchema,
+	confirmLiveRiskChange,
 	estimatePaperFuturesMargin,
 	executeOco,
 	executeOrder,
@@ -23,7 +25,6 @@ import {
 	ocoSchema,
 	orderHistorySchema,
 	orderSchema,
-	orderTypeFromMarketInfo,
 	paperFuturesOrderUnsupported,
 	resolveExchangeAmount,
 	round,
@@ -160,6 +161,18 @@ export function createCheckOrderTool(
 				plan = await trading.tradingEngine.prepareOrder(params.side, intent);
 			} catch (error) {
 				if (!(error instanceof OrderPreparationError)) throw error;
+				if (error.uncertain) {
+					return jsonResult({
+						status: "unknown",
+						phase: "preflight",
+						side: params.side,
+						symbol: params.symbol,
+						reason: error.message,
+						blockingReasons: [error.message],
+						unknownReasons: [error.message],
+						warnings: [error.message],
+					});
+				}
 				return jsonResult({
 					status: "rejected",
 					phase: "preflight",
@@ -205,9 +218,12 @@ export function createCheckOrderTool(
 					: baseAsset;
 			const balance = balances?.find((candidate) => candidate.asset === balanceAsset);
 			const estimatedFee = trading.mode === "paper" ? plan.notional * trading.config.paper.feeRate : undefined;
+			const effectiveLeverage = futures
+				? trading.tradingEngine.getEffectiveLeverage(plan.input.symbol)
+				: trading.config.leverage;
 			const marginEstimate =
 				futures && trading.mode === "paper"
-					? estimatePaperFuturesMargin(plan, trading.config.leverage, estimatedFee ?? 0, balance?.free)
+					? estimatePaperFuturesMargin(plan, effectiveLeverage, estimatedFee ?? 0, balance?.free)
 					: undefined;
 			const marginRequired =
 				marginEstimate?.netRequired === undefined ? undefined : Math.max(0, marginEstimate.netRequired);
@@ -232,7 +248,7 @@ export function createCheckOrderTool(
 					: futures
 						? plan.reducingPosition
 							? 0
-							: plan.notional / Math.max(trading.config.leverage, 1)
+							: plan.notional / Math.max(effectiveLeverage, 1)
 						: params.side === "buy"
 							? plan.notional
 							: undefined;
@@ -240,9 +256,14 @@ export function createCheckOrderTool(
 			const marketMatches =
 				marketInfo !== undefined &&
 				marketInfoMatchesPreflight(marketInfo, plan.input.symbol, marketFamily, trading.config.quoteCurrency);
-			const marketTypeCapability = orderTypeFromMarketInfo(marketInfo, [
-				params.type === "trailing_stop_market" ? "trailing" : params.type,
-			]);
+			const orderCapability = evaluateOrderCapability(
+				{
+					...plan.capabilityContext,
+					marketInfo,
+					metadataValid: marketMatches,
+				},
+				plan.input,
+			);
 			const hardReasons = [
 				...(riskError ? [riskError] : []),
 				...(balanceSufficient === false ? [`Insufficient available ${balanceAsset} for this estimate`] : []),
@@ -256,9 +277,7 @@ export function createCheckOrderTool(
 					? ["Returned market metadata does not match the requested symbol, quote currency or market family"]
 					: []),
 				...(marketInfo?.active === false ? [`Market ${plan.input.symbol} is inactive`] : []),
-				...(marketTypeCapability === "unsupported"
-					? [`The exchange market metadata does not support ${params.type} orders`]
-					: []),
+				...(orderCapability.capability.status === "unsupported" ? [orderCapability.capability.reason] : []),
 				...(!closeAllTrigger &&
 				marketInfo?.minAmount !== undefined &&
 				exchangeAmount.amount !== undefined &&
@@ -286,6 +305,7 @@ export function createCheckOrderTool(
 				...(exchangeAmount.invalid && exchangeAmount.reason ? [exchangeAmount.reason] : []),
 			];
 			const executionCaveats = [
+				...(orderCapability.capability.status === "unknown" ? [orderCapability.capability.reason] : []),
 				...(closeAllTrigger && exchangeAmount.reason ? [exchangeAmount.reason] : []),
 				...(futures && trading.mode === "live"
 					? [
@@ -333,6 +353,7 @@ export function createCheckOrderTool(
 				side: params.side,
 				symbol: plan.input.symbol,
 				input: plan.input,
+				capability: orderCapability.capability,
 				resolution: {
 					amount: plan.amount,
 					requestedAmount: plan.amount,
@@ -386,7 +407,7 @@ export function createCheckOrderTool(
 							availableAfterClose: round(marginEstimate?.availableAfterClose, 8) ?? null,
 							available: balance?.free ?? null,
 							sufficient: balanceSufficient ?? null,
-							leverage: trading.config.leverage,
+							leverage: effectiveLeverage,
 							source: trading.mode === "paper" ? "paper-ledger-estimate" : "adapter-data-unavailable",
 						}
 					: null,
@@ -429,8 +450,8 @@ export function createBuyTool(tradingProvider: TradingProvider = getTrading): To
 			"base units. Paper spot supports simulated take-profit/stop-loss (stop, stop_market, take_profit, take_profit_market with stopPrice) and trailing stops (trailing_stop_market with trailingPercent); Paper futures currently accept market orders only. " +
 			"Live conditional and trailing support depends on the ccxt adapter and exchange capability. Futures additionally support reduceOnly, positionSide and closePosition.",
 		parameters: orderSchema,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return executeOrder("buy", params, ctx, tradingProvider());
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return executeOrder("buy", params, ctx, tradingProvider(), signal);
 		},
 	};
 }
@@ -445,8 +466,8 @@ export function createSellTool(tradingProvider: TradingProvider = getTrading): T
 			"take_profit_market (triggers when price rises to stopPrice) or trailing_stop_market (trailingPercent pullback from the peak); Paper futures currently accept market orders only. " +
 			"Live conditional and trailing support depends on the ccxt adapter and exchange capability.",
 		parameters: orderSchema,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return executeOrder("sell", params, ctx, tradingProvider());
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return executeOrder("sell", params, ctx, tradingProvider(), signal);
 		},
 	};
 }
@@ -461,9 +482,24 @@ export function createCancelOrderTool(
 			"Cancel an open order by id. Use get_open_orders to list order ids. " +
 			"Cancelling one leg of an OCO bracket cancels the whole bracket.",
 		parameters: cancelOrderSchema,
-		async execute(_id, params) {
+		async execute(_id, params, signal, _onUpdate, ctx) {
 			const trading = tradingProvider();
-			await trading.tradingEngine.cancelOrder(params.id, params.symbol);
+			const cancelled = await confirmLiveRiskChange(ctx, trading, {
+				missingUiMessage:
+					"Cancelling live orders requires interactive confirmation but no UI is available. " +
+					"Set confirmLiveOrders=false in ~/.ti-trader/agent/trading.json to allow headless live trading.",
+				title: `Confirm LIVE order cancellation on ${trading.tradingEngine.id}`,
+				summary: `Cancel order ${params.id} on ${params.symbol}. This may remove a protective stop-loss or OCO leg.`,
+				cancelledMessage: "Live order cancellation cancelled",
+				cancelledResult: {
+					status: "cancelled",
+					reason: "user rejected confirmation",
+					cancelled: params.id,
+					symbol: params.symbol,
+				},
+			});
+			if (cancelled) return cancelled;
+			await trading.tradingEngine.cancelOrder(params.id, params.symbol, signal);
 			return jsonResult({ status: "ok", cancelled: params.id, symbol: params.symbol });
 		},
 	};
@@ -477,9 +513,24 @@ export function createCancelOrderListTool(
 		label: "cancel_order_list",
 		description: "Cancel every open leg in an OCO/order-list by orderListId.",
 		parameters: cancelOrderListSchema,
-		async execute(_id, params) {
+		async execute(_id, params, signal, _onUpdate, ctx) {
 			const trading = tradingProvider();
-			await trading.tradingEngine.cancelOrderList(params.orderListId, params.symbol);
+			const cancelled = await confirmLiveRiskChange(ctx, trading, {
+				missingUiMessage:
+					"Cancelling live order lists requires interactive confirmation but no UI is available. " +
+					"Set confirmLiveOrders=false in ~/.ti-trader/agent/trading.json to allow headless live trading.",
+				title: `Confirm LIVE order-list cancellation on ${trading.tradingEngine.id}`,
+				summary: `Cancel every open order in list ${params.orderListId} on ${params.symbol}. This may remove protective OCO legs.`,
+				cancelledMessage: "Live order-list cancellation cancelled",
+				cancelledResult: {
+					status: "cancelled",
+					reason: "user rejected confirmation",
+					cancelledOrderListId: params.orderListId,
+					symbol: params.symbol,
+				},
+			});
+			if (cancelled) return cancelled;
+			await trading.tradingEngine.cancelOrderList(params.orderListId, params.symbol, signal);
 			return jsonResult({
 				status: "ok",
 				error: null,
@@ -501,8 +552,8 @@ export function createPlaceOcoTool(tradingProvider: TradingProvider = getTrading
 			"Paper spot simulates the bracket; Paper futures reject OCO. Live spot support depends on the exchange's OCO capability. Binance spot uses native OCO when available; do not place separate " +
 			"conditional sell orders because each order reserves the same asset balance.",
 		parameters: ocoSchema,
-		async execute(_id, params, _signal, _onUpdate, ctx) {
-			return executeOco(params, ctx, tradingProvider);
+		async execute(_id, params, signal, _onUpdate, ctx) {
+			return executeOco(params, ctx, tradingProvider, signal);
 		},
 	};
 }

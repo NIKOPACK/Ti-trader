@@ -4,6 +4,7 @@ import { type ImageContent, type Message, type TextContent, type Usage, uuidv7 }
 import { randomUUID } from "crypto";
 import {
 	appendFileSync,
+	chmodSync,
 	closeSync,
 	createReadStream,
 	existsSync,
@@ -11,7 +12,9 @@ import {
 	openSync,
 	readdirSync,
 	readSync,
+	renameSync,
 	statSync,
+	unlinkSync,
 	writeFileSync,
 } from "fs";
 import { readdir, stat } from "fs/promises";
@@ -978,13 +981,32 @@ export class SessionManager {
 
 	private _rewriteFile(): void {
 		if (!this.persist || !this.sessionFile) return;
-		const fd = openSync(this.sessionFile, "w");
+		const temporaryPath = `${this.sessionFile}.${process.pid}.${randomUUID()}.tmp`;
+		const mode = existsSync(this.sessionFile) ? statSync(this.sessionFile).mode & 0o777 : 0o600;
+		let fd: number | undefined;
 		try {
+			fd = openSync(temporaryPath, "wx", mode);
 			for (const entry of this.fileEntries) {
 				writeFileSync(fd, `${JSON.stringify(entry)}\n`);
 			}
-		} finally {
 			closeSync(fd);
+			fd = undefined;
+			chmodSync(temporaryPath, mode);
+			renameSync(temporaryPath, this.sessionFile);
+		} catch (error) {
+			if (fd !== undefined) {
+				try {
+					closeSync(fd);
+				} catch {
+					// Preserve the original rewrite failure.
+				}
+			}
+			try {
+				unlinkSync(temporaryPath);
+			} catch {
+				// The temporary file may already have been renamed or never created.
+			}
+			throw error;
 		}
 	}
 

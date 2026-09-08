@@ -14,7 +14,7 @@ If you use an agent, run it from the repository root so it picks up `AGENTS.md` 
 
 - Open an issue first for anything beyond a small fix, so the design can be discussed before you invest time.
 - Keep PRs focused: one logical change per PR.
-- Run `npm run check` and `./test.sh` locally; both must pass.
+- Run `npm run check` and `./test.sh` locally; both must pass. `npm run check` is read-only; use `npm run format:fix` when you intend to rewrite formatting.
 - Ti is a trading tool. Changes that weaken the risk layer, the paper-first default, or the live-order confirmation flow need a very strong justification.
 
 ## Commit Style

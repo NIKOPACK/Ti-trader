@@ -7,23 +7,48 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	private done = false;
 	private finalResultPromise: Promise<R>;
 	private resolveFinalResult!: (result: R) => void;
+	private rejectFinalResult!: (error: Error) => void;
+	private finalResultSettled = false;
 	private isComplete: (event: T) => boolean;
 	private extractResult: (event: T) => R;
 
 	constructor(isComplete: (event: T) => boolean, extractResult: (event: T) => R) {
 		this.isComplete = isComplete;
 		this.extractResult = extractResult;
-		this.finalResultPromise = new Promise((resolve) => {
+		this.finalResultPromise = new Promise((resolve, reject) => {
 			this.resolveFinalResult = resolve;
+			this.rejectFinalResult = reject;
 		});
+		// A consumer may only iterate the stream and never call result(). Mark the
+		// internal promise as observed so natural end-of-stream errors do not become
+		// process-level unhandled rejections; result() still returns the rejection.
+		void this.finalResultPromise.catch(() => undefined);
 	}
 
 	push(event: T): void {
 		if (this.done) return;
 
-		if (this.isComplete(event)) {
+		let complete: boolean;
+		try {
+			complete = this.isComplete(event);
+		} catch (error) {
 			this.done = true;
-			this.resolveFinalResult(this.extractResult(event));
+			this.finalResultSettled = true;
+			this.rejectFinalResult(error instanceof Error ? error : new Error(String(error)));
+			throw error;
+		}
+
+		if (complete) {
+			this.done = true;
+			try {
+				const result = this.extractResult(event);
+				this.finalResultSettled = true;
+				this.resolveFinalResult(result);
+			} catch (error) {
+				this.finalResultSettled = true;
+				this.rejectFinalResult(error instanceof Error ? error : new Error(String(error)));
+				throw error;
+			}
 		}
 
 		// Deliver to waiting consumer or queue it
@@ -38,7 +63,11 @@ export class EventStream<T, R = T> implements AsyncIterable<T> {
 	end(result?: R): void {
 		this.done = true;
 		if (result !== undefined) {
+			this.finalResultSettled = true;
 			this.resolveFinalResult(result);
+		} else if (!this.finalResultSettled) {
+			this.finalResultSettled = true;
+			this.rejectFinalResult(new Error("Event stream ended before a final result was received"));
 		}
 		// Notify all waiting consumers that we're done
 		while (this.waiting.length > 0) {

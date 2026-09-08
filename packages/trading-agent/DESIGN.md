@@ -1,7 +1,7 @@
 # Ti 功能设计文档
 
-> 版本：0.1.7（当前开发工作区版本，未声明已发布）　·　基于 pi agent harness（`@earendil-works/pi-coding-agent` 0.84.3）二开
-> 最后更新：2026-09-02
+> 版本：0.1.9（当前开发工作区版本，未声明已发布）　·　基于 pi agent harness（`@earendil-works/pi-coding-agent` 0.84.3）二开
+> 最后更新：2026-09-08
 
 ---
 
@@ -286,7 +286,7 @@ interface ExchangeClient {
 | 默认安全 | 首次运行即 paper 模式；live 必须显式开启 |
 | 凭证隔离 | 交易所 key 独立存放于 `~/.ti-trader/agent/keys.json`（0600），与模型凭证分离 |
 | 切换确认 | `/mode live` 需交互确认，且预先校验该交易所 key 存在。切到 live 后写入 `trading.json`，下次启动按已保存模式进入，不再弹启动确认 |
-| 逐单确认 | live 模式每笔订单弹确认框（显示方向/数量/名义金额/当日累计），`confirmLiveOrders: false` 可关闭以实现全自动 |
+| 逐单确认 | live 模式每笔订单弹确认框（显示方向/数量/名义金额/当日累计），`confirmLiveOrders: false` 仅在显式 headless 工作流中关闭确认；引擎默认拒绝没有确认策略的 live 提交 |
 | 无头保护 | `--print`/RPC 等无 UI 场景下，若 `confirmLiveOrders: true`，live 下单一律拒绝——防止无人值守时误触实盘 |
 | Trigger | 实验性 `/trigger` 不是下单授权。live 与 `--print` 从不因 trigger 自动唤醒 agent |
 | 提示词约束 | 系统提示词内置仓位比例、下单前查余额、下单后必验证等规则（软约束） |
@@ -352,7 +352,7 @@ ti [options] [message...]
 ```bash
 npm install --ignore-scripts
 cd packages/coding-agent && npm run build:unbundled && cd ../..
-npm run build:trading          # 先构建 triggers 与 trading-risk，再构建 trading-engine，最后构建 trading-agent
+npm run build:trading          # 先构建 tui、triggers 与 trading-risk，再构建 trading-engine，最后构建 trading-agent
 npm --prefix packages/trading-agent run smoke   # 运行时检查 + 模拟盘 E2E
 ```
 

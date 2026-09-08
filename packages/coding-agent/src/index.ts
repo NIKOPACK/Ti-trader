@@ -386,6 +386,7 @@ export {
 	CompactionSummaryMessageComponent,
 	CustomEditor,
 	CustomMessageComponent,
+	type DescriptionLocalizer,
 	DynamicBorder,
 	ExtensionEditorComponent,
 	ExtensionInputComponent,

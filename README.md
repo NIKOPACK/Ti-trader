@@ -21,9 +21,9 @@ On first run, use `/login` to configure a model provider and `/exchange-login` t
 ## Features
 
 - **Paper trading** with simulated fills, positions, and PnL — no API keys required
-- **Live trading** on any ccxt-supported exchange (API keys stored locally, mode 600)
+- **Live trading** through ccxt adapters (API keys stored locally, mode 600). Paper and Binance profiles have offline contract coverage; other venues remain experimental, not live-certified.
 - **Native trading tools** exposed to the LLM (market data, order placement, portfolio queries)
-- **Risk limits**: per-order and per-day notional caps, symbol allowlists, live-order confirmation. Unsettled in-flight quota is listed on `/risk` and settled with `/risk reconcile <id> commit|release` after verifying the exchange; do not retry the original order.
+- **Risk limits**: per-order and accumulated/daily notional caps, symbol allowlists, live-order confirmation and persistent entry pause. Journal-linked quota is reconciled through `/recovery`; `/risk reconcile` is reserved for legacy standalone claims. Unknown submissions are never automatically resent.
 - **Take-profit / stop-loss orders**: stop, take-profit and trailing stop order types are available in Paper spot and supported live markets; Paper futures currently supports market orders only
 - **Slash commands** rendered as transcript entries:
   - `/balance` — account balances with quote-currency valuation
@@ -33,11 +33,20 @@ On first run, use `/login` to configure a model provider and `/exchange-login` t
   - `/markets [limit]` — top markets by 24h volume
   - `/mode [paper|live]` — switch trading mode (live requires API keys and an interactive confirm; a persisted live config starts live on the next launch without confirming again)
   - `/exchange [id]` — switch the active exchange (ccxt id)
-  - `/risk` — show risk limits and usage; `/risk reconcile <id> commit|release` settles stuck reservations
-  - `/trigger` — experimental in-memory conditions (notify or wake in paper; live notifies only and never auto-wakes)
+  - `/risk` — inspect limits and usage; `/risk pause` blocks new exposure and `/risk resume` requires confirmation
+  - `/recovery` — inspect and reconcile durable executions without resubmission
+  - `/audit` — bounded, redacted trading audit history
+  - `/health` — local admission blocks, stale runtimes and monitor observations
+  - `/trigger` — persistent experimental conditions (notify or wake in paper; live triggers notify only)
   - `/exchange-login <exchange>` — set exchange API keys interactively
 
 Configuration and state live under `~/.ti-trader/agent/` (`trading.json`, `keys.json`, session state).
+
+## Operational readiness
+
+See the [six-stage plan](docs/product-readiness-plan.md), [operations runbook](docs/trading-operations.md) and [release evidence gate](docs/trading-release-evidence.md). Recovery preserves uncertainty and never substitutes a retry for missing evidence. Account maintenance invalidates stale processes; recovered or retried notifications do not wake trading.
+
+The working-tree implementation is not a production acceptance claim. A seven-day Paper soak, clean candidate installation and separately authorized live pilot still require actual evidence.
 
 ## Packages
 
@@ -46,7 +55,7 @@ Configuration and state live under `~/.ti-trader/agent/` (`trading.json`, `keys.
 | **[ti-trader](packages/trading-agent)** | Trading agent CLI (`ti`): tools, commands, persistence, and paper/live runtime integration |
 | **[@earendil-works/ti-trading-engine](packages/trading-engine)** | Framework-independent engine: exchange adapters, planning, risk integration, and protection |
 | **[@earendil-works/ti-trading-risk](packages/trading-risk)** | Trading risk-control ledger: notional limits and atomic, durable reservations |
-| **[@earendil-works/ti-triggers](packages/triggers)** | Deterministic trigger evaluation; `ti-trader` registers an experimental in-memory `/trigger` monitor that never places orders. Live sessions notify only; a trigger message is not trading authorization |
+| **[@earendil-works/ti-triggers](packages/triggers)** | Deterministic trigger evaluation; `ti-trader` persists experimental `/trigger` definitions and state. Live triggers notify only; a trigger message is not trading authorization |
 | **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive agent CLI harness (upstream Pi) |
 | **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
 | **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, …) |
@@ -62,8 +71,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request. Trading be
 ```bash
 npm install --ignore-scripts  # Install all dependencies without running lifecycle scripts
 npm run build                 # Build the Pi runtime and trading packages (use build:trading to include triggers)
-npm run build:trading         # Build triggers, trading-risk, trading-engine, then trading-agent
-npm run check                 # Lint, format, and type check
+npm run build:trading         # Build tui, triggers, trading-risk, trading-engine, then trading-agent
+npm run check                 # Read-only lint, format, and type check
+npm run format:fix            # Apply Biome formatting fixes explicitly
 ./test.sh                     # Run tests (skips LLM-dependent tests without API keys)
 ```
 

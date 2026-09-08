@@ -72,6 +72,7 @@ export class RemoteSession {
 	#unsubscribeSnapshot: Unsubscribe | undefined;
 	#unsubscribeEvents: Unsubscribe | undefined;
 	readonly #listeners = new Set<(state: RemoteSessionState) => void>();
+	readonly #connectionUnsubscribers = new Set<Unsubscribe>();
 	readonly #pendingAttachmentOperations = new Set<Promise<void>>();
 	readonly #activeOperationStates = new Set<RemoteSessionLifecycle>();
 	#disposePromise: Promise<void> | undefined;
@@ -134,7 +135,12 @@ export class RemoteSession {
 
 	onConnectionStateChange(listener: (change: ConnectionStateChange) => void): Unsubscribe {
 		this.#assertNotDisposed();
-		return this.#client.onConnectionStateChange(listener);
+		const unsubscribe = this.#client.onConnectionStateChange(listener);
+		this.#connectionUnsubscribers.add(unsubscribe);
+		return () => {
+			this.#connectionUnsubscribers.delete(unsubscribe);
+			unsubscribe();
+		};
 	}
 
 	static async open(client: PiClient, sessionId: string, options: RemoteSessionOptions = {}): Promise<RemoteSession> {
@@ -229,6 +235,8 @@ export class RemoteSession {
 		this.#lifecycle = { status: "disposed" };
 		this.#resolveDisposeSignal();
 		this.#clearSubscriptions();
+		for (const unsubscribe of this.#connectionUnsubscribers) unsubscribe();
+		this.#connectionUnsubscribers.clear();
 		this.#handle = undefined;
 		this.#transcript = undefined;
 		const cleanup = [...this.#pendingAttachmentOperations];
@@ -313,8 +321,13 @@ export class RemoteSession {
 		this.#lifecycle = busy;
 		this.#activeOperationStates.add(busy);
 		this.#notify();
-		const running = run();
 		try {
+			let running: Promise<void>;
+			try {
+				running = run();
+			} catch (error) {
+				running = Promise.reject(error);
+			}
 			await Promise.race([
 				running,
 				this.#disposeSignal.then(() => {

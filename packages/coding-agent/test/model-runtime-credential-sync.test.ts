@@ -227,7 +227,11 @@ describe("ModelRuntime credential synchronization", () => {
 		const blocked = new Promise<void>((resolve) => {
 			finish = resolve;
 		});
-		const runtime = await ModelRuntime.create({ credentials: AuthStorage.inMemory(), modelsPath: null });
+		const runtime = await ModelRuntime.create({
+			credentials: AuthStorage.inMemory(),
+			modelsPath: null,
+			enableModelNetwork: true,
+		});
 		runtime.registerNativeProvider(
 			provider("one", {
 				refreshModels: async (context) => {

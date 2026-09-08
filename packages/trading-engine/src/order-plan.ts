@@ -1,4 +1,7 @@
+import { validateTradingSymbol } from "@earendil-works/ti-trading-risk";
+import { evaluateOrderCapability, getTradingCapabilities, type TradingCapabilityContext } from "./capabilities.ts";
 import type { FuturesPositionMode, MarketType } from "./client-types.ts";
+import { futuresAmountsEqual } from "./contract-size.ts";
 import { reduceSide } from "./protection.ts";
 import type {
 	MarketDataClient,
@@ -40,6 +43,7 @@ export type ReferencePriceSource = "limit_price" | "stop_price" | "ask" | "bid" 
 export interface PreparedOrder {
 	/** Frozen snapshot; only the engine that prepared this value may submit it. */
 	readonly input: Readonly<PlaceOrderInput>;
+	readonly capabilityContext: Readonly<TradingCapabilityContext>;
 	readonly side: OrderSide;
 	readonly amount: number;
 	readonly notional: number;
@@ -66,6 +70,7 @@ export interface OcoIntent {
 export interface PreparedOco {
 	/** Frozen snapshot; only the engine that prepared this value may submit it. */
 	readonly input: Readonly<PlaceOcoOrderInput>;
+	readonly capabilityContext: Readonly<TradingCapabilityContext>;
 	readonly observedNotional: number;
 	readonly riskNotional: number;
 	readonly notional: number;
@@ -76,24 +81,29 @@ export interface PreparedOco {
 }
 
 export function isBinanceCloseAllTrigger(trading: OrderPlanningContext, plan: PreparedOrder): boolean {
-	return (
-		trading.mode === "live" &&
-		trading.exchange.id === "binance" &&
-		trading.config.marketType === "usdm-futures" &&
-		plan.input.closePosition === true &&
-		(plan.input.type === "stop_market" || plan.input.type === "take_profit_market")
-	);
+	return evaluateOrderCapability(
+		{
+			exchangeId: trading.exchange.id,
+			mode: trading.mode,
+			marketFamily: isFuturesSymbol(plan.input.symbol, trading.config.quoteCurrency) ? "futures" : "spot",
+			positionMode: trading.config.positionMode,
+		},
+		plan.input,
+	).omitExchangeQuantity;
 }
 
 export class OrderPreparationError extends Error {
 	readonly code = "ORDER_PREPARATION_REJECTED" as const;
-	constructor(message: string) {
+	/** True when missing external metadata makes the preflight indeterminate. */
+	readonly uncertain: boolean;
+	constructor(message: string, uncertain = false) {
 		super(message);
 		this.name = "OrderPreparationError";
+		this.uncertain = uncertain;
 	}
 }
-function rejectOrder(message: string): never {
-	throw new OrderPreparationError(message);
+function rejectOrder(message: string, uncertain = false): never {
+	throw new OrderPreparationError(message, uncertain);
 }
 
 function freezePosition(position: Position | undefined): Readonly<Position> | undefined {
@@ -110,13 +120,18 @@ function freezePreparedOrder(
 	return Object.freeze({
 		...plan,
 		input: Object.freeze({ ...plan.input }),
+		capabilityContext: Object.freeze({ ...plan.capabilityContext }),
 		closePosition: freezePosition(plan.closePosition),
 		reducingPosition: freezePosition(plan.reducingPosition),
 	}) as PreparedOrder;
 }
 
 function freezePreparedOco(plan: PreparedOco): PreparedOco {
-	return Object.freeze({ ...plan, input: Object.freeze({ ...plan.input }) }) as PreparedOco;
+	return Object.freeze({
+		...plan,
+		input: Object.freeze({ ...plan.input }),
+		capabilityContext: Object.freeze({ ...plan.capabilityContext }),
+	}) as PreparedOco;
 }
 export function isFuturesSymbol(symbol: string, quoteCurrency: string): boolean {
 	return symbol.endsWith(`/${quoteCurrency}:${quoteCurrency}`);
@@ -146,19 +161,29 @@ function isMultipleOfStep(value: number, step: number): boolean {
 	return Number.isFinite(units) && Math.abs(units - Math.round(units)) <= 1e-9;
 }
 
-function requireFuturesLot(market: MarketInfo): { contractSize: number; step: number } {
-	if (market.contract !== true || market.linear !== true || market.amountUnit === "base") {
+function requireFuturesContract(market: MarketInfo): number {
+	if (
+		market.contract !== true ||
+		market.linear !== true ||
+		(market.amountUnit !== undefined && market.amountUnit !== "contracts")
+	) {
 		rejectOrder(
 			"Futures market is not confirmed as a linear contract with contract-denominated amounts; refusing to guess the amount unit",
+			true,
 		);
 	}
 	const contractSize = market.contractSize;
 	if (contractSize === undefined || !Number.isFinite(contractSize) || contractSize <= 0) {
-		rejectOrder("Futures contractSize is unavailable; refusing to guess the amount unit");
+		rejectOrder("Futures contractSize is unavailable; refusing to guess the amount unit", true);
 	}
+	return contractSize;
+}
+
+function requireFuturesLot(market: MarketInfo): { contractSize: number; step: number } {
+	const contractSize = requireFuturesContract(market);
 	const step = futuresAmountStep(market);
 	if (step === undefined || !Number.isFinite(step) || step <= 0) {
-		rejectOrder("Futures amount precision is unavailable; refusing to guess a contract lot");
+		rejectOrder("Futures amount precision is unavailable; refusing to guess a contract lot", true);
 	}
 	return { contractSize, step };
 }
@@ -167,7 +192,10 @@ async function futuresMarketForQuoteAmount(trading: OrderPlanningContext, symbol
 	try {
 		return await trading.exchange.getMarketInfo(symbol);
 	} catch (error) {
-		rejectOrder(`Futures market metadata unavailable: ${error instanceof Error ? error.message : String(error)}`);
+		rejectOrder(
+			`Futures market metadata unavailable: ${error instanceof Error ? error.message : String(error)}`,
+			true,
+		);
 	}
 }
 
@@ -191,19 +219,13 @@ function snapQuoteAmountToFuturesLot(amount: number, market: MarketInfo, referen
 }
 
 function assertFuturesAmountRepresentable(amount: number, market: MarketInfo): void {
+	const contractSize = requireFuturesContract(market);
 	const step = futuresAmountStep(market);
-	const contractSize = market.contractSize;
-	if (
-		market.contract !== true ||
-		market.linear !== true ||
-		market.amountUnit === "base" ||
-		contractSize === undefined ||
-		!Number.isFinite(contractSize) ||
-		contractSize <= 0 ||
-		step === undefined
-	) {
-		return;
-	}
+	// An explicit base amount can still be handed to the exchange adapter when
+	// the venue omits lot precision; the adapter remains the final authority on
+	// exchange rounding. Quote amounts cannot proceed without a step because
+	// they must be snapped before risk sizing.
+	if (step === undefined || !Number.isFinite(step) || step <= 0) return;
 	const contracts = amount / contractSize;
 	const tolerance = Math.max(1e-12, Math.abs(amount) * 1e-9);
 	if (!isMultipleOfStep(contracts, step) || Math.abs(contracts * contractSize - amount) > tolerance) {
@@ -214,13 +236,9 @@ function assertFuturesAmountRepresentable(amount: number, market: MarketInfo): v
 	}
 }
 function validateSymbol(symbol: string, quoteCurrency: string, marketType: MarketType): boolean {
-	const parts = symbol.split("/");
-	if (parts.length !== 2 || !parts[0] || !parts[1]) rejectOrder(`Invalid market symbol ${symbol}`);
+	const validationError = validateTradingSymbol(symbol, marketType, quoteCurrency);
+	if (validationError) rejectOrder(validationError);
 	const futures = isFuturesSymbol(symbol, quoteCurrency);
-	const expectedQuote = futures ? `${quoteCurrency}:${quoteCurrency}` : quoteCurrency;
-	if (parts[1] !== expectedQuote) rejectOrder(`Symbol ${symbol} must use quote currency ${quoteCurrency}`);
-	if (marketType === "spot" && futures) rejectOrder(`Futures markets are disabled in spot mode: ${symbol}`);
-	if (marketType === "usdm-futures" && !futures) rejectOrder(`Spot markets are disabled in futures mode: ${symbol}`);
 	return futures;
 }
 export function countsTowardsDailyLimit(trading: OrderPlanningContext, side: OrderSide, params: OrderIntent): boolean {
@@ -297,6 +315,14 @@ export async function prepareOrder(
 ): Promise<PreparedOrder> {
 	const { config } = trading;
 	const futuresOrder = validateSymbol(params.symbol, config.quoteCurrency, config.marketType);
+	const capabilityContext: TradingCapabilityContext = {
+		exchangeId: trading.exchange.id,
+		mode: trading.mode,
+		marketFamily: futuresOrder ? "futures" : "spot",
+		positionMode: config.positionMode,
+	};
+	const orderCapability = evaluateOrderCapability(capabilityContext, { ...params, side });
+	if (orderCapability.capability.status === "unsupported") rejectOrder(orderCapability.capability.reason);
 	const priceRequired = params.type === "limit" || params.type === "stop" || params.type === "take_profit";
 	if (!priceRequired && params.price !== undefined)
 		rejectOrder(`${params.type} orders do not accept price; use price only for limit execution`);
@@ -319,31 +345,8 @@ export async function prepareOrder(
 			rejectOrder("Paper trailing_stop_market orders do not accept stopPrice; use trailingPercent only");
 	} else if (params.trailingPercent !== undefined)
 		rejectOrder("trailingPercent is only valid for trailing_stop_market orders");
-	if (params.closePosition && !["market", "stop_market", "take_profit_market"].includes(params.type))
-		rejectOrder("closePosition is supported only for market, stop_market or take_profit_market orders");
 	if (params.closePosition && (params.amount !== undefined || params.quoteAmount !== undefined))
 		rejectOrder("closePosition orders must omit amount and quoteAmount");
-	if (params.closePosition && params.reduceOnly === false) rejectOrder("closePosition is always reduceOnly");
-	if (params.closePosition && !futuresOrder) rejectOrder("closePosition is supported only for futures positions");
-	if (futuresOrder) {
-		if (config.positionMode === "hedge" && (!params.positionSide || params.positionSide === "BOTH"))
-			rejectOrder("Hedge mode futures orders require positionSide LONG or SHORT");
-		if (
-			config.positionMode === "hedge" &&
-			(params.reduceOnly === true || params.closePosition === true) &&
-			((params.positionSide === "LONG" && side !== "sell") || (params.positionSide === "SHORT" && side !== "buy"))
-		)
-			rejectOrder(
-				`Hedge mode ${params.reduceOnly ? "reduceOnly" : "closePosition"} orders must use the opposing side for positionSide ${params.positionSide}`,
-			);
-		if (config.positionMode === "one-way" && params.positionSide && params.positionSide !== "BOTH")
-			rejectOrder("One-way mode futures orders must use positionSide BOTH or omit it");
-	} else if (
-		params.reduceOnly !== undefined ||
-		params.positionSide !== undefined ||
-		params.closePosition !== undefined
-	)
-		rejectOrder("reduceOnly, positionSide and closePosition are futures-only parameters");
 	if (!params.closePosition && (params.amount === undefined) === (params.quoteAmount === undefined))
 		rejectOrder("Provide exactly one of amount (base currency) or quoteAmount (quote currency)");
 	if (!params.closePosition && params.amount !== undefined && (!Number.isFinite(params.amount) || params.amount <= 0))
@@ -372,8 +375,9 @@ export async function prepareOrder(
 		rejectOrder(
 			`trailing_stop_market ${side} stopPrice ${params.stopPrice} must be ${side === "sell" ? "above" : "below"} the current last price ${currentPrice}`,
 		);
+	const countTowardsDailyLimit = countsTowardsDailyLimit(trading, side, params);
 	const reducingPosition =
-		params.reduceOnly || params.closePosition ? await findClosePosition(trading, side, params) : undefined;
+		futuresOrder && !countTowardsDailyLimit ? await findClosePosition(trading, side, params) : undefined;
 	const closePosition = params.closePosition ? reducingPosition : undefined;
 	let referencePrice: number | undefined;
 	let referencePriceSource: ReferencePriceSource;
@@ -407,21 +411,34 @@ export async function prepareOrder(
 	}
 	if (!Number.isFinite(amount) || amount <= 0) rejectOrder("Order amount must be positive");
 	if (futuresOrder && !closePosition) {
-		if (params.quoteAmount !== undefined) {
-			const market = await futuresMarketForQuoteAmount(trading, params.symbol);
-			amount = snapQuoteAmountToFuturesLot(amount, market, referencePrice);
-		} else {
-			try {
-				const market = await trading.exchange.getMarketInfo(params.symbol);
-				assertFuturesAmountRepresentable(amount, market);
-			} catch (error) {
-				if (error instanceof OrderPreparationError) throw error;
-			}
+		// Fetch one metadata snapshot for the sizing path. A second request could
+		// observe different contract metadata or fail after the first succeeded,
+		// making the prepared plan internally inconsistent.
+		let market: MarketInfo;
+		try {
+			market =
+				params.quoteAmount !== undefined
+					? await futuresMarketForQuoteAmount(trading, params.symbol)
+					: await trading.exchange.getMarketInfo(params.symbol);
+		} catch (error) {
+			if (error instanceof OrderPreparationError) throw error;
+			rejectOrder(
+				`Futures market metadata unavailable: ${error instanceof Error ? error.message : String(error)}`,
+				true,
+			);
 		}
+		if (params.quoteAmount !== undefined) amount = snapQuoteAmountToFuturesLot(amount, market, referencePrice);
+		else assertFuturesAmountRepresentable(amount, market);
 	}
-	if (params.reduceOnly && reducingPosition && amount > Math.abs(reducingPosition.amount))
+	// Preserve the exchange-representable amount; only the paper adapter clamps
+	// ledger rounding tails when it settles the reduction.
+	if (
+		reducingPosition &&
+		amount > Math.abs(reducingPosition.amount) &&
+		!futuresAmountsEqual(amount, Math.abs(reducingPosition.amount))
+	)
 		rejectOrder(
-			`reduceOnly order amount ${amount} exceeds the open ${params.positionSide ? `${params.positionSide} ` : ""}position amount ${Math.abs(reducingPosition.amount)}`,
+			`${params.reduceOnly ? "reduceOnly" : "Reducing"} order amount ${amount} exceeds the open ${params.positionSide ? `${params.positionSide} ` : ""}position amount ${Math.abs(reducingPosition.amount)}`,
 		);
 	let notional: number;
 	if (closePosition) {
@@ -435,29 +452,9 @@ export async function prepareOrder(
 		notional = params.quoteAmount !== undefined && !futuresOrder ? params.quoteAmount : amount * referencePrice;
 	}
 	if (!Number.isFinite(notional) || notional <= 0) rejectOrder("Order notional must be positive and finite");
-	const countTowardsDailyLimit = countsTowardsDailyLimit(trading, side, params);
 	const reduceOnlyRequested = params.reduceOnly === true || params.closePosition === true;
-	const hedgeDirectionalReduction =
-		futuresOrder &&
-		trading.mode === "live" &&
-		trading.exchange.id === "binance" &&
-		config.positionMode === "hedge" &&
-		reduceOnlyRequested;
-	const binanceCloseAllTrigger =
-		futuresOrder &&
-		trading.mode === "live" &&
-		trading.exchange.id === "binance" &&
-		config.marketType === "usdm-futures" &&
-		params.closePosition === true &&
-		(params.type === "stop_market" || params.type === "take_profit_market");
-	const exchangeConstraints = [
-		hedgeDirectionalReduction
-			? "Binance hedge mode omits reduceOnly; the opposing side plus positionSide enforces the reducing direction"
-			: undefined,
-		binanceCloseAllTrigger
-			? "Binance close-all triggers use closePosition and omit wire-level reduceOnly and exchange quantity"
-			: undefined,
-	].filter((constraint): constraint is string => constraint !== undefined);
+	const binanceCloseAllTrigger = orderCapability.omitExchangeQuantity;
+	const exchangeConstraints = orderCapability.constraints;
 	const exchangeConstraint = exchangeConstraints.length > 0 ? exchangeConstraints.join("; ") : undefined;
 	const input: PlaceOrderInput = {
 		symbol: params.symbol,
@@ -474,6 +471,7 @@ export async function prepareOrder(
 	const summary = `${side.toUpperCase()} ${amount} ${params.symbol} (${params.type})${params.price !== undefined ? ` @ ${params.price}` : ""}${params.stopPrice !== undefined ? ` trigger ${params.stopPrice}` : ""}${params.trailingPercent !== undefined ? ` trail ${params.trailingPercent}%` : ""}${params.closePosition ? " (close entire matching position)" : ""}${binanceCloseAllTrigger ? " (Binance close-all; exchange may omit quantity)" : ""} ≈ ${notional.toFixed(2)} ${config.quoteCurrency}`;
 	return freezePreparedOrder({
 		input,
+		capabilityContext,
 		side,
 		amount,
 		notional,
@@ -492,11 +490,14 @@ export async function prepareOrder(
 
 export async function prepareOcoOrder(params: OcoIntent, trading: OrderPlanningContext): Promise<PreparedOco> {
 	const futuresOrder = validateSymbol(params.symbol, trading.config.quoteCurrency, trading.config.marketType);
-	if (futuresOrder) rejectOrder("OCO orders are supported only for spot markets");
-	if (params.side === "buy" && trading.mode === "live" && trading.exchange.id === "binance")
-		rejectOrder(
-			"Binance Spot native OCO buy brackets are not supported safely; use a limit/conditional entry instead",
-		);
+	const capabilityContext: TradingCapabilityContext = {
+		exchangeId: trading.exchange.id,
+		mode: trading.mode,
+		marketFamily: futuresOrder ? "futures" : "spot",
+		positionMode: trading.config.positionMode,
+	};
+	const ocoCapability = getTradingCapabilities(capabilityContext).oco[params.side];
+	if (ocoCapability.status === "unsupported") rejectOrder(ocoCapability.reason);
 	if (!Number.isFinite(params.amount) || params.amount <= 0) rejectOrder("amount must be a positive finite number");
 	if (!Number.isFinite(params.stopLossPrice) || params.stopLossPrice <= 0)
 		rejectOrder("stopLossPrice must be a positive finite number");
@@ -534,6 +535,7 @@ export async function prepareOcoOrder(params: OcoIntent, trading: OrderPlanningC
 	if (!Number.isFinite(riskNotional) || riskNotional <= 0)
 		rejectOrder("OCO risk notional must be positive and finite");
 	return freezePreparedOco({
+		capabilityContext,
 		input: {
 			symbol: params.symbol,
 			side: params.side,

@@ -1,6 +1,8 @@
 import ccxt, { type Order as CcxtOrder, type Exchange } from "ccxt";
 import { validateBinanceSpotFilters } from "./binance-spot-filters.ts";
+import { evaluateOrderCapability } from "./capabilities.ts";
 import {
+	assertBinanceSpotTrailingOrder,
 	binanceRawOrderToOrder,
 	binanceReportToOrder,
 	createBinanceSpotOco,
@@ -27,6 +29,7 @@ import { amountStepFromCcxtPrecision } from "./ccxt-precision.ts";
 import { getSpotCostBasis } from "./ccxt-spot-cost-basis.ts";
 import type { ExchangeCredentials, FuturesMarginType, FuturesPositionMode, MarketType } from "./client-types.ts";
 import { contractSizeForMarket } from "./contract-size.ts";
+import { validateOrderInput } from "./order-input.ts";
 import {
 	type Balance,
 	type ContractStats,
@@ -42,9 +45,40 @@ import {
 	type PlaceOrderInput,
 	type PlaceOrderResult,
 	type Position,
+	SubmissionRejectedError,
 	type Ticker,
 	timeframeDurationMs,
 } from "./types.ts";
+
+type ExposureMarket = {
+	spot?: boolean;
+	swap?: boolean;
+	contract?: boolean;
+	linear?: boolean;
+	inverse?: boolean;
+	quote?: string;
+	settle?: string;
+};
+
+function exposureRecord(value: unknown): Record<string, unknown> | undefined {
+	return value !== null && typeof value === "object" && !Array.isArray(value)
+		? (value as Record<string, unknown>)
+		: undefined;
+}
+
+const BINANCE_USDM_TYPE = "swap";
+
+function definiteSubmissionRejection(error: unknown): boolean {
+	if (!(error instanceof Error) || /duplicate/i.test(error.message)) return false;
+	return (
+		error instanceof ccxt.AuthenticationError ||
+		error instanceof ccxt.PermissionDenied ||
+		error instanceof ccxt.InsufficientFunds ||
+		error instanceof ccxt.InvalidOrder ||
+		/^HTTP 400\b/.test(error.message) ||
+		[-2010, -1013].includes(Number((error as Error & { code?: unknown }).code))
+	);
+}
 
 /** Live trading client backed by a ccxt exchange instance with API credentials. */
 export class CcxtExchangeClient implements ExchangeClient {
@@ -168,6 +202,9 @@ export class CcxtExchangeClient implements ExchangeClient {
 		if (!Number.isInteger(leverage) || leverage < 1 || leverage > 125) throw new Error("Invalid leverage");
 		if (marginType !== "isolated" && marginType !== "cross") throw new Error("Invalid margin mode");
 		if (positionMode !== "one-way" && positionMode !== "hedge") throw new Error("Invalid position mode");
+		if (marketType !== "spot" && marketType !== "usdm-futures") {
+			throw new Error('Live ccxt adapter does not support marketType "both"');
+		}
 		if (typeof quoteCurrency !== "string" || !/^[A-Z0-9_-]+$/.test(quoteCurrency))
 			throw new Error("quoteCurrency must contain only uppercase letters, numbers, '_' or '-'");
 		this.id = id;
@@ -341,14 +378,28 @@ export class CcxtExchangeClient implements ExchangeClient {
 		const totals = (balance.total ?? {}) as unknown as Record<string, number | undefined>;
 		const frees = (balance.free ?? {}) as unknown as Record<string, number | undefined>;
 		const useds = (balance.used ?? {}) as unknown as Record<string, number | undefined>;
-		const assets = Object.keys(totals).filter((a) => (totals[a] ?? 0) > 0);
+		const assets = [...new Set([...Object.keys(totals), ...Object.keys(frees), ...Object.keys(useds)])].filter(
+			(asset) => {
+				const total = totals[asset];
+				const free = frees[asset];
+				const used = useds[asset];
+				return [total, free, used].some((value) => value !== undefined && Number.isFinite(value) && value !== 0);
+			},
+		);
 		const result: Balance[] = [];
 		for (const asset of assets) {
-			const total = totals[asset] ?? 0;
+			const reportedTotal = totals[asset];
+			const free = frees[asset];
+			const used = useds[asset];
+			const total =
+				reportedTotal !== undefined && Number.isFinite(reportedTotal)
+					? reportedTotal
+					: (free !== undefined && Number.isFinite(free) ? free : 0) +
+						(used !== undefined && Number.isFinite(used) ? used : 0);
 			const b: Balance = {
 				asset,
-				free: frees[asset] ?? 0,
-				used: useds[asset] ?? 0,
+				free: free !== undefined && Number.isFinite(free) ? free : 0,
+				used: used !== undefined && Number.isFinite(used) ? used : 0,
 				total,
 			};
 			b.quoteValue = await this.estimateQuoteValue(asset, total);
@@ -448,7 +499,9 @@ export class CcxtExchangeClient implements ExchangeClient {
 									? "SHORT"
 									: "LONG";
 				const leverage = finitePositive(p.leverage) ?? finitePositive(info.leverage);
-				const marginType = p.marginMode === "isolated" ? "isolated" : "cross";
+				const rawMarginType = p.marginMode ?? info.marginMode ?? info.marginType;
+				const marginType =
+					rawMarginType === "isolated" ? "isolated" : rawMarginType === "cross" ? "cross" : undefined;
 				const liquidationPrice = finitePositive(p.liquidationPrice) ?? finitePositive(info.liquidationPrice);
 				const margin = finiteNonNegative(p.initialMargin) ?? finiteNonNegative(info.initialMargin);
 				const avgEntryPrice = finitePositive(p.entryPrice) ?? finitePositive(info.entryPrice);
@@ -464,7 +517,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 						...valuation,
 						positionSide: positionSide as Position["positionSide"],
 						...(leverage !== undefined ? { leverage } : {}),
-						marginType,
+						...(marginType !== undefined ? { marginType } : {}),
 						...(markPrice !== undefined ? { markPrice } : {}),
 						...(liquidationPrice !== undefined ? { liquidationPrice } : {}),
 						...(margin !== undefined ? { margin } : {}),
@@ -492,6 +545,129 @@ export class CcxtExchangeClient implements ExchangeClient {
 			positions.push({ symbol, asset: b.asset, amount: b.total, quoteValue: b.quoteValue, ...basis, ...valuation });
 		}
 		return positions;
+	}
+
+	private exposureMarket(symbol: unknown): ExposureMarket | undefined {
+		if (typeof symbol !== "string") return undefined;
+		return this.exchange.markets[symbol] as ExposureMarket | undefined;
+	}
+
+	private matchingSpotMarket(symbol: unknown): boolean | undefined {
+		const market = this.exposureMarket(symbol);
+		if (!market) return undefined;
+		if (market.spot !== true || typeof market.quote !== "string") return undefined;
+		return market.quote === this.quoteCurrency;
+	}
+
+	private matchingLinearFuturesMarket(symbol: unknown): boolean | undefined {
+		const market = this.exposureMarket(symbol);
+		if (!market) return undefined;
+		if (
+			market.contract !== true ||
+			market.swap !== true ||
+			typeof market.linear !== "boolean" ||
+			typeof market.inverse !== "boolean" ||
+			typeof market.quote !== "string" ||
+			typeof market.settle !== "string"
+		)
+			return undefined;
+		if (!market.linear || market.inverse) return false;
+		return market.quote === this.quoteCurrency && market.settle === this.quoteCurrency;
+	}
+
+	private hasMatchingExposureOrder(order: unknown, marketMatch: (symbol: unknown) => boolean | undefined): boolean {
+		const record = exposureRecord(order);
+		if (!record) return true;
+		const match = marketMatch(record.symbol);
+		return match === undefined || match;
+	}
+
+	private async hasBinanceSpotExposure(): Promise<boolean> {
+		await this.ensureMarketsLoaded();
+		const openOrders = await this.exchange.fetchOpenOrders(undefined, undefined, undefined, { type: "spot" });
+		if (
+			openOrders.some((order) => this.hasMatchingExposureOrder(order, (symbol) => this.matchingSpotMarket(symbol)))
+		) {
+			return true;
+		}
+
+		const balance = await this.exchange.fetchBalance({ type: "spot" });
+		const total = exposureRecord((balance as { total?: unknown }).total);
+		if (!total) return true;
+		for (const [asset, rawAmount] of Object.entries(total)) {
+			const amount = finiteNumber(rawAmount);
+			if (amount === undefined) return true;
+			if (asset !== this.quoteCurrency && amount !== 0) return true;
+		}
+		return false;
+	}
+
+	private async hasBinanceFuturesExposure(): Promise<boolean> {
+		await this.ensureMarketsLoaded();
+		const openOrders = await this.exchange.fetchOpenOrders(undefined, undefined, undefined, {
+			type: BINANCE_USDM_TYPE,
+		});
+		if (
+			openOrders.some((order) =>
+				this.hasMatchingExposureOrder(order, (symbol) => this.matchingLinearFuturesMarket(symbol)),
+			)
+		) {
+			return true;
+		}
+		const conditionalOrders = await this.exchange.fetchOpenOrders(undefined, undefined, undefined, {
+			type: BINANCE_USDM_TYPE,
+			trigger: true,
+		});
+		if (
+			conditionalOrders.some((order) =>
+				this.hasMatchingExposureOrder(order, (symbol) => this.matchingLinearFuturesMarket(symbol)),
+			)
+		)
+			return true;
+
+		const positions = await this.exchange.fetchPositions(undefined, { type: BINANCE_USDM_TYPE });
+		for (const position of positions) {
+			const record = exposureRecord(position);
+			if (!record) return true;
+			const matches = this.matchingLinearFuturesMarket(record.symbol);
+			if (matches === false) continue;
+			if (matches === undefined) return true;
+			const info = exposureRecord(record.info);
+			const rawContracts = [record.contracts, info?.positionAmt, info?.contracts].filter(
+				(value) => value !== undefined,
+			);
+			if (rawContracts.length === 0) return true;
+			for (const rawContract of rawContracts) {
+				const contracts = finiteNumber(rawContract);
+				if (contracts === undefined) return true;
+				if (contracts !== 0) return true;
+			}
+		}
+		return false;
+	}
+
+	/**
+	 * Inspect the active account and, for Binance, the opposite spot/futures
+	 * wallet before a configuration switch. Other adapters do not expose a
+	 * portable cross-wallet probe, so they fail closed instead of allowing a
+	 * market-type switch to hide an account that was not inspected.
+	 */
+	async hasAnyAccountExposure(): Promise<boolean> {
+		try {
+			const [openOrders, positions] = await Promise.all([this.getOpenOrders(), this.getPositions()]);
+			if (
+				openOrders.length > 0 ||
+				positions.some((position) => !Number.isFinite(position.amount) || position.amount !== 0)
+			) {
+				return true;
+			}
+			if (this.id !== "binance") return true;
+			return this.marketType === "spot"
+				? await this.hasBinanceFuturesExposure()
+				: await this.hasBinanceSpotExposure();
+		} catch {
+			return true;
+		}
 	}
 
 	async getOpenOrders(symbol?: string): Promise<Order[]> {
@@ -646,6 +822,11 @@ export class CcxtExchangeClient implements ExchangeClient {
 					`Client id lookup on ${this.id} returned clientOrderId=${normalized.clientOrderId} while ${clientOrderId} was requested`,
 				);
 			}
+			if (capability === "emulated" && normalized.clientOrderId !== clientOrderId) {
+				throw new Error(
+					`Emulated client id lookup on ${this.id} did not prove clientOrderId=${clientOrderId}; refusing to trust an uncorrelated order`,
+				);
+			}
 			return { ...normalized, clientOrderId };
 		}
 		const isFutures = this.marketType === "usdm-futures";
@@ -673,7 +854,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 			);
 			if (normalized.symbol !== symbol)
 				throw new Error(`Client id lookup on binance returned ${normalized.symbol} while ${symbol} was requested`);
-			if (normalized.clientOrderId !== undefined && normalized.clientOrderId !== clientOrderId)
+			if (normalized.clientOrderId !== clientOrderId)
 				throw new Error(
 					`Client id lookup on binance returned clientOrderId=${normalized.clientOrderId} while ${clientOrderId} was requested`,
 				);
@@ -724,6 +905,8 @@ export class CcxtExchangeClient implements ExchangeClient {
 		const raw = (await (endpoint as (params: Record<string, string>) => Promise<unknown>).call(this.exchange, {
 			...query,
 		})) as Record<string, unknown>;
+		if (query.origClientOrderId !== undefined && raw.listClientOrderId !== query.origClientOrderId)
+			throw new Error("Order-list lookup did not prove the requested client list identity");
 		const id = String(raw.orderListId ?? query.orderListId ?? query.origClientOrderId);
 		const listOrderStatus = String(raw.listOrderStatus ?? raw.listStatusType ?? "UNKNOWN");
 		const rawOrders = Array.isArray(raw.orderReports)
@@ -731,6 +914,8 @@ export class CcxtExchangeClient implements ExchangeClient {
 			: Array.isArray(raw.orders)
 				? raw.orders
 				: [];
+		if (query.origClientOrderId !== undefined && rawOrders.length !== 2)
+			throw new Error("Correlated OCO lookup requires exactly two order legs");
 		this.knownOrderListIds.add(id);
 		const orders = await Promise.all(
 			rawOrders.map(async (rawOrder) => {
@@ -740,7 +925,19 @@ export class CcxtExchangeClient implements ExchangeClient {
 				if (!symbol || !orderId)
 					throw new Error("Binance Spot order-list response contains an invalid order reference");
 				const order = await this.getOrder(orderId, symbol);
-				return { ...order, ocoGroup: id, orderListId: id, listOrderStatus };
+				if (
+					order.id !== orderId ||
+					order.symbol !== symbol ||
+					(report.clientOrderId !== undefined && order.clientOrderId !== report.clientOrderId)
+				)
+					throw new Error("Order-list leg lookup returned conflicting identity");
+				return {
+					...order,
+					ocoGroup: id,
+					orderListId: id,
+					listOrderStatus,
+					listClientOrderId: typeof raw.listClientOrderId === "string" ? raw.listClientOrderId : undefined,
+				};
 			}),
 		);
 		const normalizedListStatus = listOrderStatus.toUpperCase();
@@ -758,21 +955,20 @@ export class CcxtExchangeClient implements ExchangeClient {
 	}
 
 	async placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResult> {
+		const { isLimitExecution: isLimitExec, isTrigger } = validateOrderInput(input);
 		const clientOrderId = input.clientOrderId ?? generateClientOrderId();
 		if (this.id === "binance") validateBinanceClientOrderId(clientOrderId, "clientOrderId");
 		input = { ...input, clientOrderId };
 		const market = await this.ensureMarket(input.symbol);
-		const isLimitExec = input.type === "limit" || input.type === "stop" || input.type === "take_profit";
-		const isTrigger =
-			input.type === "stop" ||
-			input.type === "stop_market" ||
-			input.type === "take_profit" ||
-			input.type === "take_profit_market";
-		const binanceCloseAllTrigger =
-			this.id === "binance" &&
-			this.marketType === "usdm-futures" &&
-			input.closePosition === true &&
-			(input.type === "stop_market" || input.type === "take_profit_market");
+		const { omitExchangeQuantity, omitReduceOnly } = evaluateOrderCapability(
+			{
+				exchangeId: this.id,
+				mode: this.mode,
+				marketFamily: this.marketType === "usdm-futures" ? "futures" : "spot",
+				positionMode: this.positionMode,
+			},
+			input,
+		);
 		const hedgeClosePosition = input.closePosition === true;
 		// A market closePosition order is converted to an exact quantity before
 		// submission, so it must carry the same reducing invariant as an explicit
@@ -830,21 +1026,6 @@ export class CcxtExchangeClient implements ExchangeClient {
 				`Hedge-mode reducing orders on ${this.id} require the opposing side with positionSide LONG or SHORT; reduceOnly cannot be used to override an ambiguous direction`,
 			);
 		}
-		if (isLimitExec && (input.price === undefined || input.price <= 0)) {
-			throw new Error(`${input.type} orders require a positive price`);
-		}
-		if (isTrigger && (input.stopPrice === undefined || input.stopPrice <= 0)) {
-			throw new Error(`${input.type} orders require a positive stopPrice`);
-		}
-		if (
-			input.type === "trailing_stop_market" &&
-			(input.trailingPercent === undefined ||
-				!Number.isFinite(input.trailingPercent) ||
-				input.trailingPercent <= 0 ||
-				input.trailingPercent >= 100)
-		) {
-			throw new Error("trailing_stop_market orders require a finite trailingPercent between 0 and 100");
-		}
 		if (this.id === "binance" && this.marketType === "spot") {
 			// Trailing stops execute as market orders, but Binance validates their
 			// quantity against LOT_SIZE (MARKET_LOT_SIZE is for ordinary market).
@@ -871,7 +1052,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 				{ marketOrder: ordinaryMarket, marketReference },
 			);
 		}
-		const numericAmount = binanceCloseAllTrigger
+		const numericAmount = omitExchangeQuantity
 			? this.closeAllTriggerAmount(input.symbol, input.amount, market)
 			: market.contract
 				? this.baseAmountToContracts(input.symbol, input.amount, market)
@@ -893,7 +1074,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 		// Binance Spot filters were validated above against the raw filter set.
 		// Do not re-apply ccxt's coarse cost limit: it loses per-filter market
 		// applicability and can use a trigger price as an execution reference.
-		if (!binanceCloseAllTrigger && !(this.id === "binance" && this.marketType === "spot")) {
+		if (!omitExchangeQuantity && !(this.id === "binance" && this.marketType === "spot")) {
 			const minAmount = market.limits?.amount?.min;
 			const maxAmount = market.limits?.amount?.max;
 			const minCost = market.limits?.cost?.min;
@@ -922,7 +1103,9 @@ export class CcxtExchangeClient implements ExchangeClient {
 		// parameter (integer BIPS), not the futures TRAILING_STOP_MARKET type.
 		// Use the native endpoint because ccxt does not reliably map the unified
 		// trailingPercent parameter to Spot orders.
+		let responseReceived = false;
 		if (this.id === "binance" && this.marketType === "spot" && input.type === "trailing_stop_market") {
+			assertBinanceSpotTrailingOrder(this.exchange, input.symbol, input.side, input.trailingPercent as number);
 			try {
 				const raw = await createBinanceSpotTrailingOrder(
 					this.exchange,
@@ -933,6 +1116,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 					stopPrice,
 					clientOrderId,
 				);
+				responseReceived = true;
 				return {
 					order: binanceRawOrderToOrder(
 						raw,
@@ -944,7 +1128,8 @@ export class CcxtExchangeClient implements ExchangeClient {
 					),
 				};
 			} catch (error) {
-				if (!isUncertainSubmission(error)) throw normalizeExchangeError(error, "Trailing order submission");
+				if (!responseReceived && !isUncertainSubmission(error) && definiteSubmissionRejection(error))
+					throw new SubmissionRejectedError(normalizeExchangeError(error, "Trailing order submission").message);
 				try {
 					return {
 						order: await this.getOrderByClientId(
@@ -970,19 +1155,12 @@ export class CcxtExchangeClient implements ExchangeClient {
 		// execution type market/limit plus unified trigger/trailing params.
 		const execType = isLimitExec ? "limit" : "market";
 		const isStop = input.type === "stop" || input.type === "stop_market";
-		const binanceHedgeReduction =
-			this.id === "binance" &&
-			this.marketType === "usdm-futures" &&
-			this.positionMode === "hedge" &&
-			effectiveReduceOnly === true;
 		// Binance rejects reduceOnly in hedge mode and on close-all triggers.
 		const params = {
 			...(this.id === "binance" && this.marketType === "spot"
 				? { newClientOrderId: clientOrderId }
 				: { clientOrderId }),
-			...(effectiveReduceOnly !== undefined && !binanceHedgeReduction && !binanceCloseAllTrigger
-				? { reduceOnly: effectiveReduceOnly }
-				: {}),
+			...(effectiveReduceOnly !== undefined && !omitReduceOnly ? { reduceOnly: effectiveReduceOnly } : {}),
 			...(input.positionSide ? { positionSide: input.positionSide } : {}),
 			...(isTrigger && stopPrice !== undefined
 				? isStop
@@ -1006,10 +1184,14 @@ export class CcxtExchangeClient implements ExchangeClient {
 				numericPrice,
 				params,
 			);
-			const mapped = { ...this.toDomainOrder(order), clientOrderId };
-			return { order: await this.refreshIncompleteFill(mapped, input.symbol) };
+			responseReceived = true;
+			const mapped = this.toDomainOrder(order);
+			if (mapped.clientOrderId !== undefined && mapped.clientOrderId !== clientOrderId)
+				throw new Error("Order response returned a conflicting client identity");
+			return { order: await this.refreshIncompleteFill({ ...mapped, clientOrderId }, input.symbol) };
 		} catch (error) {
-			if (!isUncertainSubmission(error)) throw normalizeExchangeError(error, "Order submission");
+			if (!responseReceived && !isUncertainSubmission(error) && definiteSubmissionRejection(error))
+				throw new SubmissionRejectedError(normalizeExchangeError(error, "Order submission").message);
 			try {
 				return {
 					order: await this.getOrderByClientId(
@@ -1033,15 +1215,16 @@ export class CcxtExchangeClient implements ExchangeClient {
 	}
 
 	async placeOcoOrder(input: PlaceOcoOrderInput): Promise<PlaceOcoOrderResult> {
-		if (this.marketType !== "spot") {
-			throw new Error("Futures OCO orders are not supported; use one reduce-only protective order instead");
-		}
-		const market = await this.ensureMarket(input.symbol);
+		if (input.side !== "buy" && input.side !== "sell") throw new Error("Order side must be buy or sell");
 		if (!Number.isFinite(input.amount) || input.amount <= 0) throw new Error("amount must be positive");
 		if (!Number.isFinite(input.stopLossPrice) || input.stopLossPrice <= 0)
 			throw new Error("stopLossPrice must be positive");
 		if (!Number.isFinite(input.takeProfitPrice) || input.takeProfitPrice <= 0)
 			throw new Error("takeProfitPrice must be positive");
+		if (this.marketType !== "spot") {
+			throw new Error("Futures OCO orders are not supported; use one reduce-only protective order instead");
+		}
+		const market = await this.ensureMarket(input.symbol);
 		if (this.id === "binance" && this.marketType === "spot") {
 			validateBinanceSpotFilters(market.info, input.amount, "lot", [
 				{ label: "stopLossPrice", value: input.stopLossPrice, notionalReference: true },
@@ -1083,6 +1266,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 			throw new Error(
 				"Binance spot native OCO buy brackets are not supported safely [errorCategory=UNSUPPORTED_ORDER_TYPE]",
 			);
+		let accepted = false;
 		try {
 			if (this.id === "binance" && this.marketType === "spot") {
 				// Binance spot has one balance reservation for both legs. Use its
@@ -1098,6 +1282,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 					aboveClientOrderId,
 					belowClientOrderId,
 				);
+				accepted = true;
 				const reports = Array.isArray(raw?.orderReports) ? raw.orderReports : [];
 				if (reports.length !== 2 || reports.some((report) => !report || typeof report !== "object")) {
 					throw new Error("Binance Spot OCO response must contain exactly two orderReports");
@@ -1106,13 +1291,29 @@ export class CcxtExchangeClient implements ExchangeClient {
 				if (orderListId === undefined || String(orderListId) === "-1") {
 					throw new Error("Binance Spot OCO response is missing a valid orderListId");
 				}
+				if (
+					raw.listClientOrderId !== listClientOrderId ||
+					new Set(reports.map((report) => (report as Record<string, unknown>).clientOrderId)).size !== 2 ||
+					reports.some((value) => {
+						const report = value as Record<string, unknown>;
+						return (
+							![aboveClientOrderId, belowClientOrderId].includes(String(report.clientOrderId)) ||
+							(report.symbol !== undefined && report.symbol !== market.id) ||
+							(report.side !== undefined && report.side !== input.side.toUpperCase()) ||
+							(report.origQty !== undefined && Number(report.origQty) !== amount) ||
+							(report.orderListId !== undefined && String(report.orderListId) !== String(orderListId))
+						);
+					})
+				)
+					throw new Error("Binance Spot OCO response contains conflicting list or leg evidence");
 				const ocoGroup = String(orderListId);
 				this.knownOrderListIds.add(ocoGroup);
 				const listStatus = typeof raw?.listOrderStatus === "string" ? raw.listOrderStatus : undefined;
 				return {
-					orders: reports.map((report) =>
-						binanceReportToOrder(report, input.symbol, input.side, amount, ocoGroup, listStatus),
-					),
+					orders: reports.map((report) => ({
+						...binanceReportToOrder(report, input.symbol, input.side, amount, ocoGroup, listStatus),
+						listClientOrderId,
+					})),
 				};
 			}
 			// ccxt folds both trigger prices into a single one-cancels-the-other
@@ -1122,9 +1323,13 @@ export class CcxtExchangeClient implements ExchangeClient {
 				takeProfitPrice,
 				clientOrderId: listClientOrderId,
 			});
-			return { orders: [this.toDomainOrder(order)] };
+			accepted = true;
+			const mapped = this.toDomainOrder(order);
+			if (mapped.clientOrderId !== undefined && mapped.clientOrderId !== listClientOrderId)
+				throw new Error("OCO response returned a conflicting client identity");
+			return { orders: [{ ...mapped, clientOrderId: listClientOrderId }] };
 		} catch (error) {
-			if (isUncertainSubmission(error)) {
+			if (accepted || isUncertainSubmission(error) || !definiteSubmissionRejection(error)) {
 				try {
 					return await this.recoverOcoSubmission(listClientOrderId, input.symbol);
 				} catch (lookupError) {
@@ -1139,7 +1344,7 @@ export class CcxtExchangeClient implements ExchangeClient {
 					);
 				}
 			}
-			throw normalizeExchangeError(error, "OCO order");
+			throw new SubmissionRejectedError(normalizeExchangeError(error, "OCO order").message);
 		}
 	}
 
@@ -1243,6 +1448,10 @@ export class CcxtExchangeClient implements ExchangeClient {
 		await this.exchange.setLeverage(leverage, symbol);
 		this.leverageBySymbol.set(symbol, leverage);
 		this.configuredFuturesSymbols.delete(symbol);
+	}
+
+	getEffectiveLeverage(symbol: string): number {
+		return this.leverageBySymbol.get(symbol) ?? this.defaultLeverage;
 	}
 
 	async setMultiAssetsMode(enabled: boolean): Promise<void> {

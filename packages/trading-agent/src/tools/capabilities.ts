@@ -1,44 +1,22 @@
-import type { MarketInfo } from "@earendil-works/ti-trading-engine";
-import { isFuturesSymbol } from "@earendil-works/ti-trading-engine";
+import {
+	type Capability,
+	getTradingCapabilities,
+	isFuturesSymbol,
+	type MarketFamily,
+	type MarketInfo,
+} from "@earendil-works/ti-trading-engine";
 import type { TradingRuntime } from "../context.ts";
 
-export type CapabilityStatus = "supported" | "unsupported" | "unknown";
-export type Capability = { status: CapabilityStatus; reason: string };
-export type MarketFamily = "spot" | "futures" | "mixed" | "invalid";
-
-export const ORDER_TYPE_ALIASES = {
-	STOP_LOSS_LIMIT: "stop",
-	STOP_LOSS: "stop_market",
-	TAKE_PROFIT_LIMIT: "take_profit",
-	TAKE_PROFIT: "take_profit_market",
-} as const;
-
-export function capability(status: CapabilityStatus, reason: string): Capability {
-	return { status, reason };
-}
-
-export function normalizedOrderTypes(info: MarketInfo | undefined): string[] | undefined {
-	return info?.orderTypes?.map((type) => {
-		const normalized = type.trim().replaceAll("-", "_");
-		// Binance Spot exposes these explicit aliases for the same conditional
-		// order families used by the agent schema. Keep the mapping bounded and
-		// exact; a broad substring check would make stop and take-profit claims
-		// bleed into one another.
-		return (
-			ORDER_TYPE_ALIASES[normalized.toUpperCase() as keyof typeof ORDER_TYPE_ALIASES] ?? normalized.toLowerCase()
-		);
-	});
-}
-
-export function orderTypeFromMarketInfo(
-	info: MarketInfo | undefined,
-	names: readonly string[],
-): CapabilityStatus | undefined {
-	const types = normalizedOrderTypes(info);
-	if (types === undefined) return undefined;
-	const normalizedNames = names.map((name) => name.trim().toLowerCase().replaceAll("-", "_"));
-	return normalizedNames.some((name) => types.includes(name)) ? "supported" : "unsupported";
-}
+export {
+	type Capability,
+	type CapabilityStatus,
+	capability,
+	type MarketFamily,
+	normalizedOrderTypes,
+	ORDER_TYPE_ALIASES,
+	orderTypeFromMarketInfo,
+	unavailableMarketCapability,
+} from "@earendil-works/ti-trading-engine";
 
 export function marketFamily(trading: TradingRuntime, symbol: string | undefined): MarketFamily {
 	if (symbol !== undefined) {
@@ -110,27 +88,15 @@ export function paperFuturesOrderUnsupported(
 	symbol: string,
 	type: string,
 ): string | undefined {
-	if (
-		trading.mode === "paper" &&
-		(trading.config.marketType === "usdm-futures" || trading.config.marketType === "both") &&
-		isFuturesSymbol(symbol, trading.config.quoteCurrency) &&
-		type !== "market"
-	) {
-		return `Paper futures currently accept market orders only; ${type} orders are unsupported for ${symbol}`;
-	}
-	return undefined;
-}
-
-export function unavailableMarketCapability(
-	family: MarketFamily,
-	metadataValid: boolean,
-	marketInfo: MarketInfo | undefined = undefined,
-): Capability | undefined {
-	if (family === "invalid")
-		return capability("unsupported", "The symbol is not enabled by the configured market type or quote currency");
-	if (marketInfo?.active === false) return capability("unsupported", `Market ${marketInfo.symbol} is inactive`);
-	if (!metadataValid)
-		return capability("unknown", "Market metadata is unavailable or does not match the requested symbol");
+	const matrix = getTradingCapabilities({
+		exchangeId: trading.tradingEngine.id,
+		mode: trading.mode,
+		marketFamily: marketFamily(trading, symbol),
+		positionMode: trading.config.positionMode,
+	});
+	if (trading.mode !== "paper" || matrix.profile !== "paper-futures") return undefined;
+	const selected = Object.entries(matrix.orderTypes).find(([name]) => name === type)?.[1];
+	if (selected?.status === "unsupported") return selected.reason;
 	return undefined;
 }
 
@@ -145,33 +111,14 @@ export function conditionalCapability(
 	orderType: "stop" | "stop_market" | "take_profit" | "take_profit_market",
 	metadataValid = true,
 ): Capability {
-	const unavailable = unavailableMarketCapability(family, metadataValid, info);
-	if (unavailable) return unavailable;
-	if (family === "mixed") return capability("unknown", "Specify a symbol to distinguish spot and futures support");
-	if (family === "futures" && trading.mode === "paper")
-		return capability("unsupported", "Paper futures currently accept market orders only");
-	const fromInfo = orderTypeFromMarketInfo(info, [orderType]);
-	if (fromInfo !== undefined) return capability(fromInfo, "Reported by the exchange market metadata");
-	if (trading.mode === "live" && family === "futures" && trading.tradingEngine.id === "binance")
-		return capability(
-			"supported",
-			orderType.startsWith("take_profit")
-				? "Binance USDⓈ-M adapter supports take-profit orders"
-				: "Binance USDⓈ-M adapter supports stop orders",
-		);
-	if (trading.mode === "paper" && family === "spot")
-		return capability(
-			"supported",
-			orderType.startsWith("take_profit")
-				? "Paper spot adapter simulates take-profit orders"
-				: "Paper spot adapter simulates stop orders",
-		);
-	return capability(
-		"unknown",
-		orderType.startsWith("take_profit")
-			? "The adapter did not expose an explicit take-profit capability"
-			: "The adapter did not expose an explicit stop-order capability",
-	);
+	return getTradingCapabilities({
+		exchangeId: trading.tradingEngine.id,
+		mode: trading.mode,
+		marketFamily: family,
+		positionMode: trading.config.positionMode,
+		marketInfo: info,
+		metadataValid,
+	}).orderTypes[orderType];
 }
 
 export function trailingCapability(
@@ -180,16 +127,12 @@ export function trailingCapability(
 	info: MarketInfo | undefined,
 	metadataValid = true,
 ): Capability {
-	const unavailable = unavailableMarketCapability(family, metadataValid, info);
-	if (unavailable) return unavailable;
-	if (family === "mixed") return capability("unknown", "Specify a symbol to distinguish spot and futures support");
-	if (family === "futures" && trading.mode === "paper")
-		return capability("unsupported", "Paper futures currently accept market orders only");
-	const fromInfo = orderTypeFromMarketInfo(info, ["trailing", "trailing_stop", "trailing_stop_market"]);
-	if (fromInfo !== undefined) return capability(fromInfo, "Reported by the exchange market metadata");
-	if (trading.mode === "paper" && family === "spot")
-		return capability("supported", "Paper spot adapter simulates trailing stops");
-	if (trading.mode === "live" && trading.tradingEngine.id === "binance")
-		return capability("supported", "Binance adapter maps trailing stops to its native order parameters");
-	return capability("unknown", "Trailing-stop support varies by exchange and market");
+	return getTradingCapabilities({
+		exchangeId: trading.tradingEngine.id,
+		mode: trading.mode,
+		marketFamily: family,
+		positionMode: trading.config.positionMode,
+		marketInfo: info,
+		metadataValid,
+	}).orderTypes.trailing_stop_market;
 }

@@ -2,6 +2,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "no
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { type PaperAccount, parsePaperAccount } from "./paper-account.ts";
 import { PaperExchangeClient } from "./paper-client.ts";
 
 /** Controllable stand-in for the ccxt exchange used by PaperExchangeClient. */
@@ -19,22 +20,38 @@ class StubExchange {
 	futuresSwap = true;
 	futuresQuote = "USDT";
 	futuresSettle = "USDT";
+	markPrice: number | undefined;
+	indexPrice: number | undefined;
 	costMin: number | undefined = 5;
 	costMax: number | undefined;
 	tickerDelayMs = 0;
+	failingTickerSymbols = new Set<string>();
 	activeTickerCalls = 0;
 	maxActiveTickerCalls = 0;
 	/** OHLCV rows returned by fetchOHLCV: [timestamp, open, high, low, close, volume]. */
 	ohlcv: number[][] = [];
 
-	async fetchTicker(
-		symbol: string,
-	): Promise<{ symbol: string; last?: number; bid?: number; ask?: number; timestamp: number }> {
+	async fetchTicker(symbol: string): Promise<{
+		symbol: string;
+		last?: number;
+		bid?: number;
+		ask?: number;
+		timestamp: number;
+		info?: Record<string, unknown>;
+	}> {
 		this.activeTickerCalls++;
 		this.maxActiveTickerCalls = Math.max(this.maxActiveTickerCalls, this.activeTickerCalls);
 		try {
+			if (this.failingTickerSymbols.has(symbol)) throw new Error(`Ticker unavailable for ${symbol}`);
 			if (this.tickerDelayMs > 0) await new Promise<void>((resolve) => setTimeout(resolve, this.tickerDelayMs));
-			return { symbol, last: this.last, bid: this.last, ask: this.last, timestamp: Date.now() };
+			return {
+				symbol,
+				last: this.last,
+				bid: this.last,
+				ask: this.last,
+				timestamp: Date.now(),
+				info: { markPrice: this.markPrice, indexPrice: this.indexPrice },
+			};
 		} finally {
 			this.activeTickerCalls--;
 		}
@@ -120,8 +137,18 @@ function newClient(): PaperExchangeClient {
 	return c;
 }
 
-function newFuturesClient(positionMode: "one-way" | "hedge" = "hedge"): PaperExchangeClient {
-	const c = new PaperExchangeClient("okx", "USDT", 10_000, 0.001, dir, "usdm-futures", 5, "isolated", positionMode);
+function newFuturesClient(positionMode: "one-way" | "hedge" = "hedge", startQuote = 10_000): PaperExchangeClient {
+	const c = new PaperExchangeClient(
+		"okx",
+		"USDT",
+		startQuote,
+		0.001,
+		dir,
+		"usdm-futures",
+		5,
+		"isolated",
+		positionMode,
+	);
 	(c as unknown as { exchange: StubExchange }).exchange = stub;
 	(c as unknown as { futuresExchange: StubExchange }).futuresExchange = stub;
 	return c;
@@ -147,6 +174,114 @@ afterEach(() => {
 });
 
 describe("paper futures liquidation boundary", () => {
+	it.each(
+		(
+			[
+				{ marginType: "isolated", startQuote: 1_000, amount: 1, last: 50, balance: 979.9, liquidated: true },
+				{ marginType: "cross", startQuote: 1_000, amount: 1, last: 50, balance: 949.85, liquidated: false },
+				{ marginType: "cross", startQuote: 100, amount: 2, last: 40, balance: -20.2, liquidated: true },
+			] as const
+		).flatMap((scenario) => [false, true].map((readFirst) => ({ ...scenario, readFirst }))),
+	)(
+		"settles $marginType risk before reducing (readFirst=$readFirst, balance=$balance)",
+		async ({ marginType, startQuote, amount, last, balance, liquidated, readFirst }) => {
+			const futures = newFuturesClient("one-way", startQuote);
+			const symbol = "BTC/USDT:USDT";
+			await futures.setMarginMode(symbol, marginType);
+			await futures.placeOrder({ symbol, side: "buy", type: "market", amount });
+			stub.last = last;
+			if (readFirst) await futures.getPositions();
+
+			const close = futures.placeOrder({ symbol, side: "sell", type: "market", amount, reduceOnly: true });
+			if (liquidated) await expect(close).rejects.toThrow(/requires an open futures position/);
+			else await expect(close).resolves.toMatchObject({ order: { amount, filled: amount } });
+
+			// Inspect disk before any account read can perform a missing liquidation.
+			const path = join(dir, "okx-USDT-futures.json");
+			const account = parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path);
+			expect(account.entries).toEqual({});
+			expect(account.balances.USDT).toBeCloseTo(balance, 8);
+			expect(account.orders).toHaveLength(2);
+			expect(account.orders[1].id.startsWith("liquidation-")).toBe(liquidated);
+			expect(account.realizedPnl).toBeCloseTo(balance - startQuote, 8);
+			await futures.close();
+
+			const reloaded = newFuturesClient("one-way", startQuote);
+			expect(await reloaded.getPositions()).toEqual([]);
+			expect((await reloaded.getBalances())[0]?.free).toBeCloseTo(balance, 8);
+			await reloaded.close();
+		},
+	);
+
+	it("persists liquidation even when the subsequent order fails normalization", async () => {
+		const futures = newFuturesClient("one-way", 1_000);
+		const symbol = "BTC/USDT:USDT";
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+		stub.last = 50;
+
+		await expect(futures.placeOrder({ symbol, side: "buy", type: "market", amount: 0.01 })).rejects.toThrow(
+			/below minimum/,
+		);
+		const account = JSON.parse(readFileSync(join(dir, "okx-USDT-futures.json"), "utf8")) as PaperAccount;
+		expect(account.entries).toEqual({});
+		expect(account.balances.USDT).toBeCloseTo(979.9, 8);
+		expect(account.trades).toHaveLength(2);
+		await futures.close();
+	});
+
+	it("liquidates existing isolated lots before opening a new lot", async () => {
+		const futures = newFuturesClient("one-way", 1_000);
+		const symbol = "BTC/USDT:USDT";
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+		stub.last = 50;
+
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+		expect(await futures.getPositions()).toMatchObject([{ amount: 1, avgEntryPrice: 50, margin: 10 }]);
+		expect((await futures.getBalances())[0]?.free).toBeCloseTo(969.85, 8);
+		await futures.close();
+	});
+
+	it("settles the shared cross collateral before a different symbol can consume it", async () => {
+		const futures = newFuturesClient("one-way", 100);
+		await futures.setMarginMode("BTC/USDT:USDT", "cross");
+		await futures.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 2 });
+		stub.last = 40;
+
+		await expect(
+			futures.placeOrder({ symbol: "ETH/USDT:USDT", side: "buy", type: "market", amount: 1 }),
+		).rejects.toThrow(/Insufficient futures margin/);
+		const account = JSON.parse(readFileSync(join(dir, "okx-USDT-futures.json"), "utf8")) as PaperAccount;
+		expect(account.entries).toEqual({});
+		expect(account.balances.USDT).toBeCloseTo(-20.2, 8);
+		expect(account.trades).toHaveLength(2);
+		await futures.close();
+	});
+
+	it("reuses one ticker for liquidation marks, validation and the market fill", async () => {
+		const futures = newFuturesClient("one-way", 1_000);
+		const symbol = "BTC/USDT:USDT";
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+		let calls = 0;
+		stub.fetchTicker = async (requestedSymbol) => {
+			calls++;
+			return {
+				symbol: requestedSymbol,
+				last: calls === 1 ? 50 : 20,
+				timestamp: Date.now(),
+				info: { markPrice: calls === 1 ? 100 : 20 },
+			};
+		};
+
+		const close = await futures.placeOrder({ symbol, side: "sell", type: "market", amount: 1, reduceOnly: true });
+		expect(calls).toBe(1);
+		expect(close.order.average).toBe(50);
+		const account = JSON.parse(readFileSync(join(dir, "okx-USDT-futures.json"), "utf8")) as PaperAccount;
+		expect(account.orders).toHaveLength(2);
+		expect(account.orders.some((order) => order.id.startsWith("liquidation-"))).toBe(false);
+		expect(account.balances.USDT).toBeCloseTo(949.85, 8);
+		await futures.close();
+	});
+
 	it("exposes a finite liquidation price and liquidates when equity reaches maintenance margin", async () => {
 		const futures = newFuturesClient("one-way");
 		await futures.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 1 });
@@ -176,6 +311,136 @@ describe("paper futures liquidation boundary", () => {
 		expect(await futures.getPositions()).toHaveLength(1);
 		await futures.close();
 	});
+
+	it("settles cross liquidation losses against free collateral and persists the remaining equity", async () => {
+		const futures = newFuturesClient("one-way", 100);
+		await futures.setMarginMode("BTC/USDT:USDT", "cross");
+		await futures.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 2 });
+		stub.last = 50.2;
+
+		expect(await futures.getPositions()).toEqual([]);
+		// The opening fee is 0.2 and the loss is 99.6; only 0.2 of equity remains.
+		expect((await futures.getBalances())[0]).toMatchObject({ used: 0 });
+		expect((await futures.getBalances())[0]?.free).toBeCloseTo(0.2, 8);
+		await futures.close();
+
+		const reloaded = newFuturesClient("one-way", 100);
+		expect((await reloaded.getBalances())[0]?.free).toBeCloseTo(0.2, 8);
+		await reloaded.close();
+	});
+
+	it.each([
+		{
+			name: "cross-margin deficit",
+			marginType: "cross",
+			balance: -20.2,
+			realizedPnl: -120.2,
+			liquidationPnl: -120,
+		},
+		{
+			name: "isolated collateral loss cap",
+			marginType: "isolated",
+			balance: 59.8,
+			realizedPnl: -40.2,
+			liquidationPnl: -40,
+		},
+	] as const)("persists consistent balances and trade PnL for a $name after restart", async (expected) => {
+		const futures = newFuturesClient("one-way", 100);
+		const symbol = "BTC/USDT:USDT";
+		await futures.setMarginMode(symbol, expected.marginType);
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 2 });
+		// Opening costs 0.2 in fees and reserves 40 margin. A gap from 100 to
+		// 40 loses 120 before the isolated collateral cap is applied.
+		stub.last = 40;
+
+		const verifySettlement = async (accountClient: PaperExchangeClient): Promise<void> => {
+			expect(await accountClient.getPositions()).toEqual([]);
+			const [balance] = await accountClient.getBalances();
+			expect(balance.used).toBe(0);
+			expect(balance.free).toBeCloseTo(expected.balance, 8);
+			expect(balance.total).toBeCloseTo(expected.balance, 8);
+			const account = JSON.parse(readFileSync(join(dir, "okx-USDT-futures.json"), "utf8")) as {
+				balances: Record<string, number>;
+				realizedPnl: number;
+				trades: Array<{ amount: number; price: number; fee: number; realizedPnl: number }>;
+			};
+			expect(account.balances.USDT).toBeCloseTo(expected.balance, 8);
+			expect(account.realizedPnl).toBeCloseTo(expected.realizedPnl, 8);
+			expect(account.trades).toHaveLength(2);
+			expect(account.trades[0]).toMatchObject({ fee: 0.2, realizedPnl: -0.2 });
+			expect(account.trades[1]).toMatchObject({
+				amount: 2,
+				price: 40,
+				fee: 0,
+				realizedPnl: expected.liquidationPnl,
+			});
+			expect(account.trades.reduce((sum, trade) => sum + trade.realizedPnl, 0)).toBeCloseTo(account.realizedPnl, 8);
+			expect(100 + account.realizedPnl).toBeCloseTo(account.balances.USDT, 8);
+		};
+		await verifySettlement(futures);
+		await futures.close();
+
+		const reloaded = newFuturesClient("one-way", 100);
+		await verifySettlement(reloaded);
+		await reloaded.close();
+	});
+
+	it("settles profitable and losing hedge positions into the same cross collateral pool", async () => {
+		const futures = newFuturesClient("hedge", 40.5);
+		const symbol = "BTC/USDT:USDT";
+		await futures.setMarginMode(symbol, "cross");
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1, positionSide: "LONG" });
+		await futures.placeOrder({ symbol, side: "sell", type: "market", amount: 1, positionSide: "SHORT" });
+		// The two opening fees leave 40.3 equity; a 4050 mark requires 40.5
+		// maintenance across the hedge, whose gains and losses cancel exactly.
+		stub.last = 4_050;
+
+		expect(await futures.getPositions()).toEqual([]);
+		expect((await futures.getBalances())[0]?.free).toBeCloseTo(40.3, 8);
+		expect((await futures.getOrderHistory(symbol)).filter((order) => order.reduceOnly)).toHaveLength(2);
+		await futures.close();
+	});
+
+	it("does not let an isolated position hide a cross-margin liquidation", async () => {
+		const futures = newFuturesClient("one-way", 100);
+		await futures.setMarginMode("BTC/USDT:USDT", "cross");
+		await futures.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 1 });
+		await futures.placeOrder({ symbol: "ETH/USDT:USDT", side: "buy", type: "market", amount: 1 });
+		stub.failingTickerSymbols.add("ETH/USDT:USDT");
+		stub.last = 0.01;
+
+		const positions = await futures.getPositions();
+		expect(positions.some((position) => position.symbol === "BTC/USDT:USDT")).toBe(false);
+		expect(
+			(await futures.getOrderHistory()).some((order) => order.symbol === "BTC/USDT:USDT" && order.reduceOnly),
+		).toBe(true);
+		await futures.close();
+	});
+
+	it("reports futures margin and unrealized pnl in account balances", async () => {
+		const futures = newFuturesClient("one-way");
+		await futures.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 1 });
+		stub.last = 110;
+
+		const [balance] = await futures.getBalances();
+		expect(balance?.asset).toBe("USDT");
+		expect(balance?.used).toBeCloseTo(20, 8);
+		expect(balance?.free).toBeCloseTo(9979.9, 8);
+		expect(balance?.total).toBeCloseTo(10009.9, 8);
+		await futures.close();
+	});
+
+	it("uses mark price before last trade price for futures valuation", async () => {
+		const futures = newFuturesClient("one-way");
+		await futures.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 1 });
+		stub.last = 1;
+		stub.markPrice = 100;
+
+		const [position] = await futures.getPositions();
+		expect(position?.markPrice).toBe(100);
+		expect(position?.unrealizedPnl).toBeCloseTo(0, 8);
+		await futures.close();
+	});
 });
 
 describe("paper futures funding", () => {
@@ -197,6 +462,16 @@ describe("paper futures funding", () => {
 });
 
 describe("paper both-market mode", () => {
+	it("detects exposure in an inactive account family", async () => {
+		const futures = newFuturesClient("one-way");
+		await futures.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 1 });
+		await futures.close();
+
+		const spot = newClient();
+		expect(await spot.hasAnyAccountExposure()).toBe(true);
+		await spot.close();
+	});
+
 	it("routes futures orders to an isolated paper account", async () => {
 		const both = new PaperExchangeClient("okx", "USDT", 10_000, 0.001, dir, "both");
 		(both as unknown as { exchange: StubExchange }).exchange = stub;
@@ -310,6 +585,18 @@ describe("paper valuation unavailability", () => {
 		expect(position.unrealizedPnl).toBeUndefined();
 		expect(position.unrealizedPnlPct).toBeUndefined();
 		expect(position.markPrice).toBeUndefined();
+		await futures.close();
+	});
+
+	it.each(unavailableMarkCases)("does not report a complete futures balance when the mark is %s", async (_, fault) => {
+		const futures = newFuturesClient("one-way", 1_000);
+		await futures.placeOrder({ symbol: "BTC/USDT:USDT", side: "buy", type: "market", amount: 1 });
+		stub.last = 90;
+		expect((await futures.getBalances())[0]?.quoteValue).toBeCloseTo(989.9, 8);
+		breakFuturesTicker(fault);
+
+		await expect(futures.getBalances()).rejects.toThrow(/Cannot value paper futures balance.*BTC\/USDT:USDT/);
+		expect(await futures.getPositions()).toMatchObject([{ amount: 1, valuationStatus: "unavailable" }]);
 		await futures.close();
 	});
 
@@ -458,6 +745,68 @@ describe("paper futures settings and identity", () => {
 			reduceOnly: true,
 		});
 		expect((await futures.getBalances())[0]?.free).toBeCloseTo(9_999.8, 8);
+	});
+
+	it("uses the opened lot margin mode for liquidation after changing the symbol setting", async () => {
+		const futures = newFuturesClient("one-way", 1_000);
+		await futures.setMarginMode(symbol, "cross");
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+		await futures.setMarginMode(symbol, "isolated");
+		stub.last = 80;
+
+		expect((await futures.getPositions())[0]).toMatchObject({
+			amount: 1,
+			marginType: "cross",
+			unrealizedPnl: -20,
+		});
+		expect(await futures.getOrderHistory(symbol)).toHaveLength(1);
+		expect((await futures.getBalances())[0]?.total).toBeCloseTo(979.9, 8);
+		await futures.close();
+	});
+
+	it.each(["cross", "isolated"] as const)(
+		"liquidates only isolated lots in a mixed position opened with %s first",
+		async (firstMode) => {
+			const futures = newFuturesClient("one-way", 1_000);
+			await futures.setMarginMode(symbol, firstMode);
+			await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+			await futures.setMarginMode(symbol, firstMode === "cross" ? "isolated" : "cross");
+			await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+			stub.last = 80;
+
+			expect(await futures.getPositions()).toMatchObject([
+				{ amount: 1, marginType: "cross", margin: 20, avgEntryPrice: 100, unrealizedPnl: -20 },
+			]);
+			const liquidations = (await futures.getOrderHistory(symbol)).filter((order) => order.reduceOnly);
+			expect(liquidations).toMatchObject([{ amount: 1, filled: 1, average: 80 }]);
+			expect((await futures.getBalances())[0]?.total).toBeCloseTo(959.8, 8);
+			await futures.close();
+
+			const reloaded = newFuturesClient("one-way", 1_000);
+			expect(await reloaded.getPositions()).toMatchObject([{ amount: 1, marginType: "cross", margin: 20 }]);
+			await reloaded.close();
+		},
+	);
+
+	it("preserves a healthy isolated lot when the cross lots in the same position liquidate", async () => {
+		const futures = newFuturesClient("one-way", 150);
+		await futures.setMarginMode(symbol, "cross");
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 2 });
+		await futures.setMarginMode(symbol, "isolated");
+		await futures.setLeverage(symbol, 1);
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+		stub.last = 75.2;
+
+		expect(await futures.getPositions()).toMatchObject([
+			{ amount: 1, leverage: 1, marginType: "isolated", margin: 100, avgEntryPrice: 100 },
+		]);
+		expect((await futures.getOrderHistory(symbol)).filter((order) => order.reduceOnly)).toMatchObject([
+			{ amount: 2, filled: 2, average: 75.2 },
+		]);
+		const [balance] = await futures.getBalances();
+		expect(balance.free).toBeCloseTo(0.1, 8);
+		expect(balance.total).toBeCloseTo(75.3, 8);
+		await futures.close();
 	});
 
 	it("keeps mixed opening lots and releases margin FIFO on partial close", async () => {
@@ -692,6 +1041,107 @@ describe("paper futures settings and identity", () => {
 
 describe("paper futures hedge ledger", () => {
 	const symbol = "BTC/USDT:USDT";
+
+	it.each(
+		(["one-way", "hedge"] as const).flatMap((mode) =>
+			(["LONG", "SHORT"] as const).flatMap((direction) =>
+				[false, true].map((reduceOnly) => ({ mode, direction, reduceOnly })),
+			),
+		),
+	)(
+		"fully closes decimal remainders in $mode $direction (reduceOnly=$reduceOnly)",
+		async ({ mode, direction, reduceOnly }) => {
+			const futures = newFuturesClient(mode);
+			const side = direction === "LONG" ? "buy" : "sell";
+			const closingSide = direction === "LONG" ? "sell" : "buy";
+			const positionSide = mode === "hedge" ? direction : undefined;
+			await futures.placeOrder({ symbol, side, type: "market", amount: 0.3, positionSide });
+			await futures.placeOrder({
+				symbol,
+				side: closingSide,
+				type: "market",
+				amount: 0.1,
+				positionSide,
+				reduceOnly,
+			});
+			await futures.close();
+
+			const reloaded = newFuturesClient(mode);
+			const closed = await reloaded.placeOrder({
+				symbol,
+				side: closingSide,
+				type: "market",
+				amount: 0.2,
+				positionSide,
+				reduceOnly,
+			});
+			expect(closed.order.amount).toBeCloseTo(0.2, 15);
+			expect(closed.order.remaining).toBe(0);
+			expect(await reloaded.getPositions()).toEqual([]);
+			const path = join(dir, "okx-USDT-futures.json");
+			const account = parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path);
+			expect(account.entries).toEqual({});
+			expect(account.balances.USDT).toBeCloseTo(9_999.94, 8);
+			expect(account.realizedPnl).toBeCloseTo(-0.06, 12);
+			await reloaded.close();
+
+			const finalClient = newFuturesClient(mode);
+			expect(await finalClient.getPositions()).toEqual([]);
+			await finalClient.close();
+		},
+	);
+
+	it.each([1, 1e-12, 1e6])("clears FIFO lot roundoff without accepting excess at quantity scale %s", async (scale) => {
+		stub.amountDigits = 18;
+		stub.amountMin = undefined;
+		stub.costMin = undefined;
+		const futures = newFuturesClient("one-way", 100_000_000);
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 0.1 * scale });
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 0.2 * scale });
+
+		await expect(
+			futures.placeOrder({ symbol, side: "sell", type: "market", amount: 0.300001 * scale, reduceOnly: true }),
+		).rejects.toThrow(/exceeds the open position/);
+		await futures.placeOrder({ symbol, side: "sell", type: "market", amount: 0.3 * scale, reduceOnly: true });
+		expect(await futures.getPositions()).toEqual([]);
+		const path = join(dir, "okx-USDT-futures.json");
+		expect(parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path).entries).toEqual({});
+		await futures.close();
+	});
+
+	it("consumes a whole FIFO lot at a rounded boundary before closing the remaining lot", async () => {
+		const futures = newFuturesClient("one-way");
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 0.1 });
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 0.2 });
+		await futures.setLeverage(symbol, 2);
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 0.2 });
+		await futures.placeOrder({ symbol, side: "sell", type: "market", amount: 0.3, reduceOnly: true });
+		const path = join(dir, "okx-USDT-futures.json");
+		const account = parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path);
+		expect(account.entries.BTC.lots).toEqual([{ amount: 0.2, price: 100, leverage: 2, marginType: "isolated" }]);
+
+		await futures.placeOrder({ symbol, side: "sell", type: "market", amount: 0.2, reduceOnly: true });
+		expect(await futures.getPositions()).toEqual([]);
+		expect((await futures.getBalances())[0]?.free).toBeCloseTo(9_999.9, 8);
+		await futures.close();
+	});
+
+	it("records opening and closing fees in net realized PnL", async () => {
+		const futures = newFuturesClient("one-way");
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+
+		stub.last = 110;
+		await futures.placeOrder({ symbol, side: "sell", type: "market", amount: 1, reduceOnly: true });
+
+		const account = JSON.parse(readFileSync(join(dir, "okx-USDT-futures.json"), "utf8")) as {
+			realizedPnl: number;
+			trades: Array<{ fee: number; realizedPnl?: number }>;
+		};
+		expect(account.realizedPnl).toBeCloseTo(9.79, 8);
+		expect(account.trades).toHaveLength(2);
+		expect(account.trades[0]).toMatchObject({ fee: 0.1, realizedPnl: -0.1 });
+		expect(account.trades[1]).toMatchObject({ fee: 0.11, realizedPnl: 9.89 });
+	});
 
 	it("validates futures limits in contracts while keeping the ledger in base units", async () => {
 		stub.futuresContractSize = 10;
@@ -1118,6 +1568,7 @@ describe("paper trailing stop orders", () => {
 		stub.ohlcv = [
 			[since + 60_000, 100, 125, 99, 124, 1],
 			[since + 120_000, 124, 130, 122, 129, 1],
+			...Array.from({ length: 8 }, (_, index) => [since + (index + 3) * 60_000, 129, 130, 124, 129, 1]),
 		];
 
 		stub.last = 122;
@@ -1299,6 +1750,206 @@ describe("paper OCO bracket orders", () => {
 });
 
 describe("kline backfill for resting orders", () => {
+	it("does not let a future ticker extreme tighten stops in an earlier backfill page", async () => {
+		await buyBase(1);
+		const placed = await client.placeOrder({
+			symbol: "BTC/USDT",
+			side: "sell",
+			type: "trailing_stop_market",
+			amount: 1,
+			trailingPercent: 5,
+		});
+		const since = rewindOrder(placed.order.id, 10);
+		stub.ohlcv = [[since + 60_000, 108, 110, 106, 108, 1]];
+		stub.last = 150;
+		expect(await client.getOpenOrders()).toHaveLength(1);
+		const path = join(dir, "okx-USDT.json");
+		const first = parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path);
+		expect(first.orders.find((order) => order.id === placed.order.id)).toMatchObject({
+			trailingExtreme: 110,
+			lastCheckedAt: since + 2 * 60_000,
+		});
+		await client.close();
+		client = newClient();
+
+		stub.ohlcv = [[since + 2 * 60_000, 108, 110, 106, 108, 1]];
+		expect(await client.getOpenOrders()).toHaveLength(1);
+		const second = parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path);
+		expect(second.orders.find((order) => order.id === placed.order.id)).toMatchObject({
+			trailingExtreme: 110,
+			lastCheckedAt: since + 3 * 60_000,
+		});
+
+		stub.ohlcv = Array.from({ length: 8 }, (_, index) => [since + (index + 3) * 60_000, 108, 110, 106, 108, 1]);
+		expect(await client.getOpenOrders()).toHaveLength(1);
+		expect(
+			parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path).orders.find(
+				(order) => order.id === placed.order.id,
+			)?.trailingExtreme,
+		).toBe(150);
+		stub.last = 142;
+		expect(await client.getOpenOrders()).toHaveLength(0);
+		expect((await client.getOrder(placed.order.id, "BTC/USDT")).average).toBeCloseTo(142.5, 8);
+	});
+
+	it.each(["empty", "sparse"] as const)(
+		"defers a ticker trigger while the historical response is %s",
+		async (kind) => {
+			await buyBase(1);
+			const placed = await client.placeOrder({
+				symbol: "BTC/USDT",
+				side: "sell",
+				type: "stop",
+				stopPrice: 90,
+				price: 95,
+				amount: 1,
+			});
+			const since = rewindOrder(placed.order.id, 10);
+			stub.ohlcv = kind === "empty" ? [] : [[since + 5 * 60_000, 100, 110, 99, 100, 1]];
+			stub.last = 85;
+			expect(await client.getOpenOrders()).toHaveLength(1);
+			const path = join(dir, "okx-USDT.json");
+			const pending = parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path);
+			expect(pending.orders.find((order) => order.id === placed.order.id)?.triggered).not.toBe(true);
+			expect(pending.orders.find((order) => order.id === placed.order.id)?.lastCheckedAt).toBe(since);
+
+			stub.ohlcv = Array.from({ length: 10 }, (_, index) => [since + (index + 1) * 60_000, 100, 110, 99, 100, 1]);
+			stub.last = 100;
+			expect(await client.getOpenOrders()).toHaveLength(1);
+			expect(
+				parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path).orders.find(
+					(order) => order.id === placed.order.id,
+				)?.triggered,
+			).not.toBe(true);
+			stub.last = 89;
+			expect(await client.getOpenOrders()).toHaveLength(1);
+			stub.last = 96;
+			expect(await client.getOpenOrders()).toHaveLength(0);
+		},
+	);
+
+	it("retries an unresolved short backfill tail instead of silently switching to ticker-only settlement", async () => {
+		await buyBase(1);
+		const placed = await client.placeOrder({
+			symbol: "BTC/USDT",
+			side: "sell",
+			type: "stop_market",
+			stopPrice: 90,
+			amount: 1,
+		});
+		const since = rewindOrder(placed.order.id, 10);
+		stub.ohlcv = Array.from({ length: 8 }, (_, index) => [since + (index + 1) * 60_000, 100, 110, 99, 100, 1]);
+		expect(await client.getOpenOrders()).toHaveLength(1);
+		await client.close();
+		client = newClient();
+
+		stub.ohlcv = Array.from({ length: 10 }, (_, index) => [
+			since + (index + 1) * 60_000,
+			100,
+			110,
+			index === 8 ? 85 : 99,
+			100,
+			1,
+		]);
+		expect(await client.getOpenOrders()).toHaveLength(0);
+		expect((await client.getOrder(placed.order.id, "BTC/USDT")).average).toBe(90);
+	});
+
+	it("finishes a one-candle-per-page backfill before using the current ticker", async () => {
+		await buyBase(1);
+		const placed = await client.placeOrder({
+			symbol: "BTC/USDT",
+			side: "sell",
+			type: "trailing_stop_market",
+			trailingPercent: 5,
+			amount: 1,
+		});
+		const since = rewindOrder(placed.order.id, 10);
+		const candles = Array.from({ length: 11 }, (_, index) => [since + (index + 1) * 60_000, 108, 110, 106, 108, 1]);
+		let requests = 0;
+		let paginatedTail = false;
+		stub.fetchOHLCV = async (_symbol, _timeframe, cursor = 0) => {
+			requests++;
+			return candles.filter((row) => row[0] >= cursor).slice(0, 1);
+		};
+		stub.last = 150;
+		const path = join(dir, "okx-USDT.json");
+		let extreme = 0;
+		for (let read = 0; read < 10 && extreme !== 150; read++) {
+			const previousRequests = requests;
+			expect(await client.getOpenOrders()).toHaveLength(1);
+			paginatedTail ||= requests - previousRequests > 1;
+			extreme =
+				parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path).orders.find(
+					(order) => order.id === placed.order.id,
+				)?.trailingExtreme ?? 0;
+			expect([110, 150]).toContain(extreme);
+		}
+		expect(paginatedTail).toBe(true);
+		expect(extreme).toBe(150);
+	});
+
+	it("keeps a capped historical page eligible for backfill with a finer timeframe", async () => {
+		await buyBase(1);
+		const placed = await client.placeOrder({
+			symbol: "BTC/USDT",
+			side: "sell",
+			type: "trailing_stop_market",
+			trailingPercent: 5,
+			amount: 1,
+		});
+		const since = rewindOrder(placed.order.id, 33_000);
+		const requests: Array<{ timeframe: string; since: number; limit: number }> = [];
+		stub.fetchOHLCV = async (_symbol, timeframe, cursor = 0, limit = 0) => {
+			requests.push({ timeframe, since: cursor, limit });
+			const duration = (timeframe === "1h" ? 60 : timeframe === "15m" ? 15 : 1) * 60_000;
+			return Array.from({ length: limit }, (_, index) => [cursor + index * duration, 108, 110, 106, 108, 1]);
+		};
+		stub.last = 150;
+		expect(await client.getOpenOrders()).toHaveLength(1);
+		const path = join(dir, "okx-USDT.json");
+		const order = parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path).orders.find(
+			(candidate) => candidate.id === placed.order.id,
+		);
+		expect(order).toMatchObject({ trailingExtreme: 110, lastCheckedAt: since + 500 * 60 * 60_000 });
+		expect(requests).toEqual([{ timeframe: "1h", since, limit: 500 }]);
+
+		expect(await client.getOpenOrders()).toHaveLength(1);
+		expect(requests[1]).toMatchObject({ timeframe: "15m", since: order?.lastCheckedAt });
+		expect(
+			parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path).orders.find(
+				(candidate) => candidate.id === placed.order.id,
+			)?.trailingExtreme,
+		).toBe(150);
+	});
+
+	it("does not skip a missing first candle when resuming a historical prefix", async () => {
+		await buyBase(1);
+		const placed = await client.placeOrder({
+			symbol: "BTC/USDT",
+			side: "sell",
+			type: "limit",
+			price: 150,
+			amount: 1,
+		});
+		const since = rewindOrder(placed.order.id, 10);
+		stub.ohlcv = [[since + 60_000, 100, 110, 99, 100, 1]];
+		expect(await client.getOpenOrders()).toHaveLength(1);
+
+		// The missing candle begins exactly at the persisted coverage cursor.
+		stub.ohlcv = [[since + 3 * 60_000, 100, 160, 99, 100, 1]];
+		expect(await client.getOpenOrders()).toHaveLength(1);
+		const path = join(dir, "okx-USDT.json");
+		expect(
+			parsePaperAccount(JSON.parse(readFileSync(path, "utf8")), path).orders.find(
+				(order) => order.id === placed.order.id,
+			)?.lastCheckedAt,
+		).toBe(since + 2 * 60_000);
+
+		stub.ohlcv.unshift([since + 2 * 60_000, 100, 110, 99, 100, 1]);
+		expect(await client.getOpenOrders()).toHaveLength(0);
+	});
+
 	it("stops at the first sparse-candle gap and retries it before later candles", async () => {
 		await buyBase(1);
 		const placed = await client.placeOrder({
@@ -1443,7 +2094,10 @@ describe("kline backfill for resting orders", () => {
 		const open = await client.getOpenOrders();
 		expect(open).toHaveLength(1);
 
-		stub.last = 92; // later tick crosses the limit
+		stub.last = 92;
+		expect(await client.getOpenOrders()).toHaveLength(1);
+		// The ticker becomes eligible only after the historical tail catches up.
+		stub.ohlcv = Array.from({ length: 9 }, (_, index) => [since + (index + 2) * 60_000, 88, 88, 88, 88, 1]);
 		expect(await client.getOpenOrders()).toHaveLength(0);
 		const history = await client.getOrderHistory("BTC/USDT");
 		expect(history.find((o) => o.type === "stop")?.average).toBe(89);

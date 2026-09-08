@@ -1,6 +1,7 @@
 import type { Api, Model } from "@earendil-works/pi-ai";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { InteractiveMode } from "../../../src/modes/interactive/interactive-mode.ts";
+import { allowNetwork } from "../../test-network-env.ts";
 import { createHarness, type Harness } from "../harness.ts";
 
 const findExactModelMatch = Reflect.get(InteractiveMode.prototype, "findExactModelMatch") as (
@@ -30,6 +31,7 @@ describe("issue #7443 /model cached match", () => {
 	});
 
 	it("uses a caller-owned deadline only after a cache miss", async () => {
+		allowNetwork();
 		harness = await createHarness({ models: [{ id: "cached", name: "Cached" }] });
 		const refresh = vi.spyOn(harness.session.modelRuntime, "refresh").mockResolvedValue({
 			aborted: true,

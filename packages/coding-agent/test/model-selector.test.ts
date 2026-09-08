@@ -4,6 +4,7 @@ import { ModelSelectorComponent } from "../src/modes/interactive/components/mode
 import { initTheme } from "../src/modes/interactive/theme/theme.ts";
 import { stripAnsi } from "../src/utils/ansi.ts";
 import { createHarness, type Harness } from "./suite/harness.ts";
+import { allowNetwork } from "./test-network-env.ts";
 
 function createFakeTui(): TUI {
 	return { requestRender: () => {} } as unknown as TUI;
@@ -22,6 +23,7 @@ describe("model selector", () => {
 	});
 
 	it("lists every catalog that failed to refresh", async () => {
+		allowNetwork();
 		harness = await createHarness();
 		vi.spyOn(harness.session.modelRuntime, "refresh").mockResolvedValue({
 			aborted: false,

@@ -434,12 +434,29 @@ class DeterministicExchange implements ExchangeClient {
 		if (this.isFutures(input.symbol)) throw new Error("OCO orders are not available for futures markets");
 		return {
 			orders: [
-				{ ...openOrder(input.symbol), id: "oco-stop", type: "stop_market", stopPrice: input.stopLossPrice },
+				{
+					...openOrder(input.symbol),
+					id: "oco-stop",
+					type: "stop_market",
+					stopPrice: input.stopLossPrice,
+					side: input.side,
+					amount: input.amount,
+					remaining: input.amount,
+					clientOrderId: input.belowClientOrderId,
+					listClientOrderId: input.listClientOrderId,
+					orderListId: "list-1",
+				},
 				{
 					...openOrder(input.symbol),
 					id: "oco-take",
 					type: "take_profit_market",
 					stopPrice: input.takeProfitPrice,
+					side: input.side,
+					amount: input.amount,
+					remaining: input.amount,
+					clientOrderId: input.aboveClientOrderId,
+					listClientOrderId: input.listClientOrderId,
+					orderListId: "list-1",
 				},
 			],
 		};
@@ -490,6 +507,10 @@ class DeterministicExchange implements ExchangeClient {
 	async setLeverage(symbol: string, leverage: number): Promise<void> {
 		this.ensureFutures(symbol);
 		this.calls.push(`leverage:${symbol}:${leverage}`);
+	}
+
+	getEffectiveLeverage(_symbol: string): number {
+		return 1;
 	}
 
 	async setMarginMode(symbol: string, marginType: "isolated" | "cross"): Promise<void> {
@@ -543,6 +564,8 @@ function createAvailabilityRuntime(overrides: Partial<TradingConfig> = {}): {
 				return result;
 			},
 		},
+		undefined,
+		{ accountId: "fixture-account", durability: "memory" },
 	);
 	return { runtime: { config, mode: config.mode, tradingEngine: engine } as unknown as TradingRuntime, exchange };
 }
@@ -1028,7 +1051,9 @@ describe("deterministic default-tool availability", () => {
 		);
 		const capabilities = details.capabilities as { clientOrderIdLookup: { status: string; reason: string } };
 		expect(capabilities.clientOrderIdLookup.status).toBe("supported");
-		expect(capabilities.clientOrderIdLookup.reason).toMatch(/Binance USDⓈ-M futures/);
+		expect(capabilities.clientOrderIdLookup.reason).toMatch(
+			/Binance USDⓈ-M futures.*offline correlated adapter contract coverage/,
+		);
 	});
 
 	it("requires explicit futures orientation for capability certainty but accepts omitted orientation in preflight", async () => {

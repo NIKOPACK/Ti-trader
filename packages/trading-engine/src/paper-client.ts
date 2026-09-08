@@ -1,10 +1,10 @@
-import { existsSync, unlinkSync } from "node:fs";
+import { existsSync } from "node:fs";
 import { join } from "node:path";
 import ccxt, { type Ticker as CcxtTicker, type Exchange } from "ccxt";
 import { toTicker } from "./ccxt-map.ts";
 import { amountStepFromCcxtPrecision } from "./ccxt-precision.ts";
 import type { FuturesPositionMode } from "./client-types.ts";
-import { contractSizeForMarket } from "./contract-size.ts";
+import { contractSizeForMarket, futuresAmountsEqual } from "./contract-size.ts";
 import {
 	type AccountTransaction,
 	type FuturesEntry,
@@ -36,8 +36,9 @@ import {
 	DEFAULT_FILE_LOCK,
 	readJsonFile,
 	releaseFileLock as releaseAccountLock,
+	removeFileDurable,
 	touchFileLock as touchAccountLock,
-	writeJsonFile,
+	writeJsonFileDurable,
 } from "./persist.ts";
 import {
 	type Balance,
@@ -60,8 +61,30 @@ import {
 } from "./types.ts";
 
 const PAPER_LOCK_OPTIONS = {
+	// A suspended account writer can still resume; stale locks require verified operator cleanup.
+	staleMs: Number.POSITIVE_INFINITY,
 	timeoutMessage: (path: string) => `Timed out waiting for paper account lock ${path}`,
 };
+
+function futuresReferencePrice(ticker: CcxtTicker): number | undefined {
+	const info = ticker.info as Record<string, unknown> | undefined;
+	for (const key of ["markPrice", "indexPrice"] as const) {
+		const value = Number(info?.[key]);
+		if (isFinitePositive(value)) return value;
+	}
+	return isFinitePositive(ticker.last) ? ticker.last : undefined;
+}
+
+interface FuturesLiquidationGroup {
+	entryKey: string;
+	symbol: string;
+	marginType: "isolated" | "cross";
+	amount: number;
+	price: number;
+	margin: number;
+	pnl: number;
+	maintenance: number;
+}
 
 /**
  * Simulated spot account backed by live public market data.
@@ -205,6 +228,25 @@ export class PaperExchangeClient implements ExchangeClient {
 				: [this.account, this.futuresAccount];
 	}
 
+	/**
+	 * Inspect both persisted account families before a configuration switch.
+	 * Normal account reads intentionally honor marketType; this safety check must
+	 * not, otherwise switching spot <-> futures could hide the inactive ledger.
+	 */
+	async hasAnyAccountExposure(): Promise<boolean> {
+		return this.runAccountOperation(async () => {
+			await this.settleOpenOrdersUnlocked();
+			return [this.account, this.futuresAccount].some((account) => {
+				if (account.orders.some((order) => order.status === "open")) return true;
+				if (account.orders.length > 0 || account.trades.length > 0 || account.realizedPnl !== 0) return true;
+				if (Object.values(account.entries).some((entry) => entry.amount !== 0)) return true;
+				return Object.entries(account.balances).some(
+					([asset, amount]) => asset !== this.quoteCurrency && Number.isFinite(amount) && amount !== 0,
+				);
+			});
+		});
+	}
+
 	private applyLoadedFuturesState(
 		positionMode: FuturesPositionMode,
 		defaultLeverage: number,
@@ -291,9 +333,9 @@ export class PaperExchangeClient implements ExchangeClient {
 		}
 		// The journal is written before either target file. Replaying both snapshots
 		// makes a crash between the two renames recoverable on the next operation.
-		writeJsonFile(this.accountPath, account);
-		writeJsonFile(this.futuresAccountPath, futuresAccount);
-		unlinkSync(this.transactionPath);
+		writeJsonFileDurable(this.accountPath, account);
+		writeJsonFileDurable(this.futuresAccountPath, futuresAccount);
+		removeFileDurable(this.transactionPath);
 	}
 
 	private persistAccountsUnlocked(spot: boolean, futures: boolean): void {
@@ -306,14 +348,14 @@ export class PaperExchangeClient implements ExchangeClient {
 			};
 			// Keep the journal until both account files are durable. If the second
 			// write fails, the next locked operation replays this exact snapshot.
-			writeJsonFile(this.transactionPath, transaction);
-			writeJsonFile(this.accountPath, this.account);
-			writeJsonFile(this.futuresAccountPath, this.futuresAccount);
-			unlinkSync(this.transactionPath);
+			writeJsonFileDurable(this.transactionPath, transaction);
+			writeJsonFileDurable(this.accountPath, this.account);
+			writeJsonFileDurable(this.futuresAccountPath, this.futuresAccount);
+			removeFileDurable(this.transactionPath);
 			return;
 		}
-		if (spot) writeJsonFile(this.accountPath, this.account);
-		if (futures) writeJsonFile(this.futuresAccountPath, this.futuresAccount);
+		if (spot) writeJsonFileDurable(this.accountPath, this.account);
+		if (futures) writeJsonFileDurable(this.futuresAccountPath, this.futuresAccount);
 	}
 
 	private persistAllUnlocked(): void {
@@ -459,7 +501,7 @@ export class PaperExchangeClient implements ExchangeClient {
 		this.persistAllUnlocked();
 	}
 
-	private async normalizeOrderInput(input: PlaceOrderInput): Promise<PlaceOrderInput> {
+	private async normalizeOrderInput(input: PlaceOrderInput, ticker?: CcxtTicker): Promise<PlaceOrderInput> {
 		const exchange = this.exchangeFor(input.symbol);
 		if (!Number.isFinite(input.amount) || input.amount <= 0) throw new Error("Amount must be finite and positive");
 		await exchange.loadMarkets();
@@ -511,7 +553,7 @@ export class PaperExchangeClient implements ExchangeClient {
 				`${futures ? "Contract amount" : "Amount"} ${exchangeAmount} exceeds maximum ${maxAmount} for ${input.symbol}`,
 			);
 		}
-		const tickerPrice = (await exchange.fetchTicker(input.symbol)).last;
+		const tickerPrice = (ticker ?? (await exchange.fetchTicker(input.symbol))).last;
 		const referencePrice = price ?? stopPrice ?? tickerPrice;
 		if (referencePrice === undefined || !Number.isFinite(referencePrice) || referencePrice <= 0) {
 			throw new Error(`No price available for ${input.symbol}`);
@@ -825,7 +867,11 @@ export class PaperExchangeClient implements ExchangeClient {
 			await this.settleOpenOrdersUnlocked();
 			if (this.isFuturesSymbol(input.symbol)) {
 				if (this.marketType === "spot") throw new Error("Futures markets are disabled in spot mode");
-				return this.placeFuturesMarketOrder(await this.normalizeOrderInput(input));
+				const ticker = await this.futuresExchange.fetchTicker(input.symbol);
+				// Settle existing risk before validation or new collateral can change
+				// the outcome. Liquidations persist even if this order is rejected.
+				await this.settleFuturesLiquidationsUnlocked(new Map([[input.symbol, futuresReferencePrice(ticker)]]));
+				return this.placeFuturesMarketOrder(await this.normalizeOrderInput(input, ticker), ticker);
 			}
 			if (this.marketType === "usdm-futures") throw new Error("Spot markets are disabled in futures mode");
 			input = await this.normalizeOrderInput(input);
@@ -979,11 +1025,10 @@ export class PaperExchangeClient implements ExchangeClient {
 		});
 	}
 
-	private async placeFuturesMarketOrder(input: PlaceOrderInput): Promise<PlaceOrderResult> {
+	private async placeFuturesMarketOrder(input: PlaceOrderInput, ticker: CcxtTicker): Promise<PlaceOrderResult> {
 		if (input.type !== "market") throw new Error("Paper futures currently support market orders only");
 		if (input.amount <= 0) throw new Error("Amount must be positive");
 		if (input.closePosition && input.reduceOnly === false) throw new Error("closePosition is always reduceOnly");
-		const ticker = await this.futuresExchange.fetchTicker(input.symbol);
 		const price = ticker.last;
 		if (!isFinitePositive(price)) throw new Error(`No finite positive price available for ${input.symbol}`);
 		const account = this.futuresAccount;
@@ -994,9 +1039,12 @@ export class PaperExchangeClient implements ExchangeClient {
 		const currentQty = Math.abs(current.amount);
 		const currentLots = this.snapshotFuturesLots(current);
 		const currentSettings = this.futuresSettings(input.symbol);
-		const requested = input.closePosition ? currentQty : input.amount;
+		let requested = input.closePosition ? currentQty : input.amount;
+		const reducing = currentQty > 0 && (input.side === "buy" ? current.amount < 0 : current.amount > 0);
+		// Decimal fills can differ by a few floating-point units after partial
+		// closes. Clamp only a near-full reduction, never a genuine excess.
+		if (reducing && futuresAmountsEqual(requested, currentQty)) requested = currentQty;
 		const signed = input.side === "buy" ? requested : -requested;
-		const reducing = currentQty > 0 && Math.sign(signed) !== Math.sign(current.amount);
 		if (input.closePosition && (!reducing || currentQty === 0)) {
 			throw new Error("closePosition requires an open position and the matching reduce side");
 		}
@@ -1022,11 +1070,14 @@ export class PaperExchangeClient implements ExchangeClient {
 		let pnl = 0;
 		const remainingLots: FuturesLot[] = [];
 		for (const lot of currentLots) {
-			const closedFromLot = Math.min(lot.amount, remainingToClose);
+			const closedFromLot =
+				closing === currentQty || futuresAmountsEqual(lot.amount, remainingToClose)
+					? lot.amount
+					: Math.min(lot.amount, remainingToClose);
 			if (closedFromLot > 0) {
 				releasedMargin += (closedFromLot * lot.price) / lot.leverage;
 				pnl += closedFromLot * (price - lot.price) * Math.sign(current.amount);
-				remainingToClose -= closedFromLot;
+				remainingToClose = Math.max(0, remainingToClose - closedFromLot);
 			}
 			if (lot.amount > closedFromLot) remainingLots.push({ ...lot, amount: lot.amount - closedFromLot });
 		}
@@ -1039,18 +1090,22 @@ export class PaperExchangeClient implements ExchangeClient {
 		if (opening > 0) {
 			remainingLots.push({ amount: opening, price, ...currentSettings });
 		}
-		if (remaining === 0) delete account.entries[entryKey];
+		if (remainingLots.length === 0) delete account.entries[entryKey];
 		else {
 			const cost = remainingLots.reduce((sum, lot) => sum + lot.amount * lot.price, 0);
 			const settings = this.uniformFuturesLotSettings(remainingLots);
 			account.entries[entryKey] = {
-				amount: remaining,
+				amount: Math.sign(remaining) * remainingLots.reduce((sum, lot) => sum + lot.amount, 0),
 				cost,
 				...settings,
 				lots: remainingLots,
 			};
 		}
-		account.realizedPnl += pnl;
+		// Futures fees are charged on every fill, including opening orders. Keep
+		// realized PnL net of the fee so the account total and each trade record
+		// reconcile with the quote balance after execution.
+		const realizedPnl = pnl - fee;
+		account.realizedPnl += realizedPnl;
 		// Futures market orders get the same deterministic default client order id
 		// as the spot path (`paper-<order id>`); an explicit id is preserved.
 		const clientOrderId = input.clientOrderId ?? `paper-${this.nextOrderId}`;
@@ -1079,7 +1134,7 @@ export class PaperExchangeClient implements ExchangeClient {
 			amount: requested,
 			cost: notional,
 			fee,
-			realizedPnl: pnl,
+			realizedPnl,
 			positionSide,
 			timestamp: order.timestamp,
 		});
@@ -1169,6 +1224,10 @@ export class PaperExchangeClient implements ExchangeClient {
 		});
 	}
 
+	getEffectiveLeverage(symbol: string): number {
+		return this.futuresSettings(symbol).leverage;
+	}
+
 	async setMultiAssetsMode(_enabled: boolean): Promise<void> {
 		throw new Error("Multi-Assets mode is available only for live Binance USDⓈ-M futures");
 	}
@@ -1244,64 +1303,47 @@ export class PaperExchangeClient implements ExchangeClient {
 	// --- internals -----------------------------------------------------------
 
 	private async futuresBalances(): Promise<Balance[]> {
-		await this.settleFuturesLiquidationsUnlocked();
+		const positions = await this.futuresPositions();
 		const free = this.futuresAccount.balances[this.quoteCurrency] ?? 0;
-		return [{ asset: this.quoteCurrency, free, used: 0, total: free, quoteValue: free }];
+		let used = 0;
+		let unrealizedPnl = 0;
+		for (const position of positions) {
+			const margin = position.margin;
+			const pnl = position.unrealizedPnl;
+			if (
+				position.valuationStatus !== "complete" ||
+				margin === undefined ||
+				pnl === undefined ||
+				!Number.isFinite(margin) ||
+				!Number.isFinite(pnl)
+			) {
+				throw new Error(
+					`Cannot value paper futures balance for ${position.symbol}: ${position.valuationReason ?? "position valuation is incomplete"}`,
+				);
+			}
+			used += margin;
+			unrealizedPnl += pnl;
+		}
+		const total = free + used + unrealizedPnl;
+		if (!Number.isFinite(total)) throw new Error("Cannot calculate finite paper futures balance");
+		return [
+			{
+				asset: this.quoteCurrency,
+				free,
+				used,
+				total,
+				quoteValue: total,
+			},
+		];
 	}
 
-	/** Close paper futures positions whose equity no longer covers maintenance margin. */
-	private async settleFuturesLiquidationsUnlocked(): Promise<void> {
+	private async futuresLiquidationGroups(prices: Map<string, number | undefined>): Promise<{
+		groups: FuturesLiquidationGroup[];
+		crossPricesComplete: boolean;
+	}> {
 		await this.futuresExchange.loadMarkets();
-		let dirty = false;
-		let crossEquity = this.futuresAccount.balances[this.quoteCurrency] ?? 0;
-		let crossMaintenance = 0;
-		let crossMetricsValid = Number.isFinite(crossEquity);
-		const crossPrices = new Map<string, number>();
-		const crossSymbols = new Set<string>();
-		for (const entryKey of Object.keys(this.futuresAccount.entries)) {
-			const asset =
-				this.positionMode === "hedge" && entryKey.includes(":")
-					? entryKey.slice(0, entryKey.lastIndexOf(":"))
-					: entryKey;
-			const symbol = `${asset}/${this.quoteCurrency}:${this.quoteCurrency}`;
-			if ((this.futuresAccount.marginTypeBySymbol?.[symbol] ?? this.futuresAccount.marginType) === "cross")
-				crossSymbols.add(symbol);
-		}
-		if (crossSymbols.size > 0) {
-			for (const [entryKey, entry] of Object.entries(this.futuresAccount.entries)) {
-				if (entry.amount === 0) continue;
-				const asset =
-					this.positionMode === "hedge" && entryKey.includes(":")
-						? entryKey.slice(0, entryKey.lastIndexOf(":"))
-						: entryKey;
-				const symbol = `${asset}/${this.quoteCurrency}:${this.quoteCurrency}`;
-				try {
-					const price = (await this.futuresExchange.fetchTicker(symbol)).last;
-					if (!isFinitePositive(price)) {
-						crossMetricsValid = false;
-						continue;
-					}
-					const amount = Math.abs(entry.amount);
-					const pnl = (price - entry.cost / amount) * entry.amount;
-					const margin = this.snapshotFuturesLots(entry).reduce(
-						(sum, lot) => sum + (lot.amount * lot.price) / lot.leverage,
-						0,
-					);
-					const maintenance = amount * price * this.maintenanceMarginRate;
-					if (![pnl, margin, maintenance].every(Number.isFinite)) {
-						crossMetricsValid = false;
-						continue;
-					}
-					if (!crossSymbols.has(symbol)) continue;
-					crossPrices.set(entryKey, price);
-					crossEquity += margin + pnl;
-					crossMaintenance += maintenance;
-				} catch {
-					crossMetricsValid = false;
-				}
-			}
-		}
-		const crossLiquidation = crossSymbols.size > 0 && crossMetricsValid && crossEquity <= crossMaintenance;
+		const groups: FuturesLiquidationGroup[] = [];
+		let crossPricesComplete = true;
 		for (const [entryKey, entry] of Object.entries(this.futuresAccount.entries)) {
 			if (entry.amount === 0) continue;
 			const asset =
@@ -1310,77 +1352,117 @@ export class PaperExchangeClient implements ExchangeClient {
 					: entryKey;
 			const symbol = `${asset}/${this.quoteCurrency}:${this.quoteCurrency}`;
 			const market = this.futuresExchange.markets[symbol];
-			if (!market || market.contract !== true || market.swap !== true) continue;
-			let price: number | undefined = crossPrices.get(entryKey);
-			try {
-				price ??= (await this.futuresExchange.fetchTicker(symbol)).last;
-			} catch {
+			if (!market || market.contract !== true || market.swap !== true) {
+				throw new Error(`Unsupported futures market: ${symbol}`);
+			}
+			const entryLots = this.snapshotFuturesLots(entry);
+			if (!prices.has(symbol)) {
+				try {
+					prices.set(symbol, futuresReferencePrice(await this.futuresExchange.fetchTicker(symbol)));
+				} catch {
+					// Positions retain their unavailable valuation below; an unpriced
+					// cross lot prevents settling the shared collateral pool.
+					prices.set(symbol, undefined);
+				}
+			}
+			const price = prices.get(symbol);
+			if (!isFinitePositive(price)) {
+				if (entryLots.some((lot) => lot.marginType === "cross")) crossPricesComplete = false;
 				continue;
 			}
-			if (!isFinitePositive(price)) continue;
-			const amount = Math.abs(entry.amount);
-			const avg = entry.cost / amount;
-			const pnl = (price - avg) * entry.amount;
-			const notional = amount * price;
-			const margin = this.snapshotFuturesLots(entry).reduce(
-				(sum, lot) => sum + (lot.amount * lot.price) / lot.leverage,
-				0,
-			);
-			const equity = margin + pnl;
-			const maintenance = notional * this.maintenanceMarginRate;
-			if (
-				!Number.isFinite(avg) ||
-				!Number.isFinite(pnl) ||
-				!Number.isFinite(notional) ||
-				!Number.isFinite(margin) ||
-				!Number.isFinite(equity) ||
-				!Number.isFinite(maintenance)
-			)
-				continue;
-			const marginType = this.futuresAccount.marginTypeBySymbol?.[symbol] ?? this.futuresAccount.marginType;
-			if (marginType === "cross" ? !crossLiquidation : equity > maintenance) continue;
-			const balance = this.futuresAccount.balances[this.quoteCurrency] ?? 0;
-			const recovered = Math.max(0, margin + pnl);
-			if (!Number.isFinite(balance) || !Number.isFinite(recovered)) continue;
-			this.futuresAccount.balances[this.quoteCurrency] = balance + recovered;
-			this.futuresAccount.realizedPnl += pnl;
-			const liquidationId = `liquidation-${this.nextOrderId++}`;
-			this.futuresAccount.orders.push({
-				id: liquidationId,
-				symbol,
-				side: entry.amount > 0 ? "sell" : "buy",
-				type: "market",
-				amount,
-				filled: amount,
-				average: price,
-				cost: notional,
-				status: "closed",
-				timestamp: Date.now(),
-				positionSide:
-					this.positionMode === "hedge" && entryKey.includes(":")
-						? (entryKey.slice(entryKey.lastIndexOf(":") + 1) as "LONG" | "SHORT")
-						: "BOTH",
-				reduceOnly: true,
-			});
-			this.futuresAccount.trades.push({
-				id: liquidationId,
-				symbol,
-				side: entry.amount > 0 ? "sell" : "buy",
-				price,
-				amount,
-				cost: notional,
-				fee: 0,
-				realizedPnl: pnl,
-				positionSide:
-					this.positionMode === "hedge" && entryKey.includes(":")
-						? (entryKey.slice(entryKey.lastIndexOf(":") + 1) as "LONG" | "SHORT")
-						: "BOTH",
-				timestamp: Date.now(),
-			});
-			delete this.futuresAccount.entries[entryKey];
-			dirty = true;
+			// Each entry can contain both modes after settings change. Existing
+			// lots keep their collateral identity and are liquidated independently.
+			for (const marginType of ["isolated", "cross"] as const) {
+				const lots = entryLots.filter((lot) => lot.marginType === marginType);
+				if (lots.length === 0) continue;
+				const amount = lots.reduce((sum, lot) => sum + lot.amount, 0);
+				const margin = lots.reduce((sum, lot) => sum + (lot.amount * lot.price) / lot.leverage, 0);
+				const pnl = lots.reduce((sum, lot) => sum + lot.amount * (price - lot.price) * Math.sign(entry.amount), 0);
+				const maintenance = amount * price * this.maintenanceMarginRate;
+				if (![amount, margin, pnl, maintenance, margin + pnl].every(Number.isFinite)) {
+					throw new Error(`Cannot calculate finite paper liquidation values for ${symbol}`);
+				}
+				groups.push({ entryKey, symbol, marginType, amount, price, margin, pnl, maintenance });
+			}
 		}
-		if (dirty) this.persistAccountsUnlocked(false, true);
+		return { groups, crossPricesComplete };
+	}
+
+	/** Close only the lots whose own collateral no longer covers maintenance margin. */
+	private async settleFuturesLiquidationsUnlocked(prices = new Map<string, number | undefined>()): Promise<void> {
+		const { groups, crossPricesComplete } = await this.futuresLiquidationGroups(prices);
+		const crossGroups = groups.filter((group) => group.marginType === "cross");
+		const crossEquity = crossGroups.reduce(
+			(sum, group) => sum + group.margin + group.pnl,
+			this.futuresAccount.balances[this.quoteCurrency] ?? 0,
+		);
+		const crossMaintenance = crossGroups.reduce((sum, group) => sum + group.maintenance, 0);
+		if (!Number.isFinite(crossEquity) || !Number.isFinite(crossMaintenance)) {
+			throw new Error("Cannot calculate finite paper cross-margin equity");
+		}
+		const crossLiquidation = crossPricesComplete && crossEquity <= crossMaintenance;
+		const liquidations = groups.filter((group) =>
+			group.marginType === "cross" ? crossLiquidation : group.margin + group.pnl <= group.maintenance,
+		);
+		if (liquidations.length === 0) return;
+		for (const group of liquidations) this.liquidateFuturesGroup(group);
+		this.persistAccountsUnlocked(false, true);
+	}
+
+	private liquidateFuturesGroup(group: FuturesLiquidationGroup): void {
+		const { entryKey, symbol, marginType, amount, price, margin, pnl } = group;
+		const entry = this.futuresAccount.entries[entryKey];
+		const direction = Math.sign(entry.amount);
+		const side = direction > 0 ? "sell" : "buy";
+		const positionSide =
+			this.positionMode === "hedge" && entryKey.includes(":")
+				? (entryKey.slice(entryKey.lastIndexOf(":") + 1) as "LONG" | "SHORT")
+				: "BOTH";
+		// Isolated losses stop at that group's collateral. Cross losses debit
+		// the shared free balance, including any deficit after a price gap.
+		const realizedPnl = marginType === "cross" ? pnl : Math.max(pnl, -margin);
+		this.futuresAccount.balances[this.quoteCurrency] =
+			(this.futuresAccount.balances[this.quoteCurrency] ?? 0) + margin + realizedPnl;
+		this.futuresAccount.realizedPnl += realizedPnl;
+		const lots = this.snapshotFuturesLots(entry).filter((lot) => lot.marginType !== marginType);
+		if (lots.length === 0) delete this.futuresAccount.entries[entryKey];
+		else {
+			this.futuresAccount.entries[entryKey] = {
+				amount: direction * lots.reduce((sum, lot) => sum + lot.amount, 0),
+				cost: lots.reduce((sum, lot) => sum + lot.amount * lot.price, 0),
+				...this.uniformFuturesLotSettings(lots),
+				lots,
+			};
+		}
+		const liquidationId = `liquidation-${this.nextOrderId++}`;
+		const timestamp = Date.now();
+		const cost = amount * price;
+		this.futuresAccount.orders.push({
+			id: liquidationId,
+			symbol,
+			side,
+			type: "market",
+			amount,
+			filled: amount,
+			average: price,
+			cost,
+			status: "closed",
+			timestamp,
+			positionSide,
+			reduceOnly: true,
+		});
+		this.futuresAccount.trades.push({
+			id: liquidationId,
+			symbol,
+			side,
+			price,
+			amount,
+			cost,
+			fee: 0,
+			realizedPnl,
+			positionSide,
+			timestamp,
+		});
 	}
 
 	private async futuresPositions(): Promise<Position[]> {
@@ -1443,12 +1525,12 @@ export class PaperExchangeClient implements ExchangeClient {
 				});
 				continue;
 			}
-			const mark = ticker.last;
+			const mark = futuresReferencePrice(ticker);
 			if (mark === undefined || !Number.isFinite(mark) || mark <= 0) {
 				result.push({
 					...basePosition,
 					valuationStatus: "unavailable",
-					valuationReason: `Ticker for ${symbol} did not provide a finite positive last price`,
+					valuationReason: `Ticker for ${symbol} did not provide a finite positive mark/index/last price`,
 				});
 				continue;
 			}
@@ -1626,7 +1708,7 @@ export class PaperExchangeClient implements ExchangeClient {
 		const now = Date.now();
 		const tickers = new Map<string, CcxtTicker>();
 		const candleCache = new Map<string, Kline[]>();
-		// One kline fetch per symbol covers all its orders: use the earliest gap.
+		// Share the earliest backfill and any short-tail pages across a symbol's orders.
 		const minSince = new Map<string, number>();
 		for (const o of open) {
 			const since = o.lastCheckedAt ?? o.timestamp;

@@ -1,7 +1,7 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { getSelectListTheme, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { type Component, type SelectItem, SelectList, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
-import { getTrading } from "./context.ts";
+import { AccountSwitchConfirmationRequired, getTrading } from "./context.ts";
 import { exchangeLabel, isSupportedExchangeId, SUPPORTED_EXCHANGES } from "./exchanges.ts";
 import { t } from "./i18n.ts";
 import {
@@ -188,6 +188,28 @@ export class TradingSettingsPanel implements Component {
 		await this.ctx.waitForIdle();
 	}
 
+	private async applyAccountSwitch(
+		action: (confirmed: boolean) => Promise<void>,
+		language: TradingLanguage,
+	): Promise<boolean> {
+		try {
+			await action(false);
+			return true;
+		} catch (error) {
+			if (!(error instanceof AccountSwitchConfirmationRequired)) throw error;
+			const confirmed = await this.ctx.ui.confirm(
+				t(language, "confirmAccountSwitchTitle"),
+				t(language, "confirmAccountSwitchMessage"),
+			);
+			if (!confirmed) {
+				this.ctx.ui.notify(t(language, "accountSwitchCancelled"), "info");
+				return false;
+			}
+			await action(true);
+			return true;
+		}
+	}
+
 	private async onChange(id: string, value: string): Promise<void> {
 		if (this.applying) return;
 		this.applying = true;
@@ -201,20 +223,30 @@ export class TradingSettingsPanel implements Component {
 			const trading = getTrading();
 			switch (id) {
 				case "language":
-					trading.setLanguage(value === "en-US" ? "en-US" : "zh-CN");
+					await trading.setLanguage(value === "en-US" ? "en-US" : "zh-CN");
 					this.onStatus();
 					this.rebuild("language");
 					return;
-				case "mode":
+				case "mode": {
 					if (value === "live" && !loadExchangeKeys()[trading.config.exchange]) {
 						this.ctx.ui.notify(t(language, "liveKeysMissing"), "error");
 						break;
 					}
-					await trading.setMode(value as TradingMode);
+					const modeApplied = await this.applyAccountSwitch(
+						(confirmed) => trading.setMode(value as TradingMode, { confirmAccountSwitch: confirmed }),
+						language,
+					);
+					if (!modeApplied) break;
 					break;
-				case "exchange":
-					await trading.setExchange(value);
+				}
+				case "exchange": {
+					const exchangeApplied = await this.applyAccountSwitch(
+						(confirmed) => trading.setExchange(value, { confirmAccountSwitch: confirmed }),
+						language,
+					);
+					if (!exchangeApplied) break;
 					break;
+				}
 				case "market-type": {
 					if (value === "both" && trading.mode !== "paper") {
 						this.ctx.ui.notify(t(language, "marketBothPaperOnly"), "error");
@@ -224,12 +256,21 @@ export class TradingSettingsPanel implements Component {
 						this.ctx.ui.notify(t(language, "marketFuturesBinanceOnly"), "error");
 						break;
 					}
-					await trading.setMarketType(value as MarketType);
+					const marketApplied = await this.applyAccountSwitch(
+						(confirmed) => trading.setMarketType(value as MarketType, { confirmAccountSwitch: confirmed }),
+						language,
+					);
+					if (!marketApplied) break;
 					break;
 				}
-				case "quote-currency":
-					await trading.patchConfig({ quoteCurrency: value });
+				case "quote-currency": {
+					const quoteApplied = await this.applyAccountSwitch(
+						(confirmed) => trading.patchConfig({ quoteCurrency: value, confirmAccountSwitch: confirmed }),
+						language,
+					);
+					if (!quoteApplied) break;
 					break;
+				}
 				case "confirm-live":
 					await trading.patchConfig({ confirmLiveOrders: parseOnOff(language, value) });
 					break;
@@ -241,7 +282,24 @@ export class TradingSettingsPanel implements Component {
 						this.ctx.ui.notify(t(language, "paperResetOnly"), "error");
 						break;
 					}
-					await trading.resetPaperAccount();
+					const confirmed = await this.ctx.ui.confirm(
+						t(language, "paperReset"),
+						`All simulated balances, open orders and trade history will be wiped. New starting balance: ${trading.config.paper.startQuote} ${trading.config.quoteCurrency}.`,
+					);
+					if (!confirmed) break;
+					await trading.resetPaperAccount(undefined, { confirmExposure: true });
+					break;
+				}
+				case "paper-start": {
+					const startQuote = Number(value.split(/\s+/)[0]);
+					if (!Number.isFinite(startQuote) || startQuote <= 0) throw new Error("Invalid paper start balance");
+					await trading.patchConfig({ paper: { startQuote } });
+					break;
+				}
+				case "paper-fee": {
+					const feeRate = Number(value.replace("%", "")) / 100;
+					if (!Number.isFinite(feeRate) || feeRate < 0 || feeRate >= 1) throw new Error("Invalid paper fee rate");
+					await trading.patchConfig({ paper: { feeRate } });
 					break;
 				}
 				case "monitor-enabled":
@@ -426,7 +484,7 @@ export class TradingSettingsPanel implements Component {
 				id: "risk",
 				label: t(language, "risk"),
 				description: t(language, "riskDesc"),
-				currentValue: `${usage.used}/${usage.limit} ${cfg.quoteCurrency}`,
+				currentValue: `${usage.used}/${usage.limit} ${cfg.quoteCurrency}${usage.newExposurePause ? ` · ${t(language, "riskEntriesPaused")}` : ""}`,
 				submenu: (_current, done) => this.riskSubmenu(done),
 			},
 			{
@@ -485,6 +543,14 @@ export class TradingSettingsPanel implements Component {
 		return this.nestedList(
 			[
 				{
+					id: "risk-entries",
+					label: t(language, "riskEntries"),
+					description: t(language, "riskPauseControls"),
+					currentValue: usage.newExposurePause
+						? `${t(language, "riskEntriesPaused")}: ${usage.newExposurePause.reason}`
+						: t(language, "riskEntriesAllowed"),
+				},
+				{
 					id: "risk-max-order",
 					label: t(language, "riskMaxOrder"),
 					currentValue: `${cfg.risk.maxOrderNotional} ${cfg.quoteCurrency}`,
@@ -540,11 +606,17 @@ export class TradingSettingsPanel implements Component {
 					id: "paper-start",
 					label: t(language, "paperStart"),
 					currentValue: `${cfg.paper.startQuote} ${cfg.quoteCurrency}`,
+					values: uniqueValues(
+						["1000", "10000", "50000", String(cfg.paper.startQuote)].map(
+							(value) => `${value} ${cfg.quoteCurrency}`,
+						),
+					),
 				},
 				{
 					id: "paper-fee",
 					label: t(language, "paperFee"),
 					currentValue: `${(cfg.paper.feeRate * 100).toFixed(2)}%`,
+					values: uniqueValues(["0.05%", "0.10%", "0.20%", `${(cfg.paper.feeRate * 100).toFixed(2)}%`]),
 				},
 				{
 					id: "paper-reset",
@@ -702,17 +774,22 @@ function parentSettingId(id: string): string {
 }
 
 export async function loginExchange(exchange: string, ctx: ExtensionCommandContext): Promise<void> {
-	const apiKey = await ctx.ui.input(`API key for ${exchange}`, "paste API key");
+	const inputOptions = { secret: true };
+	const apiKey = await ctx.ui.input(`API key for ${exchange}`, "paste API key", inputOptions);
 	if (!apiKey) {
 		ctx.ui.notify("Cancelled", "info");
 		return;
 	}
-	const secret = await ctx.ui.input(`Secret for ${exchange}`, "paste API secret");
+	const secret = await ctx.ui.input(`Secret for ${exchange}`, "paste API secret", inputOptions);
 	if (!secret) {
 		ctx.ui.notify("Cancelled", "info");
 		return;
 	}
-	const password = await ctx.ui.input(`Password/passphrase for ${exchange} (optional)`, "leave empty if none");
+	const password = await ctx.ui.input(
+		`Password/passphrase for ${exchange} (optional)`,
+		"leave empty if none",
+		inputOptions,
+	);
 	const keys = loadExchangeKeys();
 	keys[exchange] = { apiKey: apiKey.trim(), secret: secret.trim(), password: password?.trim() || undefined };
 	saveExchangeKeys(keys);

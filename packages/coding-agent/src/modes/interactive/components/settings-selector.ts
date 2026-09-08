@@ -46,6 +46,17 @@ const DEFAULT_PROJECT_TRUST_BY_LABEL = new Map(
 	Object.entries(DEFAULT_PROJECT_TRUST_LABELS).map(([value, label]) => [label, value as DefaultProjectTrust]),
 );
 
+export type DescriptionLocalizer = (key: string, fallback: string, params?: Record<string, string | number>) => string;
+
+function describe(
+	localizer: DescriptionLocalizer | undefined,
+	key: string,
+	fallback: string,
+	params?: Record<string, string | number>,
+): string {
+	return localizer?.(key, fallback, params) ?? fallback;
+}
+
 export interface SettingsConfig {
 	autoCompact: boolean;
 	defaultModel: string;
@@ -131,7 +142,12 @@ class WarningSettingsSubmenu extends Container {
 	private settingsList: SettingsList;
 	private state: WarningSettings;
 
-	constructor(warnings: WarningSettings, onChange: (warnings: WarningSettings) => void, onCancel: () => void) {
+	constructor(
+		warnings: WarningSettings,
+		onChange: (warnings: WarningSettings) => void,
+		onCancel: () => void,
+		localizer?: DescriptionLocalizer,
+	) {
 		super();
 
 		this.state = { ...warnings };
@@ -140,7 +156,11 @@ class WarningSettingsSubmenu extends Container {
 			{
 				id: "anthropic-extra-usage",
 				label: "Anthropic extra usage",
-				description: "Warn when Anthropic subscription auth may use paid extra usage",
+				description: describe(
+					localizer,
+					"settings.warning.anthropic-extra-usage",
+					"Warn when Anthropic subscription auth may use paid extra usage",
+				),
 				currentValue: (this.state.anthropicExtraUsage ?? true) ? "true" : "false",
 				values: ["true", "false"],
 			},
@@ -195,12 +215,16 @@ function themeItems(availableThemes: string[]): SelectItem[] {
 
 const AUTOMATIC_THEME_VALUE = "/";
 
-function singleModeThemeItems(availableThemes: string[]): SelectItem[] {
+function singleModeThemeItems(availableThemes: string[], localizer?: DescriptionLocalizer): SelectItem[] {
 	return [
 		{
 			value: AUTOMATIC_THEME_VALUE,
 			label: "Automatic",
-			description: "Use separate themes for light and dark terminal appearance",
+			description: describe(
+				localizer,
+				"settings.theme.automatic",
+				"Use separate themes for light and dark terminal appearance",
+			),
 		},
 		...themeItems(availableThemes),
 	];
@@ -231,6 +255,7 @@ class ThemeSubmenu extends Container {
 	private readonly terminalTheme: TerminalTheme;
 	private readonly onDone: (selectedValue?: string) => void;
 	private readonly originalThemeSetting: string;
+	private readonly localizer: DescriptionLocalizer | undefined;
 	private mode: "single" | "automatic";
 	private singleTheme: string;
 	private lightTheme: string;
@@ -242,12 +267,14 @@ class ThemeSubmenu extends Container {
 		availableThemes: string[],
 		callbacks: SettingsCallbacks,
 		onDone: (selectedValue?: string) => void,
+		localizer?: DescriptionLocalizer,
 	) {
 		super();
 		this.callbacks = callbacks;
 		this.availableThemes = availableThemes;
 		this.terminalTheme = terminalTheme;
 		this.onDone = onDone;
+		this.localizer = localizer;
 		this.originalThemeSetting = currentThemeSetting;
 		const autoTheme = parseAutoThemeSetting(currentThemeSetting);
 		const automaticThemes = defaultAutomaticThemes(currentThemeSetting, availableThemes);
@@ -282,8 +309,12 @@ class ThemeSubmenu extends Container {
 		this.mode = "single";
 		const menu = new SelectSubmenu(
 			"Theme",
-			"Select a theme, or choose Automatic to follow terminal appearance.",
-			singleModeThemeItems(this.availableThemes),
+			describe(
+				this.localizer,
+				"settings.theme.select",
+				"Select a theme, or choose Automatic to follow terminal appearance.",
+			),
+			singleModeThemeItems(this.availableThemes, this.localizer),
 			this.singleTheme,
 			(value) => {
 				if (value === AUTOMATIC_THEME_VALUE) {
@@ -309,20 +340,48 @@ class ThemeSubmenu extends Container {
 		const content = new Container();
 		content.addChild(new Text(theme.bold(theme.fg("accent", "Automatic Theme")), 0, 0));
 		content.addChild(new Spacer(1));
-		content.addChild(new Text(theme.fg("muted", "Choose themes for terminal light and dark appearance."), 0, 0));
-		content.addChild(new Text(theme.fg("muted", "Light/dark detection requires terminal support."), 0, 0));
+		content.addChild(
+			new Text(
+				theme.fg(
+					"muted",
+					describe(
+						this.localizer,
+						"settings.theme.automatic-title",
+						"Choose themes for terminal light and dark appearance.",
+					),
+				),
+				0,
+			),
+		);
+		content.addChild(
+			new Text(
+				theme.fg(
+					"muted",
+					describe(this.localizer, "settings.theme.detection", "Light/dark detection requires terminal support."),
+				),
+				0,
+			),
+		);
 		content.addChild(new Spacer(1));
 
 		const items: SettingItem[] = [
 			{
 				id: "light-theme",
 				label: "Light theme",
-				description: "Theme to use in automatic mode when the terminal is light",
+				description: describe(
+					this.localizer,
+					"settings.theme.light",
+					"Theme to use in automatic mode when the terminal is light",
+				),
 				currentValue: this.lightTheme,
 				submenu: (currentValue, done) =>
 					this.createThemeSelect(
 						"Light Theme",
-						"Select the theme to use for light terminal appearance",
+						describe(
+							this.localizer,
+							"settings.theme.light-title",
+							"Select the theme to use for light terminal appearance",
+						),
 						currentValue,
 						done,
 						(value) => {
@@ -335,12 +394,20 @@ class ThemeSubmenu extends Container {
 			{
 				id: "dark-theme",
 				label: "Dark theme",
-				description: "Theme to use in automatic mode when the terminal is dark",
+				description: describe(
+					this.localizer,
+					"settings.theme.dark",
+					"Theme to use in automatic mode when the terminal is dark",
+				),
 				currentValue: this.darkTheme,
 				submenu: (currentValue, done) =>
 					this.createThemeSelect(
 						"Dark Theme",
-						"Select the theme to use for dark terminal appearance",
+						describe(
+							this.localizer,
+							"settings.theme.dark-title",
+							"Select the theme to use for dark terminal appearance",
+						),
 						currentValue,
 						done,
 						(value) => {
@@ -353,14 +420,18 @@ class ThemeSubmenu extends Container {
 			{
 				id: "apply",
 				label: "Apply",
-				description: "Save and go back",
+				description: describe(this.localizer, "settings.theme.apply", "Save and go back"),
 				currentValue: "save and go back",
 				values: ["save and go back"],
 			},
 			{
 				id: "single-mode",
 				label: "Change mode",
-				description: "Switch to one theme for light and dark",
+				description: describe(
+					this.localizer,
+					"settings.theme.change-mode",
+					"Switch to one theme for light and dark",
+				),
 				currentValue: "switch to single theme",
 				values: ["switch to single theme"],
 			},
@@ -438,8 +509,10 @@ class ThemeSubmenu extends Container {
 export class SettingsSelectorComponent extends Container {
 	private settingsList: SettingsList;
 
-	constructor(config: SettingsConfig, callbacks: SettingsCallbacks) {
+	constructor(config: SettingsConfig, callbacks: SettingsCallbacks, localizer?: DescriptionLocalizer) {
 		super();
+		const localized = (key: string, fallback: string, params?: Record<string, string | number>) =>
+			describe(localizer, key, fallback, params);
 
 		const supportsImages = getCapabilities().images;
 		const followUpKey = keyDisplayText("app.message.followUp");
@@ -456,107 +529,130 @@ export class SettingsSelectorComponent extends Container {
 			{
 				id: "autocompact",
 				label: "Auto-compact",
-				description: "Automatically compact context when it gets too large",
+				description: localized("settings.auto-compact", "Automatically compact context when it gets too large"),
 				currentValue: config.autoCompact ? "true" : "false",
 				values: ["true", "false"],
 			},
 			{
 				id: "steering-mode",
 				label: "Steering mode",
-				description:
+				description: localized(
+					"settings.steering-mode",
 					"Enter while streaming queues steering messages. 'one-at-a-time': deliver one, wait for response. 'all': deliver all at once.",
+				),
 				currentValue: config.steeringMode,
 				values: ["one-at-a-time", "all"],
 			},
 			{
 				id: "follow-up-mode",
 				label: "Follow-up mode",
-				description: `${followUpKey} queues follow-up messages until agent stops. 'one-at-a-time': deliver one, wait for response. 'all': deliver all at once.`,
+				description: localized(
+					"settings.follow-up-mode",
+					`${followUpKey} queues follow-up messages until agent stops. 'one-at-a-time': deliver one, wait for response. 'all': deliver all at once.`,
+					{ followUpKey },
+				),
 				currentValue: config.followUpMode,
 				values: ["one-at-a-time", "all"],
 			},
 			{
 				id: "transport",
 				label: "Transport",
-				description: "Preferred transport for providers that support multiple transports",
+				description: localized(
+					"settings.transport",
+					"Preferred transport for providers that support multiple transports",
+				),
 				currentValue: config.transport,
 				values: ["sse", "websocket", "websocket-cached", "auto"],
 			},
 			{
 				id: "http-idle-timeout",
 				label: "HTTP idle timeout",
-				description:
+				description: localized(
+					"settings.http-idle-timeout",
 					"Maximum idle gap while waiting for HTTP headers or body chunks. Disable for local models that pause longer than five minutes.",
+				),
 				currentValue: formatHttpIdleTimeoutMs(config.httpIdleTimeoutMs),
 				values: HTTP_IDLE_TIMEOUT_CHOICES.map((choice) => choice.label),
 			},
 			{
 				id: "hide-thinking",
 				label: "Hide thinking",
-				description: "Hide thinking blocks in assistant responses",
+				description: localized("settings.hide-thinking", "Hide thinking blocks in assistant responses"),
 				currentValue: config.hideThinkingBlock ? "true" : "false",
 				values: ["true", "false"],
 			},
 			{
 				id: "mermaid-rendering",
 				label: "Mermaid diagrams",
-				description: "Render Mermaid code blocks as Unicode diagrams",
+				description: localized("settings.mermaid-rendering", "Render Mermaid code blocks as Unicode diagrams"),
 				currentValue: config.mermaidRenderingMode,
 				values: ["off", "final", "streaming"],
 			},
 			{
 				id: "cache-miss-notices",
 				label: "Cache miss notices",
-				description: "Show transcript notices for significant prompt-cache misses and compaction costs",
+				description: localized(
+					"settings.cache-miss-notices",
+					"Show transcript notices for significant prompt-cache misses and compaction costs",
+				),
 				currentValue: config.showCacheMissNotices ? "true" : "false",
 				values: ["true", "false"],
 			},
 			{
 				id: "collapse-changelog",
 				label: "Collapse changelog",
-				description: "Show condensed changelog after updates",
+				description: localized("settings.collapse-changelog", "Show condensed changelog after updates"),
 				currentValue: config.collapseChangelog ? "true" : "false",
 				values: ["true", "false"],
 			},
 			{
 				id: "quiet-startup",
 				label: "Quiet startup",
-				description: "Disable verbose printing at startup",
+				description: localized("settings.quiet-startup", "Disable verbose printing at startup"),
 				currentValue: config.quietStartup ? "true" : "false",
 				values: ["true", "false"],
 			},
 			{
 				id: "install-telemetry",
 				label: "Install telemetry",
-				description: "Send an anonymous version/update ping after changelog-detected updates",
+				description: localized(
+					"settings.install-telemetry",
+					"Send an anonymous version/update ping after changelog-detected updates",
+				),
 				currentValue: config.enableInstallTelemetry ? "true" : "false",
 				values: ["true", "false"],
 			},
 			{
 				id: "default-project-trust",
 				label: "Default project trust",
-				description: "Fallback behavior when no extension or saved trust decision decides project trust",
+				description: localized(
+					"settings.default-project-trust",
+					"Fallback behavior when no extension or saved trust decision decides project trust",
+				),
 				currentValue: DEFAULT_PROJECT_TRUST_LABELS[config.defaultProjectTrust],
 				values: Object.values(DEFAULT_PROJECT_TRUST_LABELS),
 			},
 			{
 				id: "double-escape-action",
 				label: "Double-escape action",
-				description: "Action when pressing Escape twice with empty editor",
+				description: localized(
+					"settings.double-escape-action",
+					"Action when pressing Escape twice with empty editor",
+				),
 				currentValue: config.doubleEscapeAction,
 				values: ["tree", "fork", "none"],
 			},
 			{
 				id: "tree-filter-mode",
 				label: "Tree filter mode",
-				description: "Default filter when opening /tree",
+				description: localized("settings.tree-filter-mode", "Default filter when opening /tree"),
 				currentValue: config.treeFilterMode,
 				values: ["default", "no-tools", "user-only", "labeled-only", "all"],
 			},
 			{
 				id: "warnings",
 				label: "Warnings",
-				description: "Enable or disable individual warnings",
+				description: localized("settings.warnings", "Enable or disable individual warnings"),
 				currentValue: "configure",
 				submenu: (_currentValue, done) =>
 					new WarningSettingsSubmenu(
@@ -566,19 +662,24 @@ export class SettingsSelectorComponent extends Container {
 							callbacks.onWarningsChange(warnings);
 						},
 						() => done(),
+						localizer,
 					),
 			},
 			{
 				id: "model-thinking",
 				label: "Default thinking level per model",
-				description: `Override the default thinking level for specific models. ${cycleThinkingKey} cycles in-session.`,
+				description: localized(
+					"settings.model-thinking",
+					`Override the default thinking level for specific models. ${cycleThinkingKey} cycles in-session.`,
+					{ cycleThinkingKey },
+				),
 				currentValue: modelThinkingOverridesSummary(currentModelThinkingLevels),
 				submenu: (_currentValue, done) => {
 					const steps: SteppedSubmenuStep[] = [
 						{
 							key: "model",
 							title: "Per-Model Thinking Level",
-							description: "Select a model to configure",
+							description: localized("settings.model-thinking.select-model", "Select a model to configure"),
 							options: () => {
 								const sorted = [...config.availableDefaultModels].sort((a, b) => {
 									const aKey = modelSettingKey(a);
@@ -602,7 +703,10 @@ export class SettingsSelectorComponent extends Container {
 									items.push({
 										value: "__none__",
 										label: "No models available",
-										description: "Log in to a provider or configure an API key first",
+										description: localized(
+											"settings.model-thinking.no-models",
+											"Log in to a provider or configure an API key first",
+										),
 									});
 								}
 								return items;
@@ -617,7 +721,10 @@ export class SettingsSelectorComponent extends Container {
 								const m = defaultModelByValue.get(ctx.model);
 								return `Thinking Level for ${m ? modelDisplayLabel(m) : ctx.model}`;
 							},
-							description: "Select default thinking level for this model",
+							description: localized(
+								"settings.model-thinking.level",
+								"Select default thinking level for this model",
+							),
 							options: (ctx) => {
 								const model = defaultModelByValue.get(ctx.model);
 								if (!model) return [];
@@ -627,13 +734,17 @@ export class SettingsSelectorComponent extends Container {
 								const items: SelectItem[] = levels.map((level) => ({
 									value: level,
 									label: level,
-									description: THINKING_DESCRIPTIONS[level],
+									description: localized(`settings.thinking.${level}`, THINKING_DESCRIPTIONS[level]),
 								}));
 								if (currentModelThinkingLevels[ctx.model] !== undefined) {
 									items.push({
 										value: CLEAR_OVERRIDE_VALUE,
 										label: "(clear override)",
-										description: `Revert to global default (${config.thinkingLevel})`,
+										description: localized(
+											"settings.model-thinking.clear",
+											`Revert to global default (${config.thinkingLevel})`,
+											{ thinkingLevel: config.thinkingLevel },
+										),
 									});
 								}
 								return items;
@@ -671,31 +782,37 @@ export class SettingsSelectorComponent extends Container {
 			{
 				id: "tui-mode",
 				label: "TUI mode",
-				description: "Interface layout; fullscreen mode is experimental",
+				description: localized("settings.tui-mode", "Interface layout; fullscreen mode is experimental"),
 				currentValue: config.tuiMode,
 				values: ["regular", "fullscreen"],
 			},
 			{
 				id: "fullscreen-exit-output",
 				label: "Fullscreen exit output",
-				description: "Print the transcript or only a session resume hint when exiting fullscreen mode",
+				description: localized(
+					"settings.fullscreen-exit-output",
+					"Print the transcript or only a session resume hint when exiting fullscreen mode",
+				),
 				currentValue: config.fullscreenExitOutput,
 				values: ["transcript", "resume-hint"],
 			},
 			{
 				id: "fullscreen-scrollbar",
 				label: "Fullscreen scrollbar",
-				description: "Scrollbar behavior in fullscreen mode; has no effect in regular mode",
+				description: localized(
+					"settings.fullscreen-scrollbar",
+					"Scrollbar behavior in fullscreen mode; has no effect in regular mode",
+				),
 				currentValue: config.fullscreenScrollbar,
 				values: ["auto", "always", "hidden"],
 			},
 			{
 				id: "theme",
 				label: "Theme",
-				description: "Color theme for the interface",
+				description: localized("settings.theme", "Color theme for the interface"),
 				currentValue: config.currentTheme,
 				submenu: (currentValue, done) =>
-					new ThemeSubmenu(currentValue, config.terminalTheme, config.availableThemes, callbacks, done),
+					new ThemeSubmenu(currentValue, config.terminalTheme, config.availableThemes, callbacks, done, localizer),
 			},
 		];
 
@@ -705,14 +822,14 @@ export class SettingsSelectorComponent extends Container {
 			items.splice(1, 0, {
 				id: "show-images",
 				label: "Show images",
-				description: "Render images inline in terminal",
+				description: localized("settings.show-images", "Render images inline in terminal"),
 				currentValue: config.showImages ? "true" : "false",
 				values: ["true", "false"],
 			});
 			items.splice(2, 0, {
 				id: "image-width-cells",
 				label: "Image width",
-				description: "Preferred inline image width in terminal cells",
+				description: localized("settings.image-width", "Preferred inline image width in terminal cells"),
 				currentValue: String(config.imageWidthCells),
 				values: ["60", "80", "120"],
 			});
@@ -722,7 +839,10 @@ export class SettingsSelectorComponent extends Container {
 		items.splice(supportsImages ? 3 : 1, 0, {
 			id: "auto-resize-images",
 			label: "Auto-resize images",
-			description: "Resize large images to 2000x2000 max for better model compatibility",
+			description: localized(
+				"settings.auto-resize-images",
+				"Resize large images to 2000x2000 max for better model compatibility",
+			),
 			currentValue: config.autoResizeImages ? "true" : "false",
 			values: ["true", "false"],
 		});
@@ -732,7 +852,7 @@ export class SettingsSelectorComponent extends Container {
 		items.splice(autoResizeIndex + 1, 0, {
 			id: "block-images",
 			label: "Block images",
-			description: "Prevent images from being sent to LLM providers",
+			description: localized("settings.block-images", "Prevent images from being sent to LLM providers"),
 			currentValue: config.blockImages ? "true" : "false",
 			values: ["true", "false"],
 		});
@@ -742,7 +862,7 @@ export class SettingsSelectorComponent extends Container {
 		items.splice(blockImagesIndex + 1, 0, {
 			id: "skill-commands",
 			label: "Skill commands",
-			description: "Register skills as /skill:name commands",
+			description: localized("settings.skill-commands", "Register skills as /skill:name commands"),
 			currentValue: config.enableSkillCommands ? "true" : "false",
 			values: ["true", "false"],
 		});
@@ -752,7 +872,10 @@ export class SettingsSelectorComponent extends Container {
 		items.splice(skillCommandsIndex + 1, 0, {
 			id: "show-hardware-cursor",
 			label: "Show hardware cursor",
-			description: "Show the terminal cursor while still positioning it for IME support",
+			description: localized(
+				"settings.show-hardware-cursor",
+				"Show the terminal cursor while still positioning it for IME support",
+			),
 			currentValue: config.showHardwareCursor ? "true" : "false",
 			values: ["true", "false"],
 		});
@@ -762,7 +885,7 @@ export class SettingsSelectorComponent extends Container {
 		items.splice(hardwareCursorIndex + 1, 0, {
 			id: "editor-padding",
 			label: "Editor padding",
-			description: "Horizontal padding for input editor (0-3)",
+			description: localized("settings.editor-padding", "Horizontal padding for input editor (0-3)"),
 			currentValue: String(config.editorPaddingX),
 			values: ["0", "1", "2", "3"],
 		});
@@ -772,7 +895,10 @@ export class SettingsSelectorComponent extends Container {
 		items.splice(editorPaddingIndex + 1, 0, {
 			id: "output-padding",
 			label: "Output padding",
-			description: "Horizontal padding for user messages, assistant messages, and thinking",
+			description: localized(
+				"settings.output-padding",
+				"Horizontal padding for user messages, assistant messages, and thinking",
+			),
 			currentValue: String(config.outputPad),
 			values: ["0", "1"],
 		});
@@ -782,7 +908,10 @@ export class SettingsSelectorComponent extends Container {
 		items.splice(outputPaddingIndex + 1, 0, {
 			id: "autocomplete-max-visible",
 			label: "Autocomplete max items",
-			description: "Max visible items in autocomplete dropdown (3-20)",
+			description: localized(
+				"settings.autocomplete-max-visible",
+				"Max visible items in autocomplete dropdown (3-20)",
+			),
 			currentValue: String(config.autocompleteMaxVisible),
 			values: ["3", "5", "7", "10", "15", "20"],
 		});
@@ -792,7 +921,10 @@ export class SettingsSelectorComponent extends Container {
 		items.splice(autocompleteIndex + 1, 0, {
 			id: "clear-on-shrink",
 			label: "Clear on shrink",
-			description: "Clear empty rows when content shrinks (may cause flicker)",
+			description: localized(
+				"settings.clear-on-shrink",
+				"Clear empty rows when content shrinks (may cause flicker)",
+			),
 			currentValue: config.clearOnShrink ? "true" : "false",
 			values: ["true", "false"],
 		});
@@ -802,7 +934,10 @@ export class SettingsSelectorComponent extends Container {
 		items.splice(clearOnShrinkIndex + 1, 0, {
 			id: "terminal-progress",
 			label: "Terminal progress",
-			description: "Show OSC 9;4 progress indicators in the terminal tab bar",
+			description: localized(
+				"settings.terminal-progress",
+				"Show OSC 9;4 progress indicators in the terminal tab bar",
+			),
 			currentValue: config.showTerminalProgress ? "true" : "false",
 			values: ["true", "false"],
 		});

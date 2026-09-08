@@ -1,0 +1,24 @@
+{
+	"name": "ti-market-chart-extension",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "TUI market snapshots with agent-provided trading scenarios",
+	"ti": { "extensions": ["./index.ts"] },
+	"pi": { "extensions": ["./index.ts"] },
+	"scripts": {
+		"build": "tsgo -p tsconfig.json",
+		"test": "vitest --run"
+	},
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"@earendil-works/pi-tui": "*",
+		"ti-trader": "*",
+		"typebox": "*"
+	},
+	"devDependencies": {
+		"@types/node": "22.19.19",
+		"typescript": "5.9.3",
+		"vitest": "4.1.9"
+	}
+}

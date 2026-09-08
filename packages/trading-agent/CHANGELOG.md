@@ -4,6 +4,35 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.9] - 2026-09-08
+
+### Added
+
+- Added `/risk pause [reason]` and interactive-only `/risk resume`, durable pause metadata, bilingual status/settings displays, and pause reporting in risk tools. Resume rejects unsettled reservations and stale runtime or pause confirmations.
+- Added atomic execution records, automatic bounded startup reconciliation, confirmed `/recovery` resolution and bounded audit history, with original-account identity and persistent maintenance fences.
+- Added durable scoped trigger/order-monitor baselines, cooldowns and bounded notification retries with stable delivery IDs. Live triggers and recovered/retried notifications never wake trading; fresh order/guard events retain the configured analysis wake behavior.
+- Added read-only `/health`, isolated offline readiness gates, release evidence validation and operator recovery/backup procedures. Sustained Paper and authorized live acceptance remain separate requirements.
+- Added an isolated package-install verifier and a Paper soak collector that write release-gate artifacts from packed tarballs and durable journal/ledger state. They do not publish or mark a seven-day run complete.
+
+### Changed
+
+- Smoke checks now isolate Ti data under a temporary directory by default; `TI_DATA_DIR` can select an explicit test directory. Runtime storage path derivation is centralized for repeatable tests.
+- Account and market switches now require explicit confirmation when existing or unverified exchange exposure could be hidden; Paper checks both ledgers and Binance live checks both Spot and USDⓈ-M wallets.
+- Runtime initialization and client replacement are transactional, repeated shutdowns are idempotent, and risk-only configuration changes roll back persisted state when engine installation fails.
+- Paper settings now apply their configured start balance and fee rate, while fee-rate changes are blocked when open orders, positions, or unsettled reservations exist.
+
+### Fixed
+
+- Order and trigger monitors now isolate session generations, discard stale polls, retry unresolved fills with a bounded retention window, and clear position alert state after close/re-entry.
+- Settings mask exchange credentials, and command/settings account-switch confirmations now have explicit interactive and headless-safe paths.
+- Protection coverage counts only the remaining unfilled protective quantity, and monitor polling observes runtime interval changes without leaving a stale interval running.
+- OCO execution now consumes the engine's structured preflight assessment instead of maintaining a second market and balance validation path.
+- Trigger polling reports failed position or price observations while continuing to evaluate independent price and time triggers.
+- Failed runtime shutdowns can be retried, including after an exchange switch, without duplicating concurrent close attempts.
+- Trigger evaluation uses collection-completion time and timestamps position observations when received, preventing slow requests from losing crossings, accepting stale data, or firing expired triggers.
+
+## [0.1.8] - 2026-09-03
+
 ### Added
 
 - Added `/risk reconcile <id> commit|release` to settle stuck in-flight risk reservations after verifying the exchange order. `get_risk_status` now lists pending reservations, and session start warns when any remain.
@@ -16,6 +45,7 @@ All notable changes to `ti-trader` are documented in this file.
 
 ### Changed
 
+- CLI `--mode` and `--exchange` overrides coerce an incompatible stored `marketType` to `spot` for the session only and rewrite `risk.allowedSymbols` to the spot family. Interactive `/exchange`, `/market`, `/mode`, and `/settings` still fail closed and do not persist a silent rewrite.
 - Live `/trigger` `wake_agent` actions notify only and no longer start an agent turn. Price facts use the ticker timestamp instead of poll time, so stale quotes do not fire.
 - Deduplicated live account-change confirmation, order/OCO placement failure handling, market-info matching, and contract-stats serialization in trading tools.
 - Empty `/` slash suggestions now pin a short trading list; remaining commands stay available when typed.
@@ -152,7 +182,12 @@ Initial public release.
 - Coding tools disabled; system prompt fully replaced with a trading-domain prompt
 - Configuration and state under `~/.ti/agent/`, isolated from the pi coding agent's `~/.pi`
 
-[Unreleased]: https://github.com/NIKOPACK/Ti/compare/v0.1.4...HEAD
+[Unreleased]: https://github.com/NIKOPACK/Ti/compare/v0.1.9...HEAD
+[0.1.9]: https://github.com/NIKOPACK/Ti/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/NIKOPACK/Ti/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/NIKOPACK/Ti/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/NIKOPACK/Ti/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/NIKOPACK/Ti/compare/v0.1.4...v0.1.5
 [0.1.4]: https://github.com/NIKOPACK/Ti/compare/v0.1.3...v0.1.4
 [0.1.3]: https://github.com/NIKOPACK/Ti/compare/v0.1.2...v0.1.3
 [0.1.1]: https://github.com/NIKOPACK/Ti/compare/v0.1.0...v0.1.1

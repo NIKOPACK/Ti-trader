@@ -1,5 +1,5 @@
 import type { RequestEnvelope } from "@earendil-works/pi-protocol";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { collectRequests, connectClient, MemoryServer, openRemoteSession, sessionSnapshot } from "./support.ts";
 
 function nextRequest(server: MemoryServer, command: RequestEnvelope["request"]["command"]): Promise<RequestEnvelope> {
@@ -186,5 +186,40 @@ describe("RemoteSession lifecycle", () => {
 		await disposing;
 		expect(states).toContain("disposed");
 		expect(() => remoteSession.subscribe(() => {})).toThrow("Remote session is disposed");
+	});
+
+	test("restores the ready lifecycle when an operation throws synchronously", async () => {
+		const server = new MemoryServer();
+		const client = await connectClient(server);
+		const remoteSession = await openRemoteSession(client, server, sessionSnapshot("session-1"));
+		vi.spyOn(client, "acquireSession").mockImplementation(() => {
+			throw new Error("invalid local session request");
+		});
+
+		await expect(remoteSession.open("session-2")).rejects.toThrow("invalid local session request");
+		expect(remoteSession.state.lifecycle).toEqual({ status: "ready" });
+	});
+
+	test("cleans up connection listeners when disposed", async () => {
+		const server = new MemoryServer();
+		const client = await connectClient(server);
+		const remoteSession = await openRemoteSession(client, server, sessionSnapshot("session-1"));
+		const changes: string[] = [];
+		remoteSession.onConnectionStateChange((change) => changes.push(change.state));
+		const requests = collectRequests(server);
+
+		const disposing = remoteSession.dispose();
+		const detachRequest = requests.find(({ request }) => request.command === "detach");
+		if (!detachRequest) throw new Error("Missing detach request");
+		server.send({
+			type: "response",
+			id: detachRequest.id,
+			ok: true,
+			result: { command: "detach", sessionId: "session-1" },
+		});
+		await disposing;
+		client.disconnect("after dispose");
+
+		expect(changes).toEqual([]);
 	});
 });

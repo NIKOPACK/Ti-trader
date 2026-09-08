@@ -4,6 +4,41 @@ All notable changes to `@earendil-works/ti-trading-engine` are documented in thi
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-09-08
+
+### Breaking Changes
+
+- Order submission now requires explicit execution-journal options and an account identity; durable callers must also capture the admission generation before loading configuration or constructing clients. `TradingRuntime` provides durable defaults. Standalone callers must configure an atomic combined store; memory durability is an explicit testing choice.
+
+### Added
+
+- Enforced persistent new-exposure pauses before preflight, during reservation and after order/OCO confirmation, while retaining validated exits and cancellations.
+- Added atomic journal/reservation settlement, stable ordinary/OCO client IDs, bounded correlated recovery, manual evidence-based resolution and maintenance fences without TTL takeover.
+- Added cross-process admission generations, settlement-ordered terminal retention and durable Paper transaction synchronization before reset completion.
+- Added an executable capability matrix shared by planning, preflight, adapter parameter mapping and recovery. Technical support is separate from offline versus externally verified evidence.
+
+### Changed
+
+- Exchange-independent order-field validation is isolated from the ccxt adapter and covered by focused unit tests, while the public order API remains unchanged.
+- OCO market and balance preflight now returns a structured assessment for callers to render without duplicating exchange rules.
+- Live submissions now require an explicit confirmation policy; headless callers must opt in with `allowUnconfirmedLive`.
+
+### Fixed
+
+- Submission failures default to status-unknown unless they are a definite business rejection (`InsufficientFunds`, `InvalidOrder`, authentication, Binance `-2010`/`-1013`/`-2021`). Transport errors such as `socket hang up`, `ECONNRESET`, `BadResponse`, and 429/418 rate limits now reconcile by clientOrderId instead of releasing risk quota.
+- Live adapters reject malformed order inputs before exchange calls, require strict futures contract metadata, and refuse uncorrelated emulated client-id lookups.
+- Paper account snapshots validate persisted ledger invariants, and Binance account-exposure checks inspect the opposite Spot/USDⓈ-M wallet before a market-family switch.
+- Futures preflight uses the adapter's effective per-symbol leverage and Paper futures balances report used margin, equity, and mark/index-price valuation; isolated ticker failures no longer suppress cross-margin liquidation checks.
+- Partially filled or unresolved live orders retain their remaining daily quota exposure, including OCO submissions and persisted risk state.
+- Hedge-direction futures reductions no longer require new collateral and reject quantities beyond the matching open position.
+- Paper liquidation settles cross losses against shared free collateral, limits isolated losses to their collateral, and preserves each opening lot's margin mode after settings changes. Missing position valuations now fail balance reads explicitly.
+- Binance Spot trailing orders use the correct buy/sell delta bounds and take-profit activation direction, so sell orders wait for an above-market activation price.
+- Paper historical settlement defers current ticks until missing candles are recovered, keeping trailing-stop state and the persisted history cursor in chronological order.
+- Paper futures settle existing liquidations before new orders using a shared price snapshot, and retain those settlements even when the new order is rejected.
+- Futures reductions tolerate floating-point quantity tails without allowing materially oversized closes or retaining phantom Paper position lots.
+
+## [0.1.2] - 2026-09-03
+
 ### Added
 
 - Extracted the exchange adapters, order planning, protection, risk accounting, and trading orchestration into an independently buildable and releasable package.

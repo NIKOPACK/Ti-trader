@@ -7,6 +7,22 @@ import {
 } from "@earendil-works/ti-trading-risk";
 import type { FuturesPositionMode } from "./client-types.ts";
 import {
+	ExecutionJournal,
+	type ExecutionJournalOptions,
+	type ExecutionMaintenance,
+	type ExecutionRecord,
+	ExecutionRecoveryError,
+	executionClientIds,
+	isUnresolvedExecution,
+} from "./execution-journal.ts";
+import {
+	executionEvidence,
+	type ManualExecutionResolution,
+	manuallyResolveExecution,
+	type RecoveryOptions,
+	recoverJournal,
+} from "./execution-recovery.ts";
+import {
 	type OcoIntent,
 	type OrderIntent,
 	type OrderPlanningContext,
@@ -15,15 +31,18 @@ import {
 	prepareOcoOrder,
 	prepareOrder,
 } from "./order-plan.ts";
+import { preflightOco, preflightOrder } from "./order-preflight.ts";
 import {
 	createMarketDataView,
 	type ExchangeClient,
+	isSubmissionStatusUnknownError,
 	type MarketDataClient,
 	type Order,
 	type OrderList,
 	type OrderSide,
 	type PlaceOcoOrderResult,
 	type PlaceOrderResult,
+	SubmissionRejectedError,
 } from "./types.ts";
 
 export class PreparedPlanError extends Error {
@@ -37,6 +56,8 @@ export class PreparedPlanError extends Error {
 
 export interface TradingEngineSubmissionPolicy {
 	confirm?(summary: string): Promise<boolean>;
+	/** Explicitly opt into headless live submission without a confirmation callback. */
+	allowUnconfirmedLive?: boolean;
 	/** Return true when a failed submission may have reached the exchange. */
 	submissionStatusUnknown?(error: unknown): boolean;
 }
@@ -77,8 +98,16 @@ export class TradingEngine {
 	private readonly consumedPlans = new WeakSet<object>();
 	/** Prevent two concurrent callers from submitting the same plan. */
 	private readonly inFlightPlans = new WeakSet<object>();
+	private readonly journal: ExecutionJournal | undefined;
+	private submissionsRetired = false;
 
-	constructor(config: TradingEngineConfig, exchange: ExchangeClient, stateStore: RiskStateStore, clock?: RiskClock) {
+	constructor(
+		config: TradingEngineConfig,
+		exchange: ExchangeClient,
+		stateStore: RiskStateStore,
+		clock?: RiskClock,
+		execution?: ExecutionJournalOptions,
+	) {
 		if (config.mode !== exchange.mode) {
 			throw new Error(`Trading engine mode ${config.mode} does not match exchange client mode ${exchange.mode}`);
 		}
@@ -92,6 +121,77 @@ export class TradingEngine {
 		this.exchangeClient = exchange;
 		this.marketDataClient = createMarketDataView(exchange);
 		this.risk = new RiskLedger(toRiskConfig(acceptedConfig), stateStore, clock);
+		if (execution) {
+			if (execution.durability !== "durable" && execution.durability !== "memory")
+				throw new Error("Explicit execution durability is required");
+			if (execution.durability === "durable" && execution.admissionGeneration === undefined)
+				throw new Error("Durable execution requires admission generation captured before configuration loading");
+			this.journal = new ExecutionJournal(
+				stateStore,
+				toRiskConfig(acceptedConfig),
+				{
+					accountId: execution.accountId,
+					exchange: exchange.id,
+					mode: config.mode,
+					marketType: config.marketType,
+					quoteCurrency: config.quoteCurrency,
+					positionMode: config.positionMode,
+				},
+				clock,
+				execution.admissionGeneration,
+			);
+		}
+	}
+
+	listExecutions() {
+		return this.executionJournal().list();
+	}
+	getExecutionScope() {
+		return structuredClone(this.executionJournal().scope);
+	}
+	listAuditEvents() {
+		return this.executionJournal().listAuditEvents();
+	}
+	recoverExecutions(options?: RecoveryOptions) {
+		return recoverJournal(this.executionJournal(), this.exchangeClient, options);
+	}
+	resolveExecution(resolution: ManualExecutionResolution): void {
+		manuallyResolveExecution(this.executionJournal(), resolution);
+	}
+	recordConfigurationChange(action = "requested"): void {
+		this.executionJournal().recordConfigurationChange(action);
+	}
+	beginMaintenance(action: ExecutionMaintenance["action"]) {
+		return this.executionJournal().beginMaintenance(action);
+	}
+	completeMaintenance(id: string, evidenceReference?: string): void {
+		this.executionJournal().completeMaintenance(id, evidenceReference);
+	}
+	cancelMaintenance(id: string): void {
+		this.executionJournal().cancelMaintenance(id);
+	}
+	retireSubmissions(): void {
+		this.submissionsRetired = true;
+	}
+	getExecutionStatus() {
+		const records = this.listExecutions();
+		const admission = this.executionJournal().getAdmissionStatus();
+		const staleRuntime = admission.stale || this.submissionsRetired;
+		return {
+			configured: this.journal !== undefined,
+			staleRuntime,
+			unresolved: records.filter(isUnresolvedExecution),
+			accountId: this.executionJournal().scope.accountId,
+			maintenance: this.executionJournal().getMaintenance(),
+			admission: { ...admission, stale: staleRuntime },
+		};
+	}
+	private executionJournal(): ExecutionJournal {
+		if (!this.journal)
+			throw new Error(
+				"Durable execution journal is not configured; explicitly supply an atomic store and execution account identity (memory only for tests)",
+			);
+		return this.journal;
 	}
 
 	get id(): string {
@@ -139,14 +239,26 @@ export class TradingEngine {
 	getFundingRateHistory(symbol: string, limit?: number) {
 		return this.marketDataClient.getFundingRateHistory(symbol, limit);
 	}
-	setLeverage(symbol: string, leverage: number) {
-		return this.exchangeClient.setLeverage(symbol, leverage);
+	getEffectiveLeverage(symbol: string): number {
+		return this.exchangeClient.getEffectiveLeverage?.(symbol) ?? 1;
 	}
-	setMarginMode(symbol: string, marginType: "isolated" | "cross") {
-		return this.exchangeClient.setMarginMode(symbol, marginType);
+	async setLeverage(symbol: string, leverage: number) {
+		this.recordConfigurationChange("leverage-requested");
+		const result = await this.exchangeClient.setLeverage(symbol, leverage);
+		this.recordConfigurationChange("leverage-applied");
+		return result;
 	}
-	setMultiAssetsMode(enabled: boolean) {
-		return this.exchangeClient.setMultiAssetsMode(enabled);
+	async setMarginMode(symbol: string, marginType: "isolated" | "cross") {
+		this.recordConfigurationChange("margin-mode-requested");
+		const result = await this.exchangeClient.setMarginMode(symbol, marginType);
+		this.recordConfigurationChange("margin-mode-applied");
+		return result;
+	}
+	async setMultiAssetsMode(enabled: boolean) {
+		this.recordConfigurationChange("multi-assets-requested");
+		const result = await this.exchangeClient.setMultiAssetsMode(enabled);
+		this.recordConfigurationChange("multi-assets-applied");
+		return result;
 	}
 	get planningContext(): OrderPlanningContext {
 		return { config: copyConfig(this.config), mode: this.config.mode, exchange: this.marketDataClient };
@@ -171,6 +283,7 @@ export class TradingEngine {
 		const acceptedConfig = copyConfig(config);
 		this.config = acceptedConfig;
 		this.risk.setConfig(toRiskConfig(acceptedConfig));
+		this.journal?.setConfig(toRiskConfig(acceptedConfig));
 	}
 
 	prepareOrder(side: OrderSide, intent: OrderIntent): Promise<PreparedOrder> {
@@ -186,57 +299,99 @@ export class TradingEngine {
 		});
 	}
 
-	async placeOrder(plan: PreparedOrder, policy: TradingEngineSubmissionPolicy = {}): Promise<PlaceOrderResult> {
+	async placeOrder(
+		plan: PreparedOrder,
+		policy: TradingEngineSubmissionPolicy = {},
+		signal?: AbortSignal,
+	): Promise<PlaceOrderResult> {
 		const prepared = this.preparedOrders.get(plan);
 		if (!prepared) throw new PreparedPlanError("Order plan was not prepared by this trading engine");
+		const input = { ...prepared.input, clientOrderId: executionClientIds().clientOrderId };
 		return this.submitWithReservation(
 			plan,
 			"Order",
-			prepared.input.symbol,
 			prepared.notional,
 			prepared.countTowardsDailyLimit,
 			prepared.summary,
-			() => this.exchangeClient.placeOrder({ ...prepared.input }),
+			{ kind: "order", input },
+			() => this.exchangeClient.placeOrder(input),
+			() =>
+				preflightOrder(prepared, {
+					getMarketInfo: (symbol) => this.marketDataClient.getMarketInfo(symbol),
+					getBalances: () => this.marketDataClient.getBalances(),
+					quoteCurrency: this.quoteCurrency,
+					marketType: this.config.marketType,
+					getEffectiveLeverage: (symbol) => this.getEffectiveLeverage(symbol),
+				}),
 			policy,
+			signal,
 		);
 	}
 
-	async placeOco(plan: PreparedOco, policy: TradingEngineSubmissionPolicy = {}): Promise<PlaceOcoOrderResult> {
+	async placeOco(
+		plan: PreparedOco,
+		policy: TradingEngineSubmissionPolicy = {},
+		signal?: AbortSignal,
+	): Promise<PlaceOcoOrderResult> {
 		const prepared = this.preparedOcos.get(plan);
 		if (!prepared) throw new PreparedPlanError("OCO plan was not prepared by this trading engine");
+		const { listClientOrderId, aboveClientOrderId, belowClientOrderId } = executionClientIds();
+		const input = { ...prepared.input, listClientOrderId, aboveClientOrderId, belowClientOrderId };
 		return this.submitWithReservation(
 			plan,
 			"OCO order",
-			prepared.input.symbol,
 			prepared.riskNotional,
 			prepared.countTowardsDailyLimit,
 			prepared.summary,
-			() => this.exchangeClient.placeOcoOrder({ ...prepared.input }),
+			{ kind: "oco", input },
+			() => this.exchangeClient.placeOcoOrder(input),
+			() =>
+				preflightOco(prepared, {
+					getMarketInfo: (symbol) => this.marketDataClient.getMarketInfo(symbol),
+					getBalances: () => this.marketDataClient.getBalances(),
+					quoteCurrency: this.quoteCurrency,
+				}),
 			policy,
+			signal,
 		);
 	}
 
-	private async submitWithReservation<T>(
+	private async submitWithReservation<T extends PlaceOrderResult | PlaceOcoOrderResult>(
 		plan: object,
 		label: string,
-		symbol: string,
 		notional: number,
 		countTowardsDailyLimit: boolean,
 		summary: string,
+		intent: ExecutionRecord["intent"],
 		submit: () => Promise<T>,
+		preflight: () => Promise<unknown>,
 		policy: TradingEngineSubmissionPolicy,
+		signal?: AbortSignal,
 	): Promise<T> {
+		const throwIfAborted = (): void => {
+			if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled");
+		};
+		throwIfAborted();
+		const journal = this.executionJournal();
 		if (this.consumedPlans.has(plan)) {
 			throw new PreparedPlanError(`${label} plan has already been submitted; prepare a new plan before retrying`);
 		}
 		if (this.inFlightPlans.has(plan)) {
 			throw new PreparedPlanError(`${label} plan is already being submitted`);
 		}
+		if (countTowardsDailyLimit) this.risk.assertNewExposureAllowed();
 		this.inFlightPlans.add(plan);
-
-		let reservation: RiskReservation;
 		try {
-			reservation = this.risk.reserve(symbol, notional, { countTowardsDailyLimit });
+			await preflight();
+		} catch (error) {
+			this.inFlightPlans.delete(plan);
+			throw error;
+		}
+
+		let execution: ExecutionRecord;
+		try {
+			if (this.submissionsRetired) throw new Error("Trading engine was replaced; prepare with the active runtime");
+			execution = journal.prepare(intent, notional, countTowardsDailyLimit);
 		} catch (error) {
 			this.inFlightPlans.delete(plan);
 			throw error;
@@ -244,7 +399,8 @@ export class TradingEngine {
 
 		const releaseAndThrow = (original: unknown, message: string): never => {
 			try {
-				reservation.release();
+				if (!journal.settle(execution.id, "release", 0, "definite-rejection", undefined, execution.revision))
+					throw new ExecutionRecoveryError(execution.id, "stale pre-submission settlement");
 			} catch (releaseError) {
 				// A failed release leaves the durable claim unresolved. Block this plan
 				// from being submitted again and expose both failures to the caller.
@@ -269,6 +425,21 @@ export class TradingEngine {
 					`${label} cancellation and risk release failed`,
 				);
 			}
+		} else if (this.mode === "live" && policy.allowUnconfirmedLive !== true) {
+			return releaseAndThrow(
+				new Error(
+					"Live order submission requires an explicit confirmation callback; set allowUnconfirmedLive only for an intentional headless workflow",
+				),
+				`${label} confirmation policy rejected and risk reservation release failed`,
+			);
+		}
+		try {
+			throwIfAborted();
+			// A user or another process may pause entries while confirmation is open.
+			if (countTowardsDailyLimit) this.risk.assertNewExposureAllowed(execution.id);
+			journal.begin(execution.id);
+		} catch (error) {
+			return releaseAndThrow(error, `${label} pre-submission check and risk release failed`);
 		}
 
 		// From this point onward an exchange call may happen. Consume the plan
@@ -279,60 +450,49 @@ export class TradingEngine {
 		try {
 			result = await submit();
 		} catch (submissionError) {
-			let statusUnknown = false;
-			let policyError: unknown;
+			let statusUnknown =
+				!(submissionError instanceof SubmissionRejectedError) || isSubmissionStatusUnknownError(submissionError);
 			if (policy.submissionStatusUnknown) {
 				try {
-					statusUnknown = policy.submissionStatusUnknown(submissionError);
-				} catch (error) {
+					statusUnknown ||= policy.submissionStatusUnknown(submissionError);
+				} catch {
 					// A broken classifier is itself ambiguous: conservatively account for
 					// the attempted submission and retain the original error as context.
 					statusUnknown = true;
-					policyError = error;
 				}
 			}
 			if (statusUnknown) {
 				try {
-					reservation.commit();
-				} catch (settlementError) {
-					throw combineFailures(
-						`${label} submission status is unknown and risk settlement failed; do not retry`,
-						submissionError,
-						settlementError,
-					);
+					journal.unknown(execution.id, "submission-unknown");
+				} catch {
+					throw new ExecutionRecoveryError(execution.id, "outcome persistence failed");
 				}
-				if (policyError !== undefined) {
-					throw combineFailures(
-						`${label} submission status classifier failed; do not retry`,
-						submissionError,
-						policyError,
-					);
-				}
-				throw submissionError;
+				throw new ExecutionRecoveryError(execution.id, "submission status unknown");
 			}
 			try {
-				reservation.release();
-			} catch (releaseError) {
-				throw combineFailures(
-					`${label} submission failed and risk reservation release failed`,
-					submissionError,
-					releaseError,
-				);
+				journal.settle(execution.id, "release", 0, "definite-rejection");
+			} catch {
+				throw new ExecutionRecoveryError(execution.id, "rejection persistence failed");
 			}
 			throw submissionError;
 		}
 
-		// A successful exchange response still needs durable risk settlement. A
-		// RiskCommitError intentionally leaves its reservation claim unresolved.
-		reservation.commit();
-		return result;
+		try {
+			const observation = executionEvidence(execution, result, "submission");
+			journal.settle(execution.id, observation.outcome, observation.notional, "acknowledged", observation.evidence);
+		} catch {
+			throw new ExecutionRecoveryError(execution.id, "response validation or settlement persistence failed");
+		}
+		return { ...result, executionId: execution.id };
 	}
 
-	async cancelOrder(id: string, symbol: string): Promise<void> {
+	async cancelOrder(id: string, symbol: string, signal?: AbortSignal): Promise<void> {
+		if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled");
 		await this.exchangeClient.cancelOrder(id, symbol);
 	}
 
-	async cancelOrderList(orderListId: string, symbol: string): Promise<void> {
+	async cancelOrderList(orderListId: string, symbol: string, signal?: AbortSignal): Promise<void> {
+		if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled");
 		await this.exchangeClient.cancelOrderList(orderListId, symbol);
 	}
 

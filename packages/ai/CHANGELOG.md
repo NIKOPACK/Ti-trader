@@ -5,6 +5,7 @@
 ### Fixed
 
 - Fixed OpenAI-compatible Chat Completions requests sending `tool_choice` without tools, which gateways can reject during compaction ([#8607](https://github.com/earendil-works/pi/issues/8607)).
+- Natural event-stream termination without a terminal result now rejects `result()` instead of leaving it pending, while iteration-only consumers remain safe from unhandled rejections.
 
 ## [0.84.3] - 2026-08-24
 

@@ -1,13 +1,21 @@
 import {
 	type ExchangeCredentials,
+	type ExecutionJournalState,
 	type FuturesMarginType,
 	type FuturesPositionMode,
+	isRiskNewExposurePause,
+	isTradingAuditState,
 	type MarketType,
 	type RiskLimits,
+	type RiskNewExposurePause,
+	type TradingAuditState,
 	type TradingMode,
+	validateExecutionRiskState,
+	validateTradingSymbol,
 	withFileLockSync,
 } from "@earendil-works/ti-trading-engine";
 import { KEYS_PATH, readJsonFile, TRADING_CONFIG_PATH, TRADING_STATE_PATH, writeJsonFile } from "./config.ts";
+import { syncTradingStateFile } from "./state-durability.ts";
 
 export type { ExchangeCredentials, FuturesMarginType, FuturesPositionMode, MarketType, RiskLimits, TradingMode };
 
@@ -85,6 +93,49 @@ export const DEFAULT_CONFIG: TradingConfig = {
 	},
 };
 
+export function normalizeTradingConfig(config: TradingConfig): TradingConfig {
+	const next: TradingConfig = {
+		...config,
+		risk: { ...config.risk, allowedSymbols: [...config.risk.allowedSymbols] },
+		paper: { ...config.paper },
+		monitor: { ...config.monitor },
+	};
+
+	const previousMarketType = next.marketType;
+	if (next.exchange !== "binance" && (next.marketType === "usdm-futures" || next.marketType === "both")) {
+		next.marketType = "spot";
+	}
+	if (next.mode !== "paper" && next.marketType === "both") {
+		next.marketType = "spot";
+	}
+	if (next.marketType === previousMarketType) return next;
+
+	const original = next.risk.allowedSymbols;
+	const aligned = alignAllowedSymbolsToSpot(next.quoteCurrency, original);
+	if (original.length > 0 && aligned.length === 0) {
+		throw new Error(
+			`marketType was coerced to ${next.marketType}; risk.allowedSymbols has no ${next.quoteCurrency} symbols compatible with that family (${original.join(", ")})`,
+		);
+	}
+	next.risk.allowedSymbols = aligned;
+	return next;
+}
+
+function alignAllowedSymbolsToSpot(quoteCurrency: string, symbols: string[]): string[] {
+	const futuresSuffix = `/${quoteCurrency}:${quoteCurrency}`;
+	const settlementSuffix = `:${quoteCurrency}`;
+	const spotSuffix = `/${quoteCurrency}`;
+	const seen = new Set<string>();
+	const aligned: string[] = [];
+	for (const symbol of symbols) {
+		const next = symbol.endsWith(futuresSuffix) ? symbol.slice(0, -settlementSuffix.length) : symbol;
+		if (!next.endsWith(spotSuffix) || next.endsWith(futuresSuffix) || seen.has(next)) continue;
+		seen.add(next);
+		aligned.push(next);
+	}
+	return aligned;
+}
+
 export function loadTradingConfig(): TradingConfig {
 	const stored = readJsonFile<Partial<TradingConfig>>(TRADING_CONFIG_PATH) ?? {};
 	const config: TradingConfig = {
@@ -103,6 +154,7 @@ export function validateTradingConfig(config: TradingConfig): void {
 		throw new Error(`Invalid language: ${String(config.language)}`);
 	if (config.mode !== "paper" && config.mode !== "live")
 		throw new Error(`Invalid trading mode: ${String(config.mode)}`);
+	if (typeof config.confirmLiveOrders !== "boolean") throw new Error("confirmLiveOrders must be a boolean");
 	if (!(["spot", "usdm-futures", "both"] as const).includes(config.marketType))
 		throw new Error("marketType must be spot, usdm-futures, or both");
 	if ((config.marketType === "usdm-futures" || config.marketType === "both") && config.exchange !== "binance")
@@ -129,14 +181,7 @@ export function validateTradingConfig(config: TradingConfig): void {
 		allowedSymbols.some(
 			(symbol) =>
 				typeof symbol !== "string" ||
-				(!(
-					(config.marketType === "spot" || config.marketType === "both") &&
-					symbol.endsWith(`/${config.quoteCurrency}`)
-				) &&
-					!(
-						(config.marketType === "usdm-futures" || config.marketType === "both") &&
-						symbol.endsWith(`/${config.quoteCurrency}:${config.quoteCurrency}`)
-					)),
+				validateTradingSymbol(symbol, config.marketType, config.quoteCurrency) !== null,
 		)
 	) {
 		throw new Error(`risk.allowedSymbols must contain ${config.quoteCurrency} symbols`);
@@ -164,7 +209,17 @@ export function validateTradingConfig(config: TradingConfig): void {
 
 export function saveTradingConfig(config: TradingConfig): void {
 	validateTradingConfig(config);
-	writeJsonFile(TRADING_CONFIG_PATH, config);
+	withFileLockSync(
+		`${TRADING_CONFIG_PATH}.lock`,
+		() => {
+			writeJsonFile(TRADING_CONFIG_PATH, config);
+			syncTradingStateFile(TRADING_CONFIG_PATH);
+		},
+		{
+			staleMs: Number.POSITIVE_INFINITY,
+			timeoutMessage: (path) => `Timed out waiting for trading configuration lock ${path}`,
+		},
+	);
 }
 
 export function loadExchangeKeys(): Record<string, ExchangeCredentials> {
@@ -194,7 +249,9 @@ export function saveExchangeKeys(keys: Record<string, ExchangeCredentials>): voi
 		if (!credentials.apiKey.trim() || !credentials.secret.trim())
 			throw new Error(`Credentials for ${exchange} must include apiKey and secret`);
 	}
-	writeJsonFile(KEYS_PATH, keys, 0o600);
+	withFileLockSync(`${KEYS_PATH}.lock`, () => writeJsonFile(KEYS_PATH, keys, 0o600), {
+		timeoutMessage: (path) => `Timed out waiting for exchange keys lock ${path}`,
+	});
 }
 
 export interface RiskReservationRecord {
@@ -202,6 +259,7 @@ export interface RiskReservationRecord {
 	mode: TradingMode;
 	symbol: string;
 	notional: number;
+	executionId?: string;
 }
 
 export interface RiskUsageState {
@@ -212,12 +270,17 @@ export interface RiskUsageState {
 	reservedDailyNotional?: number;
 	/** In-flight claims keyed by reservation id. Must round-trip with the risk ledger. */
 	reservations?: Record<string, RiskReservationRecord>;
+	/** Shared by every same-mode runtime using this state file. */
+	newExposurePause?: RiskNewExposurePause;
+	executionBlocks?: Record<string, true>;
 }
 
 /** Paper and live counters are isolated so mode switches cannot transfer quota. */
 export interface TradingState {
 	paper: RiskUsageState;
 	live: RiskUsageState;
+	executions?: ExecutionJournalState;
+	audit?: TradingAuditState;
 }
 
 export type TradingStateMutator<T> = (state: TradingState) => T;
@@ -245,6 +308,8 @@ export function transactTradingState<T>(mutator: TradingStateMutator<T>): T {
 /** Run one state-file operation while owning the lock for its complete read/write lifecycle. */
 function withStateLock<T>(lockPath: string, operation: () => T): T {
 	return withFileLockSync(lockPath, operation, {
+		// A suspended writer is not dead. Abandoned locks require verified operator removal, never a TTL takeover.
+		staleMs: Number.POSITIVE_INFINITY,
 		timeoutMessage: (path) => `Timed out waiting for trading state lock ${path}`,
 	});
 }
@@ -296,12 +361,24 @@ function decodeTradingState(stored: unknown): { state: TradingState; migrated: b
 export function saveTradingState(state: TradingState): void {
 	if (!isTradingState(state)) throw new Error("Cannot persist invalid trading risk state");
 	writeJsonFile(TRADING_STATE_PATH, state);
+	syncTradingStateFile(TRADING_STATE_PATH);
 }
 
 function isTradingState(value: unknown): value is TradingState {
 	if (typeof value !== "object" || value === null) return false;
 	const candidate = value as Record<string, unknown>;
-	return isRiskUsageState(candidate.paper) && isRiskUsageState(candidate.live);
+	if (
+		!isRiskUsageState(candidate.paper) ||
+		!isRiskUsageState(candidate.live) ||
+		(candidate.audit !== undefined && !isTradingAuditState(candidate.audit))
+	)
+		return false;
+	try {
+		validateExecutionRiskState(value as TradingState);
+	} catch {
+		return false;
+	}
+	return true;
 }
 
 function isRiskUsageState(value: unknown): value is RiskUsageState {
@@ -317,7 +394,15 @@ function isRiskUsageState(value: unknown): value is RiskUsageState {
 			(typeof candidate.reservedDailyNotional === "number" &&
 				Number.isFinite(candidate.reservedDailyNotional) &&
 				candidate.reservedDailyNotional >= 0)) &&
-		isReservationMap(candidate.reservations)
+		isReservationMap(candidate.reservations) &&
+		(candidate.executionBlocks === undefined ||
+			(typeof candidate.executionBlocks === "object" &&
+				candidate.executionBlocks !== null &&
+				!Array.isArray(candidate.executionBlocks) &&
+				Object.entries(candidate.executionBlocks).every(
+					([id, blocked]) => /^[A-Za-z0-9_-]{1,80}$/.test(id) && blocked === true,
+				))) &&
+		(candidate.newExposurePause === undefined || isRiskNewExposurePause(candidate.newExposurePause))
 	);
 }
 
@@ -334,7 +419,9 @@ function isReservationMap(value: unknown): boolean {
 			candidate.symbol.trim() === "" ||
 			typeof candidate.notional !== "number" ||
 			!Number.isFinite(candidate.notional) ||
-			candidate.notional <= 0
+			candidate.notional <= 0 ||
+			(candidate.executionId !== undefined &&
+				(typeof candidate.executionId !== "string" || !/^[A-Za-z0-9_-]{1,80}$/.test(candidate.executionId)))
 		) {
 			return false;
 		}

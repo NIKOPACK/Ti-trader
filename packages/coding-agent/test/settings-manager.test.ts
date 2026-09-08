@@ -1,4 +1,16 @@
-import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "fs";
+import {
+	chmodSync,
+	closeSync,
+	existsSync,
+	lstatSync,
+	mkdirSync,
+	openSync,
+	readFileSync,
+	rmSync,
+	statSync,
+	symlinkSync,
+	writeFileSync,
+} from "fs";
 import { homedir } from "os";
 import { join } from "path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -292,6 +304,108 @@ describe("SettingsManager", () => {
 	});
 
 	describe("project settings directory creation", () => {
+		it("persists the first global settings when the agent parent does not exist", async () => {
+			const freshAgentDir = join(testDir, "fresh", ".pi", "agent");
+			const manager = SettingsManager.create(projectDir, freshAgentDir);
+			expect(manager.drainErrors()).toEqual([]);
+			expect(existsSync(freshAgentDir)).toBe(false);
+			manager.setTheme("light");
+			await manager.flush();
+			expect(manager.drainErrors()).toEqual([]);
+			expect(JSON.parse(readFileSync(join(freshAgentDir, "settings.json"), "utf8"))).toMatchObject({
+				theme: "light",
+			});
+		});
+
+		it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+			"loads and updates existing project settings under a read-only project root",
+			async () => {
+				const path = join(projectDir, ".pi", "settings.json");
+				writeFileSync(path, JSON.stringify({ defaultModel: "project-model" }));
+				chmodSync(projectDir, 0o555);
+				try {
+					const manager = SettingsManager.create(projectDir, agentDir);
+					expect(manager.drainErrors()).toEqual([]);
+					expect(manager.getDefaultModel()).toBe("project-model");
+					manager.setProjectPackages(["npm:example"]);
+					await manager.flush();
+					expect(manager.drainErrors()).toEqual([]);
+					expect(JSON.parse(readFileSync(path, "utf8"))).toEqual({
+						defaultModel: "project-model",
+						packages: ["npm:example"],
+					});
+				} finally {
+					chmodSync(projectDir, 0o755);
+				}
+			},
+		);
+
+		it("merges first writes from managers that loaded an absent project directory", async () => {
+			rmSync(join(projectDir, ".pi"), { recursive: true });
+			const first = SettingsManager.create(projectDir, agentDir);
+			const second = SettingsManager.create(projectDir, agentDir);
+			first.setProjectPackages(["npm:example"]);
+			second.setProjectExtensionPaths(["./extension.ts"]);
+			await Promise.all([first.flush(), second.flush()]);
+			expect(first.drainErrors()).toEqual([]);
+			expect(second.drainErrors()).toEqual([]);
+			expect(JSON.parse(readFileSync(join(projectDir, ".pi", "settings.json"), "utf8"))).toEqual({
+				packages: ["npm:example"],
+				extensions: ["./extension.ts"],
+			});
+		});
+
+		it.skipIf(process.platform === "win32" || process.getuid?.() === 0)(
+			"reads settings from a read-only configuration directory",
+			() => {
+				const dir = join(projectDir, ".pi");
+				writeFileSync(join(dir, "settings.json"), JSON.stringify({ theme: "light" }));
+				chmodSync(dir, 0o555);
+				try {
+					const manager = SettingsManager.create(projectDir, agentDir);
+					expect(manager.drainErrors()).toEqual([]);
+					expect(manager.getTheme()).toBe("light");
+				} finally {
+					chmodSync(dir, 0o755);
+				}
+			},
+		);
+
+		it("publishes a complete settings snapshot without changing an active reader's file", async () => {
+			const path = join(agentDir, "settings.json");
+			const previous = JSON.stringify({ theme: "dark" });
+			writeFileSync(path, previous);
+			const reader = openSync(path, "r");
+			try {
+				const manager = SettingsManager.create(projectDir, agentDir);
+				manager.setTheme("light");
+				await manager.flush();
+				expect(manager.drainErrors()).toEqual([]);
+				expect(readFileSync(reader, "utf8")).toBe(previous);
+				expect(JSON.parse(readFileSync(path, "utf8"))).toMatchObject({ theme: "light" });
+			} finally {
+				closeSync(reader);
+			}
+		});
+
+		it.skipIf(process.platform === "win32")(
+			"preserves settings symlinks and target permissions on update",
+			async () => {
+				const target = join(testDir, "shared-settings.json");
+				const path = join(agentDir, "settings.json");
+				writeFileSync(target, JSON.stringify({ theme: "dark" }));
+				chmodSync(target, 0o640);
+				symlinkSync(target, path);
+				const manager = SettingsManager.create(projectDir, agentDir);
+				manager.setTheme("light");
+				await manager.flush();
+				expect(manager.drainErrors()).toEqual([]);
+				expect(lstatSync(path).isSymbolicLink()).toBe(true);
+				expect(statSync(target).mode & 0o777).toBe(0o640);
+				expect(JSON.parse(readFileSync(target, "utf8"))).toMatchObject({ theme: "light" });
+			},
+		);
+
 		it("should not create .pi folder when only reading project settings", () => {
 			// Create agent dir with global settings, but NO .pi folder in project
 			const settingsPath = join(agentDir, "settings.json");

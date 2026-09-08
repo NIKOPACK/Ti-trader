@@ -1,6 +1,6 @@
 {
 	"name": "ti-trader",
-	"version": "0.1.7",
+	"version": "0.1.9",
 	"description": "Ti — AI trading agent CLI with native buy/sell tools, trading commands, and paper or live crypto trading",
 	"type": "module",
 	"piConfig": {
@@ -20,6 +20,7 @@
 	"pi": {
 		"extensions": [
 			"./dist/market-lab/index.js",
+			"./dist/market-chart/index.js",
 			"./dist/market-research/index.js",
 			"./dist/web-search/index.js",
 			"./dist/zhihu-research/index.js"
@@ -29,6 +30,7 @@
 	"ti": {
 		"extensions": [
 			"./dist/market-lab/index.js",
+			"./dist/market-chart/index.js",
 			"./dist/market-research/index.js",
 			"./dist/web-search/index.js",
 			"./dist/zhihu-research/index.js"
@@ -41,17 +43,18 @@
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",
-		"build": "npm run clean && tsgo -p tsconfig.build.json && npm run build:web-search-extension && npm run build:market-lab-extension && npm run build:market-research-extension && npm run build:zhihu-research-extension && shx chmod +x dist/cli.js",
+		"build": "npm run clean && tsgo -p tsconfig.build.json && npm run build:web-search-extension && npm run build:market-lab-extension && npm run build:market-chart-extension && npm run build:market-research-extension && npm run build:zhihu-research-extension && shx chmod +x dist/cli.js",
 		"build:web-search-extension": "tsgo -p ../../extensions/web-search/tsconfig.json && node ../../scripts/package-trading-extension.mjs web-search",
 		"build:market-lab-extension": "tsgo -p ../../extensions/market-lab/tsconfig.json && node ../../scripts/package-trading-extension.mjs market-lab",
+		"build:market-chart-extension": "tsgo -p ../../extensions/market-chart/tsconfig.json && node ../../scripts/package-trading-extension.mjs market-chart",
 		"build:market-research-extension": "tsgo -p ../../extensions/market-research/tsconfig.json && node ../../scripts/package-trading-extension.mjs market-research",
 		"build:zhihu-research-extension": "tsgo -p ../../extensions/zhihu-research/tsconfig.json && node ../../scripts/package-trading-extension.mjs zhihu-research",
 		"test": "vitest --run src test --passWithNoTests",
-		"smoke": "node scripts/runtime-check.mjs && node scripts/paper-smoke.mjs",
+		"smoke": "node scripts/smoke.mjs",
 		"prepublishOnly": "npm run build"
 	},
 	"dependencies": {
-		"@earendil-works/ti-trading-engine": "0.1.1",
+		"@earendil-works/ti-trading-engine": "0.2.0",
 		"@earendil-works/ti-triggers": "0.1.0",
 		"@earendil-works/pi-coding-agent": "0.84.3",
 		"@earendil-works/pi-tui": "0.84.3",

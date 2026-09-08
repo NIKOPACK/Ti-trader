@@ -1,6 +1,6 @@
-import type { Order as CcxtOrder } from "ccxt";
+import ccxt, { type Order as CcxtOrder, type Ticker as CcxtTicker } from "ccxt";
 import { describe, expect, it } from "vitest";
-import { toOrder } from "./ccxt-map.ts";
+import { isUncertainSubmission, toOrder, toTicker } from "./ccxt-map.ts";
 
 function ccxtOrder(overrides: Record<string, unknown> = {}): CcxtOrder {
 	return {
@@ -18,6 +18,48 @@ function ccxtOrder(overrides: Record<string, unknown> = {}): CcxtOrder {
 		...overrides,
 	} as unknown as CcxtOrder;
 }
+
+describe("isUncertainSubmission", () => {
+	it("treats transport failures as uncertain even when the message is not a timeout", () => {
+		expect(isUncertainSubmission(new Error("socket hang up"))).toBe(true);
+		expect(isUncertainSubmission(Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }))).toBe(true);
+		expect(
+			isUncertainSubmission(new ccxt.BadResponse("binance GET https://api.binance.com/api/v3/order 200 <html>")),
+		).toBe(true);
+		expect(isUncertainSubmission(new ccxt.DDoSProtection("binance 418"))).toBe(true);
+		expect(isUncertainSubmission(new ccxt.RateLimitExceeded("Too many requests; -1003"))).toBe(true);
+		expect(isUncertainSubmission(new ccxt.RequestTimeout("request timeout"))).toBe(true);
+		expect(isUncertainSubmission(new Error("fetch failed"))).toBe(true);
+	});
+
+	it("treats explicit business rejections as certain", () => {
+		expect(isUncertainSubmission(new ccxt.InsufficientFunds("not enough balance"))).toBe(false);
+		expect(isUncertainSubmission(new ccxt.InvalidOrder("Filter failure: LOT_SIZE"))).toBe(false);
+		expect(isUncertainSubmission(new ccxt.OrderImmediatelyFillable("Order would immediately trigger"))).toBe(false);
+		expect(isUncertainSubmission(new ccxt.AuthenticationError("invalid API-key, IP, or permissions"))).toBe(false);
+		expect(isUncertainSubmission(Object.assign(new Error("Account has insufficient balance"), { code: -2010 }))).toBe(
+			false,
+		);
+		expect(isUncertainSubmission(Object.assign(new Error("Filter failure: PRICE_FILTER"), { code: -1013 }))).toBe(
+			false,
+		);
+		expect(isUncertainSubmission(Object.assign(new Error("Order would immediately trigger."), { code: -2021 }))).toBe(
+			false,
+		);
+		expect(isUncertainSubmission(new Error("HTTP 400 insufficient balance"))).toBe(false);
+	});
+});
+
+describe("timestamp normalization", () => {
+	it("does not treat the Unix epoch as a current market observation", () => {
+		const before = Date.now();
+		const ticker = toTicker({ symbol: "BTC/USDT", timestamp: 0, last: 100 } as unknown as CcxtTicker);
+		const after = Date.now();
+
+		expect(ticker.timestamp).toBeGreaterThanOrEqual(before);
+		expect(ticker.timestamp).toBeLessThanOrEqual(after);
+	});
+});
 
 describe("toOrder fill economics", () => {
 	it("maps Binance USDM cumQuote and avgPrice when ccxt leaves cost at 0", () => {

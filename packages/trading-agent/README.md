@@ -9,7 +9,7 @@
 
 ## 安装
 
-当前工作区和 package 版本为 `0.1.7`；本次迁移不执行 npm 发布。注册表用户请安装最新已发布版本：
+当前工作区和 package 版本为 `0.1.9`；本次迁移不执行 npm 发布。注册表用户请安装最新已发布版本：
 
 ```bash
 npm install -g ti-trader@latest
@@ -41,10 +41,12 @@ Ti 与 pi 使用完全独立的配置目录。Ti 首次启动会创建 `~/.ti-tr
 - **编码功能已移除**：`read`/`bash`/`edit`/`write`/`grep`/`find`/`ls` 工具全部禁用（`noTools: "builtin"`）
 - **模拟盘优先**：默认 paper 模式，用真实行情撮合的本地模拟账户（含手续费、均价成本、PnL）
 - **实盘安全门**：live 模式需要 API key + 切换确认 + 每笔订单交互确认（可关）。切换到 live 后配置会持久化，下次启动不再确认。
-- **风控层**：单笔/总名义金额上限、币种白名单，运行时强制，重启不重置。paper 额度为累计制，仅 `/risk reset` 或 `/paper reset` 手动重置；live 额度按日自动恢复。提交后未结算的额度占用用 `/risk reconcile <id> commit|release` 对账，不要重试原订单。
+- **风控层**：单笔/总名义金额上限、币种白名单，运行时强制，重启不重置。paper 额度为累计制，仅 `/risk reset` 或 `/paper reset` 手动重置；live 额度按日自动恢复。新执行记录及关联额度通过 `/recovery` 一起对账，历史独立占用仍使用 `/risk reconcile`，不要重试原订单。
+- **持久化开仓暂停**：`/risk pause [原因]` 立即阻止当前模式的新增敞口；重启、重置额度不会解除。`/risk resume` 必须人工确认，未决额度占用会阻止恢复。经校验的减仓、保护卖单和撤单仍可执行。
 - **止盈止损**：Paper 现货支持五种条件单类型：`stop`/`stop_market`（止损触发）、`take_profit`/`take_profit_market`（止盈触发）、`trailing_stop_market`（按百分比回撤的移动止损）；实盘是否支持取决于交易所，Paper 合约目前仅支持市价单
 - **现货 OCO 括号单**：`place_oco` 一次挂上止损+止盈，任一成交自动撤销另一腿；合约不支持 OCO
-- **后台监控与仓位守护**：轮询挂单成交并唤醒 agent 跟进；持仓无止损保护或浮亏超阈值时告警并唤醒 agent 处理或汇报。实验性 `/trigger` 只在内存中评估条件；live 下 `wake_agent` 只通知、不自动拉起交易回合
+- **后台监控与仓位守护**：轮询挂单成交、止损保护和浮亏变化；基线、冷却和通知标识持久化。实验性 `/trigger` 按账户保存条件与状态；live 触发器只通知，不自动拉起交易回合，恢复和重试通知也不会唤醒交易
+- **执行恢复与运维**：启动及运行时替换会对未决执行做有界查询，不会自动重发订单；`/recovery` 查看和处置，`/audit` 查看脱敏审计记录，`/health` 查看本地阻断和观测健康
 - **Binance USDⓈ-M 合约**：Binance 专用 swap 模式；Paper 支持独立合约账户、杠杆、逐仓/全仓、单向/双向持仓、reduceOnly、平仓、盈亏和保证金模拟，实盘支持交易所提供的合约订单参数及资金费率查询
 - **市场数据完整性**：`get_order_book`、`get_market_info`、`get_contract_stats` 分别读取订单簿、Binance `exchangeInfo` 市场规则、`premiumIndex`/资金费率及未平仓量；live futures 可能提供 premium-index、资金费率和未平仓量字段；Paper futures 只返回其 ticker 模拟可提供的字段，不可用字段以 `warnings`/`null` 标记，不模拟资金费率或未平仓量观测；缺失数据返回 `null` 和 `warnings`，不会伪装为 0
 - **默认只读量化**：会话自动加载 market-lab，提供 `calculate_indicators`、`analyze_market_structure`、`generate_trade_signal`、`evaluate_strategy`、`screen_markets`、`simulate_rule` 以及 `/indicators` `/signal` `/screen` `/replay`。数据来自 Binance 公共现货已收盘 K 线，不会下单
@@ -144,14 +146,55 @@ Paper 现货模式的触发在每次账户读取时懒惰撮合：所有挂单�
 
 `/monitor` 查看状态，`/monitor on|off` 开关本次会话的监控。`/paper reset [金额]` 重置模拟账户。
 
-## 实验性触发器与风控对账
+## 暂停新增敞口与恢复
 
-`/trigger add|list|remove|clear` 是实验性内存监控：条件定义和运行时状态只存在于当前会话，重启或第二个进程不会共享。求值只读 `marketData` 价格和持仓浮亏，不会下单。价格事实使用行情 ticker 时间戳；缺失或非法时间戳会被跳过，超过五分钟的观测视为未知、不触发。
+遇到异常订单、账户数据不一致或需要人工排查时，在 Ti 交互终端执行：
 
-- paper 交互会话中 `wake_agent` 可以拉起一次 follow-up 回合。
-- live 和 `--print` 从不自动唤醒：写入 `[trigger:id]` transcript（live 另发通知）。该消息是观察结果，不是下单授权，也不是风控批准。
+```text
+/risk pause 核对交易所订单
+/risk show
+```
 
-提交结果未知时额度会先 commit 进 used。若 commit 失败，占用会留在 `trading-state.json`。启动时若仍有 pending reservation 会告警；`/risk` 和 `get_risk_status` 会列出它们。核对交易所订单后用 `/risk reconcile <id> commit|release` 结算（`commit` 计入已用额度，`release` 退回占用）。不要重试原订单。
+暂停不等待当前 agent 回合结束，也不依赖行情接口。正在等待确认的开仓会在提交前再次读取暂停状态并退回尚未提交的额度占用。状态栏和设置面板显示暂停标记，`/risk show` 显示原因和时间；`get_risk_status` 与订单预检也读取同一状态。无参数 `/risk` 仍打开设置。
+
+暂停记录保存在 `trading-state.json`，同一数据目录、同一模式的进程共享；切换交易所、市场或报价币不会清除，`/risk reset`、`/paper reset` 和 live 跨日重置也不会解除。Paper 与 live 分别控制，不能用切换模式绕过异常排查。依赖此功能前，必须停止或升级使用同一数据目录的旧版本进程；旧版本可能忽略或丢弃暂停字段。
+
+恢复前，先在交易所核对挂单、成交和持仓；若有未决额度占用，按下一节进行对账。然后执行 `/risk resume` 并人工确认，即使关闭了逐单确认也不能跳过此确认，非交互模式不能恢复。命令会等待当前回合结束；确认期间若运行时改变或另一进程设置了新的暂停，需要重新查看并确认。恢复只删除暂停记录，不清空已用额度、不放宽限额。
+
+**边界**：这不是交易所总停机开关。已有订单仍可能成交，已经开始发送的请求不能被撤回；杠杆和保证金设置也不在开仓暂停范围内。现货卖单、卖出 OCO、经校验的合约减仓和平仓仍受原有单笔限额、白名单和确认策略约束，撤单仍可用。不要为解除暂停而删除状态文件，也不要盲目重试结果未知的订单。
+
+分阶段目标见[开发计划](../../docs/product-readiness-plan.md)，故障处置和备份流程见[运维手册](../../docs/trading-operations.md)。功能落地不等于完成实盘验收；七天 Paper 运行、独立安装及授权试点仍须提供实际证据。
+
+## 执行记录与重启对账
+
+提交前，Ti 为普通单及 OCO 写入稳定的执行、客户端订单、订单组和腿标识；执行记录与风险占用在同一事务中保存。提交结果未知时保留记录和占用，并阻止同一数据目录中的新增敞口，不能通过清除手动暂停或切换模式绕过。减仓没有额度占用，也仍有执行记录。
+
+```text
+/recovery
+/recovery run
+/audit
+/health
+```
+
+恢复按记录中的原始账户和客户端标识查询，只使用已有契约覆盖的查询方式。暂时查无订单、权限错误、账户不匹配、部分 OCO 证据和不完整成交数据不会被当作拒单；它们保持未决，不自动重发。已确认的挂单按保守名义额记账，后续订单变化不是每日额度的自动退款。
+
+人工处置使用 `/recovery resolve <执行ID> commit|release <名义额> <证据引用>` 并交互确认；必须先停止其他写入者并核实交易所终态，`release` 的名义额必须为 `0`。证据引用应是本地事故记录标识，不得粘贴凭证或完整交易所响应。新记录关联的占用不能通过 `/risk reconcile` 单独清除；该命令仅保留给没有执行记录的历史独立占用。
+
+账户替换和 Paper 重置使用持久化维护阻断，避免与另一个进程的提交交错。失败后若仍有维护记录，先停止其他写入者并核对账户与风险状态，再按 `/recovery` 显示的维护 ID 执行 `/recovery maintenance <ID> <证据引用>` 并确认。不要把清除维护记录当作完成对账。
+
+维护成功后会推进持久化准入代次，旧进程不能在阻断解除后继续提交旧计划。`/health` 若提示运行时已过期，应使用当前配置重启该进程，再重新规划和确认；账户身份和已有执行记录不会因此改变。
+
+风险/执行状态的文件锁不会因时间过长自动被接管。崩溃遗留锁需要核实所有写入者已停止后由操作者清理；状态文件损坏或同步失败会阻断操作，不会重建空账户来绕过错误。
+
+## 持久化监控与实验性触发器
+
+`/trigger add|list|remove|clear` 的定义、状态、观测基线、冷却和通知标识存入 `monitoring-state.json`，按实际账户、模式、交易所、市场、报价币和持仓模式隔离。求值只读价格与持仓，不会直接下单。缺失、非法或超过五分钟的行情时间戳视为未知，不补算未观测到的跨越。
+
+通知通过有界待发送队列交付，携带稳定的 `monitoringEventId`；租约为 30 秒，事件五分钟后过期，过期事件只保留诊断信息，不补执行动作。同一作用域最多保留 256 条通知，终态通知按七天期限清理。
+
+首次 Paper 交互触发可按 `wake_agent` 配置唤醒；live 触发器只通知。订单成交和持仓守护保留原有 `monitor.wakeAgent` 行为：当前运行中首次交付的新事件可在 Paper 或 live 交互会话中唤醒分析，实盘订单仍须遵守确认和风控规则。无头运行、恢复和重试通知不会唤醒交易回合。
+
+发送后、确认写回前崩溃仍可能重复通知，应按事件标识识别重复；本地交付确认不等于会话接收端已持久保存。监控不能重建停机期间完全未观察到的开平仓过程，也不保证断电场景下超出底层持久化实现的耐久性。
 
 ## 合约说明
 
@@ -181,6 +224,8 @@ Paper futures 当前只支持市价单，支持开仓、加仓、部分平仓、
 npm --prefix packages/trading-agent run smoke   # headless 运行时检查 + 模拟盘 E2E（真实行情，模拟成交）
 ```
 
+验证脚本默认使用 `~/.ti-trader`。在 CI 或本地隔离运行时，可设置 `TI_DATA_DIR=/tmp/ti-smoke`，让配置、风控状态和模拟账户全部写入指定目录；行情请求仍需要网络连接。
+
 ## 架构
 
 ```
@@ -191,8 +236,10 @@ src/
   context.ts            交易运行时单例：marketData、tradingEngine、配置和模式切换
   tools/index.ts         25 个原生交易工具（行情读取与交易引擎编排）
   monitor.ts              后台成交监控 + 仓位守护（裸仓/浮亏告警，唤醒 agent）
-  trigger-monitor.ts      实验性 /trigger：内存条件求值；live 只通知不自动唤醒
-  commands.ts             交易 slash 命令（inline extension factory；/risk reconcile 对账未结算占用）
+  trigger-monitor.ts      实验性 /trigger：持久化条件与状态；live 只通知
+  monitoring-state.ts     账户作用域、监控状态、通知队列和健康快照
+  health.ts               /health 本地执行阻断和监控健康
+  commands.ts             交易 slash 命令、/recovery 对账和 /audit 审计
   prompt.ts               交易系统提示词（整体替换编码提示词）
 
 packages/trading-engine/  独立交易引擎：规范化合约、ccxt/paper 适配器、规划、风控和保护逻辑

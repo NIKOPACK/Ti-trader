@@ -1,6 +1,6 @@
 import { randomBytes } from "node:crypto";
 import ccxt, { type Order as CcxtOrder, type Ticker as CcxtTicker } from "ccxt";
-import type { Order, OrderStatus, OrderType, Ticker } from "./types.ts";
+import { type Order, type OrderStatus, type OrderType, SubmissionStatusUnknownError, type Ticker } from "./types.ts";
 
 export function toTicker(t: CcxtTicker): Ticker {
 	return {
@@ -95,7 +95,7 @@ export function positionSideFromInfo(info: Record<string, unknown>): Order["posi
 }
 
 export function validTimestamp(timestamp: number | undefined): number {
-	return timestamp !== undefined && Number.isFinite(timestamp) && timestamp >= 0 ? timestamp : Date.now();
+	return timestamp !== undefined && Number.isFinite(timestamp) && timestamp > 0 ? timestamp : Date.now();
 }
 
 export function validateBinanceClientOrderId(value: string, label: string): void {
@@ -107,9 +107,43 @@ export function generateClientOrderId(): string {
 	return `ti-${Date.now().toString(36)}-${randomBytes(6).toString("hex")}`.slice(0, 36);
 }
 
-export function isUncertainSubmission(error: unknown): boolean {
+function errorCode(error: unknown): string | undefined {
+	if (error !== null && typeof error === "object" && "code" in error) {
+		const code = (error as { code?: unknown }).code;
+		if (typeof code === "number" || typeof code === "string") return String(code);
+	}
+	const message = error instanceof Error ? error.message : String(error);
+	return message.match(/-\d{3,5}\b/)?.[0];
+}
+
+function isDefiniteSubmissionRejection(error: unknown): boolean {
+	if (
+		error instanceof ccxt.InsufficientFunds ||
+		error instanceof ccxt.InvalidOrder ||
+		error instanceof ccxt.AuthenticationError ||
+		error instanceof ccxt.BadRequest ||
+		error instanceof ccxt.ArgumentsRequired ||
+		error instanceof ccxt.OperationRejected ||
+		error instanceof ccxt.NotSupported
+	) {
+		return true;
+	}
+	// NetworkError, RateLimitExceeded, DDoSProtection, BadResponse, RequestTimeout.
+	if (error instanceof ccxt.OperationFailed) return false;
+	const code = errorCode(error);
 	const message = error instanceof Error ? `${error.name} ${error.message}` : String(error);
-	return /timeout|network|5\d\d|temporarily unavailable|connection reset|fetch failed/i.test(message);
+	const text = `${code ?? ""} ${message}`;
+	return (
+		/-2010\b|-1013\b|-2021\b|-2014\b|-2015\b/.test(text) ||
+		/insufficient|not enough balance|balance is insufficient/i.test(text) ||
+		/filter failure|order would immediately trigger/i.test(text) ||
+		/invalid api[- ]?key|signature for this request is not valid/i.test(text)
+	);
+}
+
+/** True when the venue may already have accepted the request. Default is yes. */
+export function isUncertainSubmission(error: unknown): boolean {
+	return !isDefiniteSubmissionRejection(error);
 }
 
 export function isOrderNotFound(error: unknown): boolean {
@@ -130,7 +164,7 @@ export function submissionStatusUnknownError(
 	submissionError: unknown,
 	lookupError: unknown,
 ): AggregateError {
-	return new AggregateError(
+	return new SubmissionStatusUnknownError(
 		[submissionError, lookupError],
 		`Submission status unknown [errorCategory=SUBMISSION_STATUS_UNKNOWN] exchange=${exchangeId} symbol=${symbol} ${identifierName}=${identifier}. Submission error: ${errorDescription(submissionError)}. Lookup error: ${errorDescription(lookupError)}. Do not retry; manually verify ${operation} on ${exchangeId}`,
 	);

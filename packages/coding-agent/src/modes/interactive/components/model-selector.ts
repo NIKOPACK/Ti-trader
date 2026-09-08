@@ -177,9 +177,20 @@ export class ModelSelectorComponent extends Container implements Focusable {
 
 	private async refreshModels(): Promise<void> {
 		if (!this.modelRuntime.isModelNetworkEnabled()) {
-			this.refreshStatusMessage = "Using cached model catalogs.";
-			this.refreshStatusSuccess = false;
-			this.tui.requestRender();
+			try {
+				await this.modelRuntime.refresh({ allowNetwork: false, signal: this.refreshAbortController.signal });
+				if (this.closed) return;
+				this.loadModelsFromSnapshot();
+				this.filterModels(this.searchInput.getValue());
+				this.refreshStatusMessage = "Using cached model catalogs.";
+				this.refreshStatusSuccess = false;
+				this.tui.requestRender();
+			} catch (error) {
+				if (this.closed) return;
+				this.refreshStatusMessage = "";
+				this.errorMessage = error instanceof Error ? error.message : String(error);
+				this.tui.requestRender();
+			}
 			return;
 		}
 

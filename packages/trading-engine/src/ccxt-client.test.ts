@@ -43,6 +43,8 @@ interface CancelOrderCall {
 class StubExchange {
 	readonly events: string[] = [];
 	readonly openCalls: OrderQueryCall[] = [];
+	readonly balanceCalls: Array<Record<string, unknown>> = [];
+	readonly positionCalls: Array<Record<string, unknown>> = [];
 	readonly closedCalls: OrderQueryCall[] = [];
 	readonly canceledCalls: OrderQueryCall[] = [];
 	readonly orderCalls: OrderQueryCall[] = [];
@@ -71,6 +73,7 @@ class StubExchange {
 	cancelError: Error | undefined;
 	orderListCancelError: Error | undefined;
 	orderListQueryError: Error | undefined;
+	positionsError: Error | undefined;
 	orderQueryResponse: RawOrder = rawOrder("queried", "NEW");
 	clientOrderIdResponse: RawOrder = rawOrder("client-id-queried", "NEW");
 	clientOrderIdError: Error | undefined;
@@ -91,7 +94,16 @@ class StubExchange {
 	privatePostOrderListOco = async (params: Record<string, unknown>) => {
 		this.rawCalls.push(params);
 		if (this.ocoError) throw this.ocoError;
-		return this.ocoResponse;
+		return {
+			...this.ocoResponse,
+			listClientOrderId: params.listClientOrderId,
+			orderReports: Array.isArray(this.ocoResponse.orderReports)
+				? this.ocoResponse.orderReports.map((report, index) => ({
+						...report,
+						clientOrderId: index === 0 ? params.aboveClientOrderId : params.belowClientOrderId,
+					}))
+				: this.ocoResponse.orderReports,
+		};
 	};
 	privateGetOrder = async (params: Record<string, unknown>) => {
 		this.getOrderRawCalls.push(params);
@@ -302,7 +314,8 @@ class StubExchange {
 		};
 	}
 
-	async fetchBalance() {
+	async fetchBalance(params: Record<string, unknown> = {}) {
+		this.balanceCalls.push(params);
 		return {
 			total: this.balances,
 			free: this.freeBalances ?? this.balances,
@@ -322,7 +335,12 @@ class StubExchange {
 		return this.trades;
 	}
 
-	async fetchPositions(): Promise<Array<Record<string, unknown>>> {
+	async fetchPositions(
+		_symbols?: string[],
+		params: Record<string, unknown> = {},
+	): Promise<Array<Record<string, unknown>>> {
+		this.positionCalls.push(params);
+		if (this.positionsError) throw this.positionsError;
 		return this.futuresPositions;
 	}
 
@@ -522,7 +540,128 @@ function configureFuturesMarket(
 	}
 }
 
+describe("Binance account exposure inspection", () => {
+	it("finds a matching futures position from a spot client", async () => {
+		const stub = new StubExchange();
+		stub.balances = { USDT: 1_000 };
+		stub.futuresPositions = [
+			{ symbol: "BTC/USDT:USDT", contracts: 1, info: { positionAmt: "1" } },
+			{ symbol: "BTC/USDT:USDC", contracts: 2, info: { positionAmt: "2" } },
+		];
+
+		const client = newClient("binance", stub, "spot");
+
+		expect(await client.hasAnyAccountExposure()).toBe(true);
+		expect(stub.openCalls).toContainEqual({ symbol: undefined, params: { type: "swap" } });
+		expect(stub.positionCalls).toContainEqual({ type: "swap" });
+	});
+
+	it("finds spot holdings from a futures client", async () => {
+		const stub = new StubExchange();
+		stub.balances = { BTC: 1, USDT: 1_000 };
+		const client = newClient("binance", stub, "usdm-futures");
+
+		expect(await client.hasAnyAccountExposure()).toBe(true);
+		expect(stub.balanceCalls).toContainEqual({ type: "spot" });
+	});
+
+	it("returns false for a futures client with only the spot quote balance", async () => {
+		const stub = new StubExchange();
+		stub.balances = { USDT: 1_000 };
+		const client = newClient("binance", stub, "usdm-futures");
+
+		expect(await client.hasAnyAccountExposure()).toBe(false);
+	});
+
+	it("allows an empty opposite wallet and filters non-USDT futures", async () => {
+		const stub = new StubExchange();
+		stub.balances = { USDT: 1_000 };
+		stub.futuresPositions = [{ symbol: "BTC/USDT:USDC", contracts: 2, info: { positionAmt: "2" } }];
+		const client = newClient("binance", stub, "spot");
+
+		expect(await client.hasAnyAccountExposure()).toBe(false);
+	});
+
+	it("fails closed when the opposite futures wallet cannot be inspected", async () => {
+		const stub = new StubExchange();
+		stub.balances = { USDT: 1_000 };
+		stub.positionsError = new Error("futures permission denied");
+		const client = newClient("binance", stub, "spot");
+
+		expect(await client.hasAnyAccountExposure()).toBe(true);
+	});
+
+	it("fails closed for non-Binance account families that cannot be probed together", async () => {
+		const stub = new StubExchange();
+		stub.balances = { USDT: 1_000 };
+		const client = newClient("okx", stub, "spot");
+
+		expect(await client.hasAnyAccountExposure()).toBe(true);
+	});
+});
+
 describe("Binance Spot submission reconciliation", () => {
+	it("rejects oversized client-ID OCO lists before starting unbounded leg queries", async () => {
+		const stub = new StubExchange();
+		stub.orderListQueryResponse = {
+			orderListId: 42,
+			listClientOrderId: "bounded-list",
+			listOrderStatus: "EXECUTING",
+			orders: Array.from({ length: 3 }, (_, id) => ({ orderId: id, symbol: "BTCUSDT" })),
+		};
+		await expect(newClient("binance", stub).getOrderListByClientId("bounded-list")).rejects.toThrow(/exactly two/);
+		expect(stub.orderFetchCalls).toEqual([]);
+	});
+
+	it("does not overwrite conflicting accepted client identity and cannot release it on a lookup miss", async () => {
+		const stub = new StubExchange();
+		stub.createOrderOverrides = { info: { clientOrderId: "other-client" } };
+		stub.orderQueryError = new Error("not found");
+		await expect(
+			newClient("binance", stub).placeOrder({
+				symbol: "BTC/USDT",
+				side: "buy",
+				type: "market",
+				amount: 1,
+				clientOrderId: "expected-client",
+			}),
+		).rejects.toThrow(/SUBMISSION_STATUS_UNKNOWN/);
+		expect(stub.createOrderCalls).toHaveLength(1);
+		expect(stub.getOrderRawCalls).toEqual([{ symbol: "BTCUSDT", origClientOrderId: "expected-client" }]);
+	});
+
+	it.each(["list", "leg", "symbol", "side", "amount"] as const)(
+		"keeps malformed accepted OCO %s evidence unknown",
+		async (field) => {
+			const stub = new StubExchange();
+			const submit = stub.privatePostOrderListOco;
+			stub.privatePostOrderListOco = async (params) => {
+				const response = await submit(params);
+				const reports = response.orderReports as Array<Record<string, unknown>>;
+				if (field === "list") response.listClientOrderId = "other-list";
+				if (field === "leg") reports[0].clientOrderId = reports[1].clientOrderId;
+				if (field === "symbol") reports[0].symbol = "ETHUSDT";
+				if (field === "side") reports[0].side = "BUY";
+				if (field === "amount") reports[0].origQty = "2";
+				return response;
+			};
+			stub.orderListQueryError = new Error("not found");
+			await expect(
+				newClient("binance", stub).placeOcoOrder({
+					symbol: "BTC/USDT",
+					side: "sell",
+					amount: 1,
+					stopLossPrice: 90,
+					takeProfitPrice: 120,
+					listClientOrderId: "expected-list",
+					aboveClientOrderId: "expected-above",
+					belowClientOrderId: "expected-below",
+				}),
+			).rejects.toThrow(/SUBMISSION_STATUS_UNKNOWN/);
+			expect(stub.rawCalls).toHaveLength(1);
+		},
+	);
+
 	it("reconciles a normal order timeout by client id", async () => {
 		const stub = new StubExchange();
 		stub.createOrderError = new Error("request timeout");
@@ -550,19 +689,38 @@ describe("Binance Spot submission reconciliation", () => {
 		expect(stub.getOrderRawCalls).toHaveLength(0);
 	});
 
-	it("normalizes typed authentication and rate-limit rejections", async () => {
+	it("normalizes typed authentication rejections without querying", async () => {
 		const authStub = new StubExchange();
 		authStub.createOrderError = new ccxt.AuthenticationError("invalid API-key, IP, or permissions");
 		await expect(
 			newClient("binance", authStub).placeOrder({ symbol: "BTC/USDT", side: "buy", type: "market", amount: 1 }),
 		).rejects.toThrow(/errorCategory=AUTHENTICATION/);
 		expect(authStub.getOrderRawCalls).toHaveLength(0);
+	});
 
-		const rateStub = new StubExchange();
-		rateStub.createOrderError = new ccxt.RateLimitExceeded("Too many requests; -1003");
-		await expect(
-			newClient("binance", rateStub).placeOrder({ symbol: "BTC/USDT", side: "buy", type: "market", amount: 1 }),
-		).rejects.toThrow(/errorCategory=RATE_LIMIT.*code=-1003/);
+	it("reconciles transport-class failures by client id instead of releasing them as rejections", async () => {
+		const cases: Error[] = [
+			new Error("socket hang up"),
+			Object.assign(new Error("read ECONNRESET"), { code: "ECONNRESET" }),
+			new ccxt.BadResponse("binance GET https://api.binance.com/api/v3/order 200 <html>"),
+			new ccxt.DDoSProtection("binance 418"),
+			new ccxt.RateLimitExceeded("Too many requests; -1003"),
+		];
+		for (const createOrderError of cases) {
+			const stub = new StubExchange();
+			stub.createOrderError = createOrderError;
+			stub.orderQueryError = new Error("HTTP 404 order not found");
+			await expect(
+				newClient("binance", stub).placeOrder({
+					symbol: "BTC/USDT",
+					side: "buy",
+					type: "market",
+					amount: 1,
+					clientOrderId: "cid",
+				}),
+			).rejects.toThrow(/SUBMISSION_STATUS_UNKNOWN/);
+			expect(stub.getOrderRawCalls).toEqual([{ symbol: "BTCUSDT", origClientOrderId: "cid" }]);
+		}
 	});
 
 	it("normalizes Binance numeric order rejection codes", async () => {
@@ -646,7 +804,12 @@ describe("Binance Spot submission reconciliation", () => {
 	it("does not treat an empty OCO list lookup as a recovered submission", async () => {
 		const stub = new StubExchange();
 		stub.ocoError = new Error("request timeout");
-		stub.orderListQueryResponse = { orderListId: 42, listOrderStatus: "EXEC_STARTED", orderReports: [] };
+		stub.orderListQueryResponse = {
+			orderListId: 42,
+			listClientOrderId: "empty-list",
+			listOrderStatus: "EXEC_STARTED",
+			orderReports: [],
+		};
 		const client = newClient("binance", stub);
 
 		await expect(
@@ -658,7 +821,7 @@ describe("Binance Spot submission reconciliation", () => {
 				takeProfitPrice: 120,
 				listClientOrderId: "empty-list",
 			}),
-		).rejects.toThrow(/SUBMISSION_STATUS_UNKNOWN.*OCO order-list lookup returned no orders/);
+		).rejects.toThrow(/SUBMISSION_STATUS_UNKNOWN.*Correlated OCO lookup requires exactly two order legs/);
 		expect(stub.rawCalls).toHaveLength(1);
 		expect(stub.getOrderListRawCalls).toHaveLength(1);
 	});
@@ -691,13 +854,18 @@ describe("Binance Spot submission reconciliation", () => {
 		stub.ocoError = new Error("request timeout");
 		stub.orderListQueryResponse = {
 			orderListId: 42,
+			listClientOrderId: "list-id",
 			listOrderStatus: "EXEC_STARTED",
 			orderReports: [
 				{ symbol: "BTCUSDT", orderId: 10 },
 				{ symbol: "BTCUSDT", orderId: 11 },
 			],
 		};
-		stub.orderQueryResponse = rawOrder("leg", "NEW");
+		stub.privateGetOrder = async (params) =>
+			rawOrder(String(params.orderId), "NEW", {
+				side: "sell",
+				info: { clientOrderId: params.orderId === "10" ? "above-id" : "below-id" },
+			});
 		const client = newClient("binance", stub);
 		const result = await client.placeOcoOrder({
 			symbol: "BTC/USDT",
@@ -706,6 +874,8 @@ describe("Binance Spot submission reconciliation", () => {
 			stopLossPrice: 90,
 			takeProfitPrice: 120,
 			listClientOrderId: "list-id",
+			aboveClientOrderId: "above-id",
+			belowClientOrderId: "below-id",
 		});
 		expect(result.orders).toHaveLength(2);
 		expect(stub.rawCalls).toHaveLength(1);
@@ -780,10 +950,10 @@ describe("Binance Spot conditional orders", () => {
 			trailingPercent: 2,
 			stopPrice: 110,
 		});
-		expect(stub.rawCalls[0]).toMatchObject({ type: "STOP_LOSS", trailingDelta: "200", stopPrice: "110" });
+		expect(stub.rawCalls[0]).toMatchObject({ type: "TAKE_PROFIT", trailingDelta: "200", stopPrice: "110" });
 	});
 
-	it("uses above trailing bounds for buy take-profit orders even when activation is below market", async () => {
+	it("uses take-profit activation below market for buy trailing orders", async () => {
 		const stub = new StubExchange();
 		const client = newClient("binance", stub);
 		await client.placeOrder({
@@ -812,18 +982,43 @@ describe("Binance Spot conditional orders", () => {
 		expect(stub.rawCalls).toHaveLength(0);
 	});
 
-	it("rejects trailing deltas outside the symbol-specific filter range", async () => {
+	it.each([
+		["buy", 0.5, 90],
+		["sell", 20, 110],
+	] as const)("accepts the %s take-profit trailing range", async (side, trailingPercent, stopPrice) => {
+		const stub = new StubExchange();
+		const client = newClient("binance", stub);
+		await client.placeOrder({
+			symbol: "BTC/USDT",
+			side,
+			type: "trailing_stop_market",
+			amount: 1,
+			trailingPercent,
+			stopPrice,
+		});
+		expect(stub.rawCalls[0]).toMatchObject({
+			type: "TAKE_PROFIT",
+			side: side.toUpperCase(),
+			trailingDelta: String(trailingPercent * 100),
+		});
+	});
+
+	it.each([
+		["buy", 20, "below range 10-1000"],
+		["sell", 0.5, "above range 100-5000"],
+	] as const)("rejects deltas outside the %s take-profit trailing range", async (side, trailingPercent, error) => {
 		const stub = new StubExchange();
 		const client = newClient("binance", stub);
 		await expect(
 			client.placeOrder({
 				symbol: "BTC/USDT",
-				side: "sell",
+				side,
 				type: "trailing_stop_market",
 				amount: 1,
-				trailingPercent: 0.05,
+				trailingPercent,
 			}),
-		).rejects.toThrow(/outside below range 10-1000/);
+		).rejects.toThrow(error);
+		expect(stub.rawCalls).toHaveLength(0);
 	});
 
 	it("maps native OCO order reports and orderListId", async () => {
@@ -866,6 +1061,12 @@ describe("Binance Spot conditional orders", () => {
 });
 
 describe("ccxt constructor options", () => {
+	it("rejects the paper-only both market type", () => {
+		expect(() => new CcxtExchangeClient("binance", "USDT", { apiKey: "test", secret: "test" }, "both")).toThrow(
+			/does not support marketType "both"/,
+		);
+	});
+
 	it("enables Binance server-time adjustment with an explicit receive window", () => {
 		const client = new CcxtExchangeClient("binance", "USDT", { apiKey: "test", secret: "test" });
 		const exchange = (client as unknown as { exchange: { options: Record<string, unknown> } }).exchange;
@@ -887,7 +1088,94 @@ describe("ccxt constructor options", () => {
 	});
 });
 
+describe("live order input validation", () => {
+	it("rejects invalid side and order type before loading markets", async () => {
+		const stub = new StubExchange();
+		const client = newClient("binance", stub);
+
+		await expect(
+			client.placeOrder({
+				symbol: "BTC/USDT",
+				side: "hold" as "buy",
+				type: "market",
+				amount: 1,
+			}),
+		).rejects.toThrow("Order side must be buy or sell");
+		await expect(
+			client.placeOrder({
+				symbol: "BTC/USDT",
+				side: "buy",
+				type: "unknown" as "market",
+				amount: 1,
+			}),
+		).rejects.toThrow("Unsupported order type: unknown");
+		expect(stub.events).not.toContain("loadMarkets");
+	});
+
+	it.each([Number.NaN, Number.POSITIVE_INFINITY, 0, -1])(
+		"rejects an invalid amount before loading markets (%s)",
+		async (amount) => {
+			const stub = new StubExchange();
+			const client = newClient("binance", stub);
+
+			await expect(client.placeOrder({ symbol: "BTC/USDT", side: "buy", type: "market", amount })).rejects.toThrow(
+				/Amount must be finite and positive/,
+			);
+			expect(stub.events).not.toContain("loadMarkets");
+		},
+	);
+
+	it.each([
+		["limit price", { type: "limit" as const, amount: 1, price: Number.NaN }],
+		["trigger price", { type: "stop_market" as const, amount: 1, stopPrice: Number.POSITIVE_INFINITY }],
+	])("rejects a non-finite %s before loading markets", async (_label, input) => {
+		const stub = new StubExchange();
+		const client = newClient("binance", stub);
+
+		await expect(client.placeOrder({ symbol: "BTC/USDT", side: "buy", ...input })).rejects.toThrow(/finite positive/);
+		expect(stub.events).not.toContain("loadMarkets");
+	});
+
+	it("rejects malformed OCO input before loading markets", async () => {
+		const stub = new StubExchange();
+		const client = newClient("binance", stub);
+
+		await expect(
+			client.placeOcoOrder({
+				symbol: "BTC/USDT",
+				side: "buy",
+				amount: Number.NaN,
+				stopLossPrice: 90,
+				takeProfitPrice: 110,
+			}),
+		).rejects.toThrow("amount must be positive");
+		expect(stub.events).not.toContain("loadMarkets");
+	});
+});
+
 describe("live Spot cost basis", () => {
+	it("keeps negative and used balances visible for debt and locked funds", async () => {
+		const stub = new StubExchange();
+		stub.balances = { USDT: -25, BTC: 0 };
+		stub.freeBalances = { USDT: -30, BTC: 0 };
+		stub.usedBalances = { USDT: 5, BTC: 0 };
+
+		await expect(newClient("binance", stub).getBalances()).resolves.toEqual([
+			expect.objectContaining({ asset: "USDT", free: -30, used: 5, total: -25, quoteValue: -25 }),
+		]);
+	});
+
+	it("derives total from free and used when an adapter omits total balances", async () => {
+		const stub = new StubExchange();
+		stub.balances = {};
+		stub.freeBalances = { BTC: 1, USDT: 1_000 };
+		stub.usedBalances = { BTC: 0, USDT: 0 };
+
+		await expect(newClient("binance", stub).getPositions()).resolves.toEqual([
+			expect.objectContaining({ symbol: "BTC/USDT", asset: "BTC", amount: 1, quoteValue: 100 }),
+		]);
+	});
+
 	it("keeps a non-dust position when its quote valuation is unavailable", async () => {
 		const stub = new StubExchange();
 		stub.balances = { BTC: 1, USDT: 1000 };
@@ -1696,7 +1984,19 @@ describe("Binance futures adapter", () => {
 		expect(position).not.toHaveProperty("margin");
 		expect(position).not.toHaveProperty("avgEntryPrice");
 		expect(position).not.toHaveProperty("unrealizedPnl");
+		expect(position).not.toHaveProperty("marginType");
 		expect(position).not.toHaveProperty("unrealizedPnlPct");
+	});
+
+	it("uses a recognized margin mode from raw exchange info", async () => {
+		const stub = new StubExchange();
+		stub.futuresPositions = [
+			{ symbol, contracts: 1, side: "long", markPrice: 100, notional: 100, info: { marginType: "cross" } },
+		];
+
+		const position = (await newClient("binance", stub, "usdm-futures").getPositions())[0];
+
+		expect(position).toMatchObject({ marginType: "cross" });
 	});
 
 	it("uses the standard Binance futures endpoint for ordinary client-id lookups", async () => {
@@ -1716,6 +2016,16 @@ describe("Binance futures adapter", () => {
 		expect(order).toMatchObject({ id: "ordinary", amount: 20, filled: 20, remaining: 0 });
 		expect(stub.futuresGetOrderRawCalls).toEqual([{ symbol: "BTCUSDT", origClientOrderId: "ordinary-id" }]);
 		expect(stub.futuresGetAlgoOrderRawCalls).toHaveLength(0);
+	});
+
+	it("rejects an emulated client-id lookup that does not echo the requested id", async () => {
+		const stub = new StubExchange();
+		stub.has.fetchOrderWithClientOrderId = "emulated";
+		const client = newClient("okx", stub);
+
+		await expect(client.getOrderByClientId("expected-id", "BTC/USDT")).rejects.toThrow(
+			/did not prove clientOrderId=expected-id/,
+		);
 	});
 
 	it("uses the Binance futures Algo endpoint for conditional client-id lookups", async () => {

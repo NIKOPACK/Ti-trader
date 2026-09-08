@@ -21,6 +21,7 @@ function createInteractiveContext(options: {
 			modelRuntime: {
 				refresh: vi.fn().mockResolvedValue({ aborted: false, errors: new Map() }),
 				getAvailableSnapshot,
+				isModelNetworkEnabled: () => false,
 			},
 			scopedModels: options.scopedModels ?? [],
 			setScopedModels,

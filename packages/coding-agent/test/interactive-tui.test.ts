@@ -93,6 +93,7 @@ describe("createInteractiveTui", () => {
 			options: { tuiMode?: TuiMode };
 			themeController: { rebindTui: () => void };
 			extensionTerminalInputSubscriptions: Set<never>;
+			runtimeHost: { services: { agentDir: string } };
 		};
 		const context = Object.assign(Object.create(InteractiveMode.prototype), {
 			renderer,
@@ -101,6 +102,7 @@ describe("createInteractiveTui", () => {
 			options: { tuiMode: "regular" as TuiMode },
 			themeController: { rebindTui: () => {} },
 			extensionTerminalInputSubscriptions: new Set<never>(),
+			runtimeHost: { services: { agentDir: "/tmp" } },
 		}) as SwitchContext;
 		stableUi = createInteractiveTuiReference(() => context.renderer);
 		context.ui = stableUi;

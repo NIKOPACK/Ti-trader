@@ -3,6 +3,7 @@ import {
 	closeSync,
 	existsSync,
 	fstatSync,
+	fsyncSync,
 	mkdirSync,
 	openSync,
 	readFileSync,
@@ -12,7 +13,7 @@ import {
 	utimesSync,
 	writeFileSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, resolve } from "node:path";
 
 export const DEFAULT_FILE_LOCK = {
 	timeoutMs: 10_000,
@@ -54,10 +55,51 @@ export function writeJsonFile(path: string, data: unknown, mode?: number): void 
 		renameSync(temporaryPath, path);
 		return;
 	}
+
 	writeFileSync(temporaryPath, body, { encoding: "utf8", mode });
 	chmodSync(temporaryPath, mode);
 	renameSync(temporaryPath, path);
 	chmodSync(path, mode);
+}
+
+function syncPath(path: string): void {
+	const fd = openSync(path, "r");
+	try {
+		fsyncSync(fd);
+	} finally {
+		closeSync(fd);
+	}
+}
+
+function ensureDirectoryDurable(path: string): void {
+	const missing = !existsSync(path);
+	mkdirSync(path, { recursive: true });
+	if (missing) syncDirectoryTree(path);
+}
+
+function syncDirectoryTree(path: string): void {
+	for (let directory = resolve(path); ; directory = dirname(directory)) {
+		syncPath(directory);
+		if (dirname(directory) === directory) return;
+	}
+}
+
+/** Commit both file contents and the renamed directory entry before dependent state may advance. */
+export function syncFileAndDirectory(path: string): void {
+	syncPath(path);
+	// Ancestors also cover directories left present but unflushed by an earlier failed creation.
+	syncDirectoryTree(dirname(path));
+}
+
+export function writeJsonFileDurable(path: string, data: unknown, mode?: number): void {
+	ensureDirectoryDurable(dirname(path));
+	writeJsonFile(path, data, mode);
+	syncFileAndDirectory(path);
+}
+
+export function removeFileDurable(path: string): void {
+	unlinkSync(path);
+	syncDirectoryTree(dirname(path));
 }
 
 function resolvedLockOptions(options: FileLockOptions = {}): {
@@ -121,7 +163,7 @@ function reclaimOrWaitForLock(
 
 export function acquireFileLockSync(path: string, options: FileLockOptions = {}): FileLock {
 	const resolved = resolvedLockOptions(options);
-	mkdirSync(dirname(path), { recursive: true });
+	ensureDirectoryDurable(dirname(path));
 	const deadline = Date.now() + resolved.timeoutMs;
 	for (;;) {
 		try {
@@ -137,7 +179,7 @@ export function acquireFileLockSync(path: string, options: FileLockOptions = {})
 
 export async function acquireFileLock(path: string, options: FileLockOptions = {}): Promise<FileLock> {
 	const resolved = resolvedLockOptions(options);
-	mkdirSync(dirname(path), { recursive: true });
+	ensureDirectoryDurable(dirname(path));
 	const deadline = Date.now() + resolved.timeoutMs;
 	for (;;) {
 		try {

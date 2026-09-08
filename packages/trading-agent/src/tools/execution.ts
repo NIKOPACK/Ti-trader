@@ -1,15 +1,17 @@
 import type { AgentToolResult, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { MarketInfo } from "@earendil-works/ti-trading-engine";
 import {
+	ExecutionRecoveryError,
 	futuresAmountStep,
 	isBinanceCloseAllTrigger,
 	OrderPreparationError,
 	type PreparedOco,
 	type PreparedOrder,
+	preflightOco,
 	RiskCommitError,
 } from "@earendil-works/ti-trading-engine";
 import type { TradingRuntime } from "../context.ts";
-import { marketInfoMatchesFamily, paperFuturesOrderUnsupported } from "./capabilities.ts";
+import { paperFuturesOrderUnsupported } from "./capabilities.ts";
 import {
 	errorMessage,
 	formatOrder,
@@ -178,6 +180,10 @@ function needsLiveConfirmation(trading: TradingRuntime): boolean {
 	return trading.mode === "live" && trading.config.confirmLiveOrders;
 }
 
+function liveSubmissionOverride(trading: TradingRuntime): { allowUnconfirmedLive?: true } {
+	return trading.mode === "live" && !trading.config.confirmLiveOrders ? { allowUnconfirmedLive: true } : {};
+}
+
 function liveOrderConfirm(
 	ctx: ExtensionContext,
 	trading: TradingRuntime,
@@ -230,20 +236,17 @@ function handlePlacementFailure(
 	submitted: boolean,
 	labels: { submitted: string; unknown: string },
 ): AgentToolResult<unknown> {
-	if (error instanceof RiskCommitError) throw error;
+	if (error instanceof RiskCommitError || error instanceof ExecutionRecoveryError) throw error;
 	if (errorMessage(error) === USER_CANCELLED_ORDER) return userRejectedConfirmation(ctx, planSummary);
 	const message = errorMessage(error);
 	if (submitted) {
 		throw new Error(`${labels.submitted} was submitted and the result could not be reported: ${message}`);
 	}
 	// A transport failure after submission is ambiguous: the exchange may
-	// already own the order. Keep the quota reserved until reconciliation
-	// confirms that no order exists; releasing it would allow a duplicate
-	// live order on an immediate retry.
+	// already own the order. Retain the durable execution block and reservation
+	// until correlated recovery or explicit verified reconciliation.
 	if (isSubmissionStatusUnknown(error)) {
-		throw new Error(
-			`${labels.unknown} submission status is unknown; risk quota remains reserved until exchange reconciliation. Do not retry: ${message}`,
-		);
+		throw new Error(`${labels.unknown} submission status is unknown. Inspect /recovery; never retry the submission.`);
 	}
 	throw error;
 }
@@ -253,6 +256,7 @@ export async function executeOrder(
 	params: OrderToolParams,
 	ctx: ExtensionContext,
 	trading: TradingRuntime,
+	signal?: AbortSignal,
 ): Promise<AgentToolResult<unknown>> {
 	const { config } = trading;
 	const engine = trading.tradingEngine;
@@ -262,14 +266,20 @@ export async function executeOrder(
 	let submitted = false;
 	try {
 		const confirm = liveOrderConfirm(ctx, trading, `Confirm LIVE order on ${config.exchange}`);
-		const result = await engine.placeOrder(plan, {
-			...(confirm === undefined ? {} : { confirm }),
-			submissionStatusUnknown: isSubmissionStatusUnknown,
-		});
+		const result = await engine.placeOrder(
+			plan,
+			{
+				...(confirm === undefined ? {} : { confirm }),
+				...liveSubmissionOverride(trading),
+				submissionStatusUnknown: isSubmissionStatusUnknown,
+			},
+			signal,
+		);
 		submitted = true;
 
 		return jsonResult({
 			status: "ok",
+			executionId: result.executionId,
 			mode: trading.mode,
 			summary: plan.summary,
 			executionConstraints: executionConstraints(plan),
@@ -301,6 +311,7 @@ export async function executeOco(
 	params: OcoToolParams,
 	ctx: ExtensionContext,
 	tradingProvider: TradingProvider,
+	signal?: AbortSignal,
 ): Promise<AgentToolResult<unknown>> {
 	const trading = tradingProvider();
 	const { config } = trading;
@@ -312,39 +323,13 @@ export async function executeOco(
 		throw error;
 	}
 
-	const [marketInfo, balances] = await Promise.all([
-		trading.tradingEngine.getMarketInfo(plan.input.symbol),
-		trading.tradingEngine.getBalances(),
-	]);
-	if (marketInfo.active === false) throw new Error(`Market ${plan.input.symbol} is inactive`);
-	if (!marketInfoMatchesFamily(marketInfo, plan.input.symbol, "spot", config.quoteCurrency)) {
-		throw new Error("Returned market metadata does not match the requested spot symbol or quote currency");
-	}
-	const minAmount = marketInfo.minAmount ?? marketInfo.limits?.amount?.min;
-	const maxAmount = marketInfo.limits?.amount?.max;
-	if (minAmount !== undefined && plan.input.amount < minAmount)
-		throw new Error(`OCO amount ${plan.input.amount} is below market minimum ${minAmount}`);
-	if (maxAmount !== undefined && plan.input.amount > maxAmount)
-		throw new Error(`OCO amount ${plan.input.amount} exceeds market maximum ${maxAmount}`);
-	if (marketInfo.minNotional !== undefined && plan.riskNotional < marketInfo.minNotional)
-		throw new Error(`OCO risk notional ${plan.riskNotional} is below market minimum ${marketInfo.minNotional}`);
-	if (marketInfo.limits?.cost?.max !== undefined && plan.riskNotional > marketInfo.limits.cost.max)
-		throw new Error(`OCO risk notional ${plan.riskNotional} exceeds market maximum ${marketInfo.limits.cost.max}`);
-
-	const baseAsset = plan.input.symbol.split("/")[0];
-	const balanceAsset = plan.input.side === "sell" ? baseAsset : config.quoteCurrency;
-	const balance = balances.find((candidate) => candidate.asset === balanceAsset);
-	if (balance === undefined || !Number.isFinite(balance.free)) {
-		throw new Error(`No finite free ${balanceAsset} balance is available for this OCO order`);
-	}
-	const estimatedFee = trading.mode === "paper" ? plan.riskNotional * config.paper.feeRate : undefined;
-	const worstCaseQuote = plan.input.amount * Math.max(plan.input.stopLossPrice, plan.input.takeProfitPrice);
-	const requiredBalance = plan.input.side === "sell" ? plan.input.amount : worstCaseQuote + (estimatedFee ?? 0);
-	if (balance.free < requiredBalance) {
-		throw new Error(
-			`Insufficient free ${balanceAsset} for OCO: need ${requiredBalance.toFixed(8)}, have ${balance.free.toFixed(8)}`,
-		);
-	}
+	const preflight = await preflightOco(plan, {
+		getMarketInfo: (symbol) => trading.tradingEngine.getMarketInfo(symbol),
+		getBalances: () => trading.tradingEngine.getBalances(),
+		quoteCurrency: config.quoteCurrency,
+		feeRate: trading.mode === "paper" ? config.paper.feeRate : undefined,
+	});
+	const { balance, balanceAsset, requiredBalance, estimatedFee } = preflight;
 	const engine = trading.tradingEngine;
 	const riskError = engine.risk.check(plan.input.symbol, plan.riskNotional, {
 		countTowardsDailyLimit: plan.countTowardsDailyLimit,
@@ -364,14 +349,20 @@ export async function executeOco(
 	let submitted = false;
 	try {
 		const confirm = liveOrderConfirm(ctx, trading, `Confirm LIVE OCO order on ${config.exchange}`);
-		const result = await engine.placeOco(plan, {
-			...(confirm === undefined ? {} : { confirm }),
-			submissionStatusUnknown: isSubmissionStatusUnknown,
-		});
+		const result = await engine.placeOco(
+			plan,
+			{
+				...(confirm === undefined ? {} : { confirm }),
+				...liveSubmissionOverride(trading),
+				submissionStatusUnknown: isSubmissionStatusUnknown,
+			},
+			signal,
+		);
 		submitted = true;
 
 		return jsonResult({
 			status: "ok",
+			executionId: result.executionId,
 			mode: trading.mode,
 			summary: plan.summary,
 			preflight: {

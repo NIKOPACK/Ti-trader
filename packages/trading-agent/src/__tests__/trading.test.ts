@@ -1,4 +1,5 @@
 import { closeSync, existsSync, openSync, renameSync, rmSync, unlinkSync } from "node:fs";
+import type { ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { type ExchangeClient, TradingEngine, type TradingEngineConfig } from "@earendil-works/ti-trading-engine";
 import { afterAll, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -7,6 +8,7 @@ const testStatePath = vi.hoisted(
 	() => `${process.cwd()}/.ti-trading-state-${process.pid}-${Date.now()}-${Math.random().toString(36).slice(2)}.json`,
 );
 const stateWriteHooks = vi.hoisted(() => ({ beforeWrite: undefined as (() => void) | undefined }));
+vi.mock("../state-durability.ts", () => ({ syncTradingStateFile: vi.fn() }));
 
 vi.mock("../config.ts", () => ({
 	KEYS_PATH: "keys.json",
@@ -30,14 +32,17 @@ import { TradingRuntime } from "../context.ts";
 import { isProtection, protectionCoverage, reduceSide } from "../monitor.ts";
 import {
 	DEFAULT_CONFIG,
+	loadTradingConfig,
 	loadTradingState,
+	normalizeTradingConfig,
+	saveTradingConfig,
 	saveTradingState,
 	type TradingConfig,
 	type TradingState,
 	transactTradingState,
 	validateTradingConfig,
 } from "../state.ts";
-import { createTradingTools } from "../tools/index.ts";
+import { createCheckOrderTool, createGetRiskStatusTool, createTradingTools } from "../tools/index.ts";
 
 const today = (): string => new Date().toISOString().slice(0, 10);
 
@@ -69,6 +74,7 @@ function testExchangeClient(config: TradingConfig): ExchangeClient {
 		getTopMarkets: unsupported,
 		getFundingRate: unsupported,
 		getFundingRateHistory: unsupported,
+		getEffectiveLeverage: () => config.leverage,
 		setLeverage: unsupported,
 		setMarginMode: unsupported,
 		setMultiAssetsMode: unsupported,
@@ -76,7 +82,11 @@ function testExchangeClient(config: TradingConfig): ExchangeClient {
 	};
 }
 
-function runtimeWithState(config: TradingConfig, state: TradingState): TradingRuntime {
+function runtimeWithState(
+	config: TradingConfig,
+	state: TradingState,
+	exchangeOverrides: Partial<ExchangeClient> = {},
+): TradingRuntime {
 	const runtime = Object.create(TradingRuntime.prototype) as TradingRuntime;
 	Object.defineProperty(runtime, "currentConfig", { value: config, writable: true, configurable: true });
 	const current = structuredClone(state);
@@ -87,16 +97,22 @@ function runtimeWithState(config: TradingConfig, state: TradingState): TradingRu
 		quoteCurrency: config.quoteCurrency,
 		risk: config.risk,
 	};
-	const tradingEngine = new TradingEngine(engineConfig, testExchangeClient(config), {
-		load: () => current,
-		save: (next) => Object.assign(current, structuredClone(next)),
-		transact: <T>(mutator: (next: TradingState) => T): T => {
-			const draft = structuredClone(current);
-			const result = mutator(draft);
-			Object.assign(current, draft);
-			return result;
+	const tradingEngine = new TradingEngine(
+		engineConfig,
+		{ ...testExchangeClient(config), ...exchangeOverrides },
+		{
+			load: () => current,
+			save: (next) => Object.assign(current, structuredClone(next)),
+			transact: <T>(mutator: (next: TradingState) => T): T => {
+				const draft = structuredClone(current);
+				const result = mutator(draft);
+				Object.assign(current, draft);
+				return result;
+			},
 		},
-	});
+		undefined,
+		{ durability: "memory", accountId: "fixture-account" },
+	);
 	Object.defineProperty(runtime, "tradingEngine", { value: tradingEngine });
 	return runtime;
 }
@@ -124,6 +140,11 @@ afterAll(() => {
 
 describe("trading configuration", () => {
 	it("accepts the default configuration", () => expect(() => validateTradingConfig(DEFAULT_CONFIG)).not.toThrow());
+	it.each([null, 0, "false", undefined])("rejects non-boolean confirmLiveOrders (%s)", (confirmLiveOrders) => {
+		configFiles.set(TRADING_CONFIG_PATH, { ...DEFAULT_CONFIG, confirmLiveOrders });
+
+		expect(() => loadTradingConfig()).toThrow(/confirmLiveOrders must be a boolean/);
+	});
 	it("accepts Binance USDⓈ-M configuration", () => {
 		expect(() =>
 			validateTradingConfig({ ...DEFAULT_CONFIG, exchange: "binance", marketType: "usdm-futures", leverage: 10 }),
@@ -149,6 +170,14 @@ describe("trading configuration", () => {
 		expect(runtime.tradingEngine.risk.check("ETH/USDT:USDT", 100)).toBeNull();
 		expect(runtime.tradingEngine.risk.check("SOL/USDT", 100)).toMatch(/allowedSymbols/);
 	});
+	it.each(["/USDT", "BTC/USDT:USDT:USDT", "BTC//USDT"])("rejects malformed allowlist symbol %s", (symbol) => {
+		expect(() =>
+			validateTradingConfig({
+				...DEFAULT_CONFIG,
+				risk: { ...DEFAULT_CONFIG.risk, allowedSymbols: [symbol] },
+			}),
+		).toThrow(/risk.allowedSymbols/);
+	});
 	it("revalidates command-line overrides before creating an exchange client", async () => {
 		configFiles.set(TRADING_CONFIG_PATH, {
 			...DEFAULT_CONFIG,
@@ -156,7 +185,88 @@ describe("trading configuration", () => {
 			marketType: "usdm-futures",
 		});
 
-		await expect(TradingRuntime.init({ exchange: "okx" })).rejects.toThrow(/supported only on Binance/);
+		const runtime = await TradingRuntime.init({ exchange: "okx" });
+		expect(runtime.config).toMatchObject({ marketType: "spot", exchange: "okx" });
+		expect(configFiles.get(TRADING_CONFIG_PATH)).toMatchObject({
+			exchange: "binance",
+			marketType: "usdm-futures",
+		});
+		await runtime.close();
+	});
+	it("normalizes market type when a live Binance config is switched to paper OKX", async () => {
+		configFiles.set(TRADING_CONFIG_PATH, {
+			...DEFAULT_CONFIG,
+			mode: "live",
+			exchange: "binance",
+			marketType: "usdm-futures",
+		});
+
+		const runtime = await TradingRuntime.init({ mode: "paper", exchange: "okx" });
+		expect(runtime.config.marketType).toBe("spot");
+		expect(runtime.tradingEngine.risk.check("BTC/USDT", 100)).toBeNull();
+		expect(configFiles.get(TRADING_CONFIG_PATH)).toMatchObject({
+			mode: "live",
+			exchange: "binance",
+			marketType: "usdm-futures",
+		});
+		await runtime.close();
+	});
+	it("rewrites a futures allowlist when CLI overrides coerce to spot", async () => {
+		configFiles.set(TRADING_CONFIG_PATH, {
+			...DEFAULT_CONFIG,
+			exchange: "binance",
+			marketType: "usdm-futures",
+			risk: { ...DEFAULT_CONFIG.risk, allowedSymbols: ["BTC/USDT:USDT", "ETH/USDT:USDT"] },
+		});
+
+		const runtime = await TradingRuntime.init({ exchange: "okx" });
+		expect(runtime.config.marketType).toBe("spot");
+		expect(runtime.config.risk.allowedSymbols).toEqual(["BTC/USDT", "ETH/USDT"]);
+		expect(runtime.tradingEngine.risk.check("BTC/USDT", 100)).toBeNull();
+		expect(runtime.tradingEngine.risk.check("ETH/USDT:USDT", 100)).toMatch(/quote currency/);
+		expect(configFiles.get(TRADING_CONFIG_PATH)).toMatchObject({
+			exchange: "binance",
+			marketType: "usdm-futures",
+			risk: expect.objectContaining({ allowedSymbols: ["BTC/USDT:USDT", "ETH/USDT:USDT"] }),
+		});
+		await runtime.close();
+	});
+	it("rejects a coerced allowlist that has no compatible spot symbols", () => {
+		expect(() =>
+			normalizeTradingConfig({
+				...DEFAULT_CONFIG,
+				exchange: "okx",
+				marketType: "usdm-futures",
+				risk: { ...DEFAULT_CONFIG.risk, allowedSymbols: ["BTC/USDC:USDC"] },
+			}),
+		).toThrow(/coerced to spot.*BTC\/USDC:USDC/);
+	});
+	it("rejects a stored non-Binance futures config instead of rewriting it", () => {
+		configFiles.set(TRADING_CONFIG_PATH, {
+			...DEFAULT_CONFIG,
+			exchange: "okx",
+			marketType: "usdm-futures",
+		});
+		expect(() => loadTradingConfig()).toThrow(/Binance/);
+	});
+	it("does not coerce when persisting an incompatible market type", () => {
+		expect(() => saveTradingConfig({ ...DEFAULT_CONFIG, marketType: "usdm-futures" })).toThrow(/Binance/);
+		expect(configFiles.get(TRADING_CONFIG_PATH)).toBeUndefined();
+	});
+	it("does not persist a coerced market type when switching exchange", async () => {
+		configFiles.set(TRADING_CONFIG_PATH, {
+			...DEFAULT_CONFIG,
+			exchange: "binance",
+			marketType: "usdm-futures",
+		});
+		const runtime = await TradingRuntime.init();
+		await expect(runtime.setExchange("okx")).rejects.toThrow(/Binance/);
+		expect(runtime.config).toMatchObject({ exchange: "binance", marketType: "usdm-futures" });
+		expect(configFiles.get(TRADING_CONFIG_PATH)).toMatchObject({
+			exchange: "binance",
+			marketType: "usdm-futures",
+		});
+		await runtime.close();
 	});
 	it("rejects an invalid risk configuration", () => {
 		expect(() =>
@@ -212,6 +322,8 @@ describe("position guard", () => {
 		expect(isProtection(order({ type: "limit" }), position())).toBe(false);
 		expect(isProtection(order({ type: "take_profit_market" }), position())).toBe(false);
 		expect(isProtection(order({ type: "stop_market", side: "buy" }), position())).toBe(false);
+		expect(protectionCoverage(order({ amount: 0.5, filled: 0.1 }), position())).toBe("partial");
+		expect(isProtection(order({ amount: 0.5, filled: 0.5 }), position())).toBe(false);
 		expect(isProtection(order({ symbol: "ETH/USDT" }), position())).toBe(false);
 	});
 	it("requires position-side matches for hedge-mode protection", () => {
@@ -240,6 +352,80 @@ describe("market data tool registration", () => {
 });
 
 describe("risk accounting", () => {
+	it("reports a persisted pause through the risk-status tool", async () => {
+		const runtime = runtimeWithState(
+			DEFAULT_CONFIG,
+			{
+				paper: { date: today(), usedDailyNotional: 100 },
+				live: { date: today(), usedDailyNotional: 0 },
+			},
+			{
+				getOpenOrders: async () => [],
+				getPositions: async () => [],
+				getOrderHistory: async () => [],
+			},
+		);
+		const pause = runtime.tradingEngine.risk.pauseNewExposure("Investigate exchange orders");
+		const tool = createGetRiskStatusTool(() => runtime);
+		const result = await tool.execute("risk-status", {}, undefined, undefined, { hasUI: false } as ExtensionContext);
+		expect(result.details).toMatchObject({
+			newExposurePaused: true,
+			usage: { used: 100, newExposurePause: pause },
+			warnings: expect.arrayContaining([
+				expect.stringContaining("New exposure is paused: Investigate exchange orders"),
+			]),
+		});
+	});
+
+	it("rejects paused entry previews without reserving quota but still previews spot exits", async () => {
+		const runtime = runtimeWithState(
+			DEFAULT_CONFIG,
+			{
+				paper: { date: today(), usedDailyNotional: 0 },
+				live: { date: today(), usedDailyNotional: 0 },
+			},
+			{
+				getTicker: async () => ({ symbol: "BTC/USDT", last: 100, timestamp: Date.now() }),
+				getMarketInfo: async () => ({
+					symbol: "BTC/USDT",
+					base: "BTC",
+					quote: "USDT",
+					contract: false,
+					marketType: "spot",
+					active: true,
+					orderTypes: ["MARKET"],
+				}),
+				getBalances: async () => [
+					{ asset: "USDT", free: 1000, used: 0, total: 1000 },
+					{ asset: "BTC", free: 10, used: 0, total: 10 },
+				],
+			},
+		);
+		runtime.tradingEngine.risk.pauseNewExposure("Investigate exchange orders");
+		const tool = createCheckOrderTool(() => runtime);
+		const ctx = { hasUI: false } as ExtensionContext;
+		const buy = await tool.execute(
+			"entry",
+			{ side: "buy", symbol: "BTC/USDT", type: "market", amount: 1 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(buy.details).toMatchObject({
+			status: "rejected",
+			risk: { allowed: false, reason: expect.stringContaining("New exposure is paused"), usage: { reserved: 0 } },
+		});
+		const sell = await tool.execute(
+			"exit",
+			{ side: "sell", symbol: "BTC/USDT", type: "market", amount: 1 },
+			undefined,
+			undefined,
+			ctx,
+		);
+		expect(sell.details).toMatchObject({ risk: { allowed: true, countTowardsDailyLimit: false } });
+		expect(runtime.tradingEngine.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
+	});
+
 	it("allows protective sell orders when the entry quota is exhausted", () => {
 		const runtime = runtimeWithUsage(DEFAULT_CONFIG.risk.maxDailyNotional);
 		expect(runtime.tradingEngine.risk.check("BTC/USDT", 500, { countTowardsDailyLimit: false })).toBeNull();
@@ -306,6 +492,57 @@ describe("risk symbol validation", () => {
 });
 
 describe("risk state", () => {
+	it("persists pauses through runtime reconstruction, quota reset and exchange changes", () => {
+		const createEngine = (exchange: string) =>
+			new TradingEngine(
+				{
+					...DEFAULT_CONFIG,
+					risk: { ...DEFAULT_CONFIG.risk, allowedSymbols: [...DEFAULT_CONFIG.risk.allowedSymbols] },
+				},
+				testExchangeClient({ ...DEFAULT_CONFIG, exchange }),
+				{
+					load: loadTradingState,
+					save: saveTradingState,
+					transact: transactTradingState,
+				},
+			);
+		const first = createEngine("okx");
+		first.risk.record(100);
+		const pause = first.risk.pauseNewExposure("Investigate exchange orders");
+		expect(loadTradingState().paper.newExposurePause).toEqual(pause);
+		const second = createEngine("binance");
+		expect(second.risk.check("BTC/USDT", 100)).toContain("New exposure is paused");
+		second.risk.reset();
+		const restarted = createEngine("okx");
+		expect(restarted.risk.usage()).toMatchObject({ used: 0, newExposurePause: pause });
+		restarted.risk.resumeNewExposure(pause.id);
+		expect(loadTradingState().paper.newExposurePause).toBeUndefined();
+		expect(first.risk.check("BTC/USDT", 100)).toBeNull();
+	});
+
+	it.each([
+		null,
+		[],
+		{},
+		{ id: "", reason: "Investigate", pausedAt: "2026-01-01T00:00:00.000Z" },
+		{ id: "pause-1", reason: " ", pausedAt: "2026-01-01T00:00:00.000Z" },
+		{ id: "pause-1", reason: "Investigate", pausedAt: "2026-01-01" },
+		{ id: "pause-1", reason: "Investigate", pausedAt: "invalid" },
+	])("rejects malformed pause metadata without replacing stored state: %j", (pause) => {
+		const stored = {
+			paper: { date: today(), usedDailyNotional: 0, newExposurePause: pause },
+			live: { date: today(), usedDailyNotional: 0 },
+		};
+		configFiles.set(TRADING_STATE_PATH, stored);
+		expect(() => loadTradingState()).toThrow(/Invalid trading risk state/);
+		expect(() =>
+			transactTradingState((draft) => {
+				draft.paper.usedDailyNotional = 0;
+			}),
+		).toThrow(/Invalid trading risk state/);
+		expect(configFiles.get(TRADING_STATE_PATH)).toEqual(stored);
+	});
+
 	it("rejects invalid counters instead of allowing a daily-limit bypass", () => {
 		expect(() =>
 			saveTradingState({

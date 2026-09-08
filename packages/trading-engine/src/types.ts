@@ -178,6 +178,32 @@ export interface Order {
 	timestamp: number;
 }
 
+/** The exchange may have accepted a request despite a missing response. */
+export class SubmissionStatusUnknownError extends AggregateError {
+	readonly submissionStatus = "unknown" as const;
+
+	constructor(errors: Iterable<unknown>, message: string) {
+		super(errors, message);
+		this.name = "SubmissionStatusUnknownError";
+	}
+}
+
+/** Only use when the adapter proves this request was never accepted. */
+export class SubmissionRejectedError extends Error {
+	readonly submissionStatus = "rejected" as const;
+	constructor(message = "Exchange rejected the submission") {
+		super(message);
+		this.name = "SubmissionRejectedError";
+	}
+}
+
+export function isSubmissionStatusUnknownError(error: unknown): boolean {
+	if (error instanceof SubmissionStatusUnknownError) return true;
+	if (error instanceof AggregateError && error.errors.some(isSubmissionStatusUnknownError)) return true;
+	if (error instanceof Error && error.cause !== undefined && isSubmissionStatusUnknownError(error.cause)) return true;
+	return false;
+}
+
 export interface PlaceOrderInput {
 	symbol: string;
 	side: OrderSide;
@@ -198,6 +224,7 @@ export interface PlaceOrderInput {
 }
 
 export interface PlaceOrderResult {
+	executionId?: string;
 	order: Order;
 	/** Estimated fee in quote currency (paper trading). */
 	fee?: number;
@@ -225,6 +252,7 @@ export interface PlaceOcoOrderInput {
 }
 
 export interface PlaceOcoOrderResult {
+	executionId?: string;
 	/** Paper mode: both legs. Live mode: the single exchange OCO order. */
 	orders: Order[];
 }
@@ -270,6 +298,8 @@ export interface ExchangeClient {
 	getTopMarkets(limit: number): Promise<Ticker[]>;
 	getFundingRate(symbol: string): Promise<{ symbol: string; rate?: number; nextFundingTime?: number }>;
 	getFundingRateHistory(symbol: string, limit?: number): Promise<FundingRateRecord[]>;
+	/** Effective leverage applied to new futures orders for this symbol, when the adapter can report it. */
+	getEffectiveLeverage?(symbol: string): number;
 	setLeverage(symbol: string, leverage: number): Promise<void>;
 	setMarginMode(symbol: string, marginType: "isolated" | "cross"): Promise<void>;
 	setMultiAssetsMode(enabled: boolean): Promise<void>;

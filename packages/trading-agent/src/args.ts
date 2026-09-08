@@ -116,8 +116,11 @@ Trading commands (interactive mode):
   /mode        Show/switch paper|live
   /exchange    Show/switch exchange
   /market      Show/switch spot|usdm-futures|both
-  /risk        Risk limits, usage, and /risk reconcile <id> commit|release
-  /trigger     Experimental in-memory monitor (live: notify only, never auto-wake)
+  /risk        Limits, usage, pause/resume and legacy reservation reconciliation
+  /recovery    Inspect/reconcile durable executions; never resubmit unknown orders
+  /audit       Bounded, redacted execution and risk audit history
+  /health      Local entry blocks and recent monitor observations
+  /trigger     Persistent experimental monitor (live: notify only, never auto-wake)
   /paper       Paper account summary or reset
   /monitor     Order-fill monitor and position guard
   /indicators  Read-only indicators for a spot symbol

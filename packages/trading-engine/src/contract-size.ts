@@ -5,6 +5,14 @@ export type ContractSizeMarket = {
 	contractSize?: number;
 };
 
+export function futuresAmountsEqual(left: number, right: number): boolean {
+	return (
+		Number.isFinite(left) &&
+		Number.isFinite(right) &&
+		Math.abs(left - right) <= Number.EPSILON * 8 * Math.max(Math.abs(left), Math.abs(right))
+	);
+}
+
 /** Resolve the exchange amount unit. Spot is 1; linear USDⓈ-M uses contractSize. */
 export function contractSizeForMarket(market: ContractSizeMarket | undefined): number {
 	if (!market) throw new Error("Exchange market metadata is unavailable; refusing to guess the amount unit");

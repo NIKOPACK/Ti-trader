@@ -1,9 +1,14 @@
 export {
+	AUDIT_HISTORY_LIMIT,
+	appendTradingAuditEvent,
+	isRiskNewExposurePause,
+	isTradingAuditState,
 	type RiskClock,
 	RiskCommitError,
 	type RiskConfig,
 	RiskLedger,
 	type RiskLimits,
+	type RiskNewExposurePause,
 	type RiskReconciliationInfo,
 	type RiskReservation,
 	type RiskReservationState,
@@ -12,9 +17,13 @@ export {
 	RiskStatePersistenceError,
 	type RiskStateStore,
 	type RiskUsageState,
+	type TradingAuditEvent,
+	type TradingAuditState,
 	type TradingMode,
 	type TradingRiskState,
+	validateTradingSymbol,
 } from "@earendil-works/ti-trading-risk";
+export * from "./capabilities.ts";
 export { CcxtExchangeClient } from "./ccxt-client.ts";
 export type { ExchangeCredentials, FuturesMarginType, FuturesPositionMode, MarketType } from "./client-types.ts";
 export {
@@ -23,6 +32,27 @@ export {
 	type TradingEngineConfig,
 	type TradingEngineSubmissionPolicy,
 } from "./engine.ts";
+export {
+	EXECUTION_HISTORY_LIMIT,
+	type ExecutionEvidence,
+	type ExecutionIssue,
+	ExecutionJournal,
+	type ExecutionJournalOptions,
+	type ExecutionJournalState,
+	type ExecutionMaintenance,
+	type ExecutionRecord,
+	ExecutionRecoveryError,
+	type ExecutionRiskState,
+	type ExecutionScope,
+	type ExecutionStatus,
+	executionClientIds,
+	isExecutionJournalState,
+	isUnresolvedExecution,
+	MAX_RECOVERY_ATTEMPTS,
+	UNRESOLVED_EXECUTION_LIMIT,
+	validateExecutionRiskState,
+} from "./execution-journal.ts";
+export type { ManualExecutionResolution, RecoveryOptions, RecoveryReport } from "./execution-recovery.ts";
 export type {
 	OcoIntent,
 	OrderIntent,
@@ -42,6 +72,13 @@ export {
 	prepareOcoOrder,
 	prepareOrder,
 } from "./order-plan.ts";
+export {
+	type OcoPreflightResult,
+	OrderPreflightError,
+	type OrderPreflightResult,
+	preflightOco,
+	preflightOrder,
+} from "./order-preflight.ts";
 export { PaperExchangeClient } from "./paper-client.ts";
 export {
 	acquireFileLock,
@@ -51,9 +88,12 @@ export {
 	type FileLockOptions,
 	readJsonFile,
 	releaseFileLock,
+	removeFileDurable,
+	syncFileAndDirectory,
 	touchFileLock,
 	withFileLockSync,
 	writeJsonFile,
+	writeJsonFileDurable,
 } from "./persist.ts";
 export { isProtection, protectionCoverage, reduceSide } from "./protection.ts";
 export type {
@@ -80,4 +120,10 @@ export type {
 	Position,
 	Ticker,
 } from "./types.ts";
-export { createMarketDataView, timeframeDurationMs } from "./types.ts";
+export {
+	createMarketDataView,
+	isSubmissionStatusUnknownError,
+	SubmissionRejectedError,
+	SubmissionStatusUnknownError,
+	timeframeDurationMs,
+} from "./types.ts";

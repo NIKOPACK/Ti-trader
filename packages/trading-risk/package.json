@@ -1,6 +1,6 @@
 {
   "name": "@earendil-works/ti-trading-risk",
-  "version": "0.1.0",
+  "version": "0.1.2",
   "description": "Trading risk-control ledger for Ti: order and daily notional limits with atomic, durable reservations",
   "type": "module",
   "main": "./dist/index.js",

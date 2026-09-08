@@ -211,7 +211,7 @@ export function createGetRiskStatusTool(
 		name: "get_risk_status",
 		label: "get_risk_status",
 		description:
-			"Get current risk limits, used notional quota, and unsettled reservations. In paper mode the quota is cumulative and only the user can reset it (/risk reset); in live mode it resets daily. Unsettled reservations must be reconciled after verifying the exchange order; do not retry the submission.",
+			"Get current risk limits, entry pause, used notional quota, and unsettled reservations. New exposure pauses persist until the user confirms /risk resume; never switch modes or accounts to bypass a pause. In paper mode the quota is cumulative and only the user can reset it (/risk reset); in live mode it resets daily. Unsettled reservations must be reconciled after verifying the exchange order; do not retry the submission.",
 		parameters: emptySchema,
 		async execute() {
 			const trading = tradingProvider();
@@ -267,6 +267,7 @@ export function createGetRiskStatusTool(
 				},
 				quoteCurrency: trading.config.quoteCurrency,
 				usage,
+				newExposurePaused: usage.newExposurePause !== undefined,
 				pendingReservations,
 				breakdown: {
 					// `usage.used` is the authoritative persisted quota. The other
@@ -279,6 +280,11 @@ export function createGetRiskStatusTool(
 					closedHistoryAvailable: historyErrors.length === 0,
 				},
 				warnings: [
+					...(usage.newExposurePause
+						? [
+								`New exposure is paused: ${usage.newExposurePause.reason}. Only the user can confirm /risk resume.`,
+							]
+						: []),
 					...historyErrors.map((error) => `Closed-order history unavailable: ${error}`),
 					...(openOrderUnknownGroups === 0
 						? []

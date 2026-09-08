@@ -118,6 +118,18 @@ function finiteNumber(value: unknown, path: string, label: string): number {
 	return value;
 }
 
+function nonNegativeNumber(value: unknown, path: string, label: string): number {
+	const number = finiteNumber(value, path, label);
+	if (number < 0) throw accountError(path, `${label} must be non-negative`);
+	return number;
+}
+
+function positiveNumber(value: unknown, path: string, label: string): number {
+	const number = finiteNumber(value, path, label);
+	if (number <= 0) throw accountError(path, `${label} must be positive`);
+	return number;
+}
+
 function optionalFinite(value: unknown, path: string, label: string): number | undefined {
 	return value === undefined ? undefined : finiteNumber(value, path, label);
 }
@@ -163,8 +175,8 @@ function parseLot(value: unknown, path: string, label: string): FuturesLot {
 		throw accountError(path, `${label}.leverage must be an integer from 1 to 125`);
 	}
 	return {
-		amount: finiteNumber(value.amount, path, `${label}.amount`),
-		price: finiteNumber(value.price, path, `${label}.price`),
+		amount: positiveNumber(value.amount, path, `${label}.amount`),
+		price: positiveNumber(value.price, path, `${label}.price`),
 		leverage,
 		marginType: marginType(value.marginType, path, `${label}.marginType`),
 	};
@@ -181,9 +193,23 @@ function parseEntry(value: unknown, path: string, label: string): FuturesEntry {
 		if (!Array.isArray(value.lots)) throw accountError(path, `${label}.lots must be an array`);
 		lots = value.lots.map((lot, index) => parseLot(lot, path, `${label}.lots[${index}]`));
 	}
+	const amount = finiteNumber(value.amount, path, `${label}.amount`);
+	const cost = nonNegativeNumber(value.cost, path, `${label}.cost`);
+	if (amount === 0 && cost !== 0) throw accountError(path, `${label}.cost must be zero when amount is zero`);
+	if (lots !== undefined) {
+		const lotAmount = lots.reduce((sum, lot) => sum + lot.amount, 0);
+		const lotCost = lots.reduce((sum, lot) => sum + lot.amount * lot.price, 0);
+		const tolerance = Math.max(1e-12, Math.abs(amount) * 1e-9, cost * 1e-9);
+		if (Math.abs(lotAmount - Math.abs(amount)) > tolerance) {
+			throw accountError(path, `${label}.lots amounts must equal the absolute entry amount`);
+		}
+		if (Math.abs(lotCost - cost) > tolerance) {
+			throw accountError(path, `${label}.lots cost must equal the entry cost`);
+		}
+	}
 	return {
-		amount: finiteNumber(value.amount, path, `${label}.amount`),
-		cost: finiteNumber(value.cost, path, `${label}.cost`),
+		amount,
+		cost,
 		leverage,
 		marginType:
 			value.marginType === undefined ? undefined : marginType(value.marginType, path, `${label}.marginType`),
@@ -203,17 +229,36 @@ function parseOrder(value: unknown, path: string, label: string): PaperOrder {
 	if (typeof value.status !== "string" || !ORDER_STATUSES.has(value.status as PaperOrder["status"])) {
 		throw accountError(path, `${label}.status must be open, closed or canceled`);
 	}
+	const amount = positiveNumber(value.amount, path, `${label}.amount`);
+	const filled = nonNegativeNumber(value.filled, path, `${label}.filled`);
+	if (filled > amount) throw accountError(path, `${label}.filled cannot exceed amount`);
+	const price = optionalFinite(value.price, path, `${label}.price`);
+	const stopPrice = optionalFinite(value.stopPrice, path, `${label}.stopPrice`);
+	const trailingPercent = optionalFinite(value.trailingPercent, path, `${label}.trailingPercent`);
+	const trailingExtreme = optionalFinite(value.trailingExtreme, path, `${label}.trailingExtreme`);
+	const reservePrice = optionalFinite(value.reservePrice, path, `${label}.reservePrice`);
+	const average = optionalFinite(value.average, path, `${label}.average`);
+	if (price !== undefined && price <= 0) throw accountError(path, `${label}.price must be positive`);
+	if (stopPrice !== undefined && stopPrice <= 0) throw accountError(path, `${label}.stopPrice must be positive`);
+	if (trailingPercent !== undefined && (trailingPercent <= 0 || trailingPercent >= 100)) {
+		throw accountError(path, `${label}.trailingPercent must be between 0 and 100`);
+	}
+	if (trailingExtreme !== undefined && trailingExtreme <= 0)
+		throw accountError(path, `${label}.trailingExtreme must be positive`);
+	if (reservePrice !== undefined && reservePrice <= 0)
+		throw accountError(path, `${label}.reservePrice must be positive`);
+	if (average !== undefined && average <= 0) throw accountError(path, `${label}.average must be positive`);
 	return {
 		id: value.id,
 		symbol: value.symbol,
 		side: orderSide(value.side, path, `${label}.side`),
 		type: value.type as OrderType,
-		price: optionalFinite(value.price, path, `${label}.price`),
-		stopPrice: optionalFinite(value.stopPrice, path, `${label}.stopPrice`),
-		trailingPercent: optionalFinite(value.trailingPercent, path, `${label}.trailingPercent`),
-		trailingExtreme: optionalFinite(value.trailingExtreme, path, `${label}.trailingExtreme`),
+		price,
+		stopPrice,
+		trailingPercent,
+		trailingExtreme,
 		triggered: optionalBoolean(value.triggered, path, `${label}.triggered`),
-		reservePrice: optionalFinite(value.reservePrice, path, `${label}.reservePrice`),
+		reservePrice,
 		lastCheckedAt: optionalFinite(value.lastCheckedAt, path, `${label}.lastCheckedAt`),
 		ocoGroup: optionalString(value.ocoGroup, path, `${label}.ocoGroup`),
 		clientOrderId: optionalString(value.clientOrderId, path, `${label}.clientOrderId`),
@@ -221,10 +266,10 @@ function parseOrder(value: unknown, path: string, label: string): PaperOrder {
 		positionSide: positionSide(value.positionSide, path, `${label}.positionSide`),
 		reduceOnly: optionalBoolean(value.reduceOnly, path, `${label}.reduceOnly`),
 		closePosition: optionalBoolean(value.closePosition, path, `${label}.closePosition`),
-		amount: finiteNumber(value.amount, path, `${label}.amount`),
-		filled: finiteNumber(value.filled, path, `${label}.filled`),
-		average: optionalFinite(value.average, path, `${label}.average`),
-		cost: finiteNumber(value.cost, path, `${label}.cost`),
+		amount,
+		filled,
+		average,
+		cost: nonNegativeNumber(value.cost, path, `${label}.cost`),
 		status: value.status as PaperOrder["status"],
 		timestamp: finiteNumber(value.timestamp, path, `${label}.timestamp`),
 	};
@@ -236,14 +281,18 @@ function parseTrade(value: unknown, path: string, label: string): PaperTrade {
 	if (typeof value.symbol !== "string" || value.symbol.length === 0) {
 		throw accountError(path, `${label}.symbol must be a string`);
 	}
+	const price = positiveNumber(value.price, path, `${label}.price`);
+	const amount = positiveNumber(value.amount, path, `${label}.amount`);
+	const cost = nonNegativeNumber(value.cost, path, `${label}.cost`);
+	const fee = nonNegativeNumber(value.fee, path, `${label}.fee`);
 	return {
 		id: value.id,
 		symbol: value.symbol,
 		side: orderSide(value.side, path, `${label}.side`),
-		price: finiteNumber(value.price, path, `${label}.price`),
-		amount: finiteNumber(value.amount, path, `${label}.amount`),
-		cost: finiteNumber(value.cost, path, `${label}.cost`),
-		fee: finiteNumber(value.fee, path, `${label}.fee`),
+		price,
+		amount,
+		cost,
+		fee,
 		realizedPnl: optionalFinite(value.realizedPnl, path, `${label}.realizedPnl`),
 		positionSide: positionSide(value.positionSide, path, `${label}.positionSide`),
 		timestamp: finiteNumber(value.timestamp, path, `${label}.timestamp`),

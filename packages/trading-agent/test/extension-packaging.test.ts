@@ -14,7 +14,7 @@ interface PackageManifest {
 	ti?: ResourceManifest;
 }
 
-const extensionNames = ["market-lab", "market-research", "web-search", "zhihu-research"] as const;
+const extensionNames = ["market-lab", "market-chart", "market-research", "web-search", "zhihu-research"] as const;
 const publishedExtensions = extensionNames.map((name) => `./dist/${name}/index.js`);
 
 function readManifest(relativeUrl: string): PackageManifest {
