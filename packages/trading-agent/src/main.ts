@@ -6,12 +6,10 @@ import {
 	createAgentSessionFromServices,
 	createAgentSessionRuntime,
 	createAgentSessionServices,
-	createProjectTrustContext,
 	hasTrustRequiringProjectResources,
 	InteractiveMode,
 	initTheme,
 	ProjectTrustStore,
-	resolveProjectTrusted,
 	runPrintMode,
 	SessionManager,
 	SettingsManager,
@@ -24,6 +22,7 @@ import { getTrading, initTrading } from "./context.ts";
 import { createOperationalHealthExtension } from "./health.ts";
 import { localizeDescription } from "./i18n.ts";
 import { createOrderMonitorExtension } from "./monitor.ts";
+import { createProjectTrustContext, resolveProjectTrusted } from "./project-trust.ts";
 import { buildTradingPrompt } from "./prompt.ts";
 import { createTradingTools } from "./tools/index.ts";
 import { createTriggerMonitorExtension } from "./trigger-monitor.ts";
@@ -119,7 +118,6 @@ export async function main(argv: string[]): Promise<void> {
 			projectTrusted,
 			projectConfigDirName: CONFIG_DIR_NAME,
 		});
-		const projectTrustDiagnostics: Array<{ type: "warning"; message: string }> = [];
 		const services = await createAgentSessionServices({
 			cwd: runtimeCwd,
 			agentDir: runtimeAgentDir,
@@ -130,23 +128,19 @@ export async function main(argv: string[]): Promise<void> {
 			providerAttribution: TI_ATTRIBUTION,
 			resourceLoaderReloadOptions: shouldResolveProjectTrust
 				? {
-						resolveProjectTrust: async ({ extensionsResult }) => {
+						resolveProjectTrust: async () => {
 							const trusted = await resolveProjectTrusted({
 								cwd: runtimeCwd,
 								trustStore,
 								projectConfigDirName: CONFIG_DIR_NAME,
-								extensionsResult,
 								defaultProjectTrust: startupSettingsManager.getDefaultProjectTrust(),
 								projectTrustContext:
 									projectTrustContext ??
 									createProjectTrustContext({
 										cwd: runtimeCwd,
 										mode: isInitialRuntime ? (parsed.print ? "print" : "interactive") : "interactive",
-										settingsManager: startupSettingsManager,
 										hasUI: isInitialRuntime && !parsed.print,
-										agentDir: runtimeAgentDir,
 									}),
-								onExtensionError: (message) => projectTrustDiagnostics.push({ type: "warning", message }),
 							});
 							projectTrustByCwd.set(runtimeCwd, trusted);
 							return trusted;
@@ -193,7 +187,7 @@ export async function main(argv: string[]): Promise<void> {
 			customTools: createTradingTools(),
 			providerAttribution: TI_ATTRIBUTION,
 		});
-		return { ...created, services, diagnostics: [...projectTrustDiagnostics, ...services.diagnostics] };
+		return { ...created, services, diagnostics: services.diagnostics };
 	};
 
 	const runtime = await createAgentSessionRuntime(createRuntime, {

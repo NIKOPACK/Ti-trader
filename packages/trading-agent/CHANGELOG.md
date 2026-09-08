@@ -4,6 +4,10 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+### Fixed
+
+- Independent installs no longer import `createProjectTrustContext` or `resolveProjectTrusted` from `@earendil-works/pi-coding-agent@0.84.3`. Those names exist in the workspace fork but are not on the published package export surface, so `ti --version` failed with `SyntaxError` after `npm install ti-trader`.
+
 ## [0.1.10] - 2026-09-08
 
 ### Changed

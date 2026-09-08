@@ -35,6 +35,8 @@ test("runs explicit offline test selectors rather than a full provider/e2e suite
 	assert.ok(READINESS_TESTS.agent.includes("src/__tests__/execution-runtime.test.ts"));
 	assert.ok(READINESS_TESTS.agent.includes("src/__tests__/paper-reset-durability.test.ts"));
 	assert.ok(READINESS_TESTS.agent.includes("src/__tests__/health.test.ts"));
+	assert.ok(READINESS_TESTS.agent.includes("src/__tests__/published-coding-agent-api.test.ts"));
+	assert.ok(READINESS_TESTS.agent.includes("src/__tests__/project-trust.test.ts"));
 	assert.ok(commands.at(-1).args.includes("scripts/trading-package-install.test.mjs"));
 	assert.ok(commands.at(-1).args.includes("scripts/trading-paper-soak.test.mjs"));
 });

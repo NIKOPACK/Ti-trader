@@ -19,6 +19,7 @@ export const READINESS_TESTS = {
 		"src/__tests__/capabilities.test.ts", "src/__tests__/operational-health.test.ts",
 		"src/__tests__/health.test.ts",
 		"src/__tests__/args.test.ts", "src/__tests__/package-api.test.ts",
+		"src/__tests__/published-coding-agent-api.test.ts", "src/__tests__/project-trust.test.ts",
 		"src/__tests__/execution-runtime.test.ts", "src/__tests__/monitoring-state.test.ts",
 		"src/__tests__/paper-reset-durability.test.ts",
 		"src/__tests__/durable-trigger-monitor.test.ts", "src/__tests__/tool-availability.test.ts",
