@@ -18,7 +18,7 @@ AI 交易 agent CLI。默认 Paper 模拟盘。实盘下单需要确认。
 
 ```bash
 npm install -g ti-trader
-ti --version    # ti 0.1.10
+ti --version    # ti 0.1.11
 ti              # 交互模式，默认模拟盘
 ti -p "分析 BTC 1h 走势"
 ```
@@ -79,8 +79,8 @@ npm install -g ti-trader
 
 | 包 | 作用 |
 | --- | --- |
-| **[ti-trader](https://www.npmjs.com/package/ti-trader)** `0.1.10` | CLI（`ti`） |
-| **[@nikopack/ti-trading-engine](https://www.npmjs.com/package/@nikopack/ti-trading-engine)** `0.3.0` | 适配器、规划、保护 |
+| **[ti-trader](https://www.npmjs.com/package/ti-trader)** `0.1.11` | CLI（`ti`） |
+| **[@nikopack/ti-trading-engine](https://www.npmjs.com/package/@nikopack/ti-trading-engine)** `0.3.1` | 适配器、规划、保护 |
 | **[@nikopack/ti-trading-risk](https://www.npmjs.com/package/@nikopack/ti-trading-risk)** `0.2.0` | 名义金额限制与持久化占用 |
 | **[@nikopack/ti-triggers](https://www.npmjs.com/package/@nikopack/ti-triggers)** `0.1.0` | 确定性条件求值 |
 

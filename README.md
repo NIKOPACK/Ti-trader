@@ -18,7 +18,7 @@ Requires Node.js `>= 22.19.0`.
 
 ```bash
 npm install -g ti-trader
-ti --version    # ti 0.1.10
+ti --version    # ti 0.1.11
 ti              # interactive, paper by default
 ti -p "分析 BTC 1h 走势"
 ```
@@ -79,8 +79,8 @@ Published (npm, public):
 
 | Package | Role |
 | --- | --- |
-| **[ti-trader](https://www.npmjs.com/package/ti-trader)** `0.1.10` | CLI (`ti`) |
-| **[@nikopack/ti-trading-engine](https://www.npmjs.com/package/@nikopack/ti-trading-engine)** `0.3.0` | Adapters, planning, protection |
+| **[ti-trader](https://www.npmjs.com/package/ti-trader)** `0.1.11` | CLI (`ti`) |
+| **[@nikopack/ti-trading-engine](https://www.npmjs.com/package/@nikopack/ti-trading-engine)** `0.3.1` | Adapters, planning, protection |
 | **[@nikopack/ti-trading-risk](https://www.npmjs.com/package/@nikopack/ti-trading-risk)** `0.2.0` | Notional limits and durable reservations |
 | **[@nikopack/ti-triggers](https://www.npmjs.com/package/@nikopack/ti-triggers)** `0.1.0` | Deterministic trigger evaluation |
 

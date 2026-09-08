@@ -4,6 +4,16 @@ All notable changes to `@nikopack/ti-trading-engine` are documented in this file
 
 ## [Unreleased]
 
+### Fixed
+
+- Paper and live buy/sell plans now truncate spot amounts onto the same venue `amountStep` that both adapters already apply (`amountToPrecision` uses TRUNCATE, not round). A `quoteAmount` without a published step is rejected instead of leaving settlement to infer a paper-only lot.
+
+## [0.3.1] - 2026-09-08
+
+### Fixed
+
+- Paper and recovery now treat venue lot-rounded fills as matching the requested amount. A `notional / last` size that the adapter snaps (beyond a 1e-8 relative epsilon) no longer fails settlement as `evidence-conflict` or leave `submission-started`. Spot plans snap to `amountStep` when the market publishes one.
+
 ## [0.3.0] - 2026-09-08
 
 ### Breaking Changes

@@ -45,6 +45,25 @@ export function sameExecutionScope(left: ExecutionScope, right: ExecutionScope):
 	);
 }
 
+function decimalStepOf(value: number): number | undefined {
+	if (!Number.isFinite(value) || value < 0) return undefined;
+	const text = value.toFixed(16).replace(/0+$/, "").replace(/\.$/, "");
+	const dot = text.indexOf(".");
+	const decimals = dot === -1 ? 0 : text.length - dot - 1;
+	if (decimals > 16) return undefined;
+	return 10 ** -decimals;
+}
+
+/** True when `reported` is `requested` or the same quantity rounded onto the venue lot. */
+function requestedAmountAgreesWithReported(requested: number, reported: number): boolean {
+	const tolerance = Math.max(Number.MIN_VALUE, Math.abs(requested) * 1e-8);
+	if (Math.abs(reported - requested) <= tolerance) return true;
+	const step = decimalStepOf(reported);
+	if (step === undefined || step > Math.abs(requested) * 0.5) return false;
+	const rounded = Math.round(requested / step) * step;
+	return Math.abs(reported - rounded) <= Math.max(tolerance, step * 1e-6);
+}
+
 /** Require numerical and identity evidence; absence, truncated OCOs and zero-cost fills are not rejection. */
 export function executionEvidence(
 	entry: ExecutionRecord,
@@ -73,7 +92,7 @@ export function executionEvidence(
 		const tolerance = Math.max(Number.MIN_VALUE, Math.abs(input.amount) * 1e-8);
 		const closeAll = entry.intent.kind === "order" && entry.intent.input.closePosition === true;
 		if (
-			(!closeAll && Math.abs(order.amount - input.amount) > tolerance) ||
+			(!closeAll && !requestedAmountAgreesWithReported(input.amount, order.amount)) ||
 			order.filled > Math.max(input.amount, order.amount) + tolerance ||
 			(!closeAll && Math.abs(order.filled + order.remaining - order.amount) > tolerance) ||
 			(order.status === "closed" && (order.filled === 0 || order.remaining > tolerance)) ||

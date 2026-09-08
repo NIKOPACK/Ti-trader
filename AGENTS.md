@@ -139,7 +139,7 @@ Attribution:
 3. Refresh the lockfile: `npm install --package-lock-only --ignore-scripts`.
 4. Run `npm run check` and `./test.sh`.
 5. Commit, tag the release, and push only with maintainer authorization.
-6. Publish risk first with `cd packages/trading-risk && npm publish --access public`, then the engine with `cd packages/trading-engine && npm publish --access public`, then the agent with `cd packages/trading-agent && npm publish`. Each command runs its package build through `prepublishOnly`; local migration work must not perform real publication. Scoped packages must use public access. Do not publish under `@earendil-works`.
+6. Publish risk first with `cd packages/trading-risk && npm publish --access public`, then the engine with `cd packages/trading-engine && npm publish --access public`, then the agent with `cd packages/trading-agent && npm publish --access public`. Each command runs its package build through `prepublishOnly`; local migration work must not perform real publication. All three publishable packages use public access. Do not publish under `@earendil-works`.
 
 ## User Override
 

@@ -172,8 +172,11 @@ export async function placePaperRoundTrip(initTrading) {
 		const ticker = await trading.marketData.getTicker("BTC/USDT");
 		if (!Number.isFinite(ticker.last) || ticker.last <= 0) throw new Error("soak activity missing BTC/USDT price");
 		const notional = Math.min(25, trading.config.risk.maxOrderNotional * 0.05);
-		const amount = notional / ticker.last;
-		const buy = await trading.tradingEngine.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount });
+		const buy = await trading.tradingEngine.prepareOrder("buy", {
+			symbol: "BTC/USDT",
+			type: "market",
+			quoteAmount: notional,
+		});
 		const bought = await trading.tradingEngine.placeOrder(buy);
 		const sell = await trading.tradingEngine.prepareOrder("sell", {
 			symbol: "BTC/USDT",

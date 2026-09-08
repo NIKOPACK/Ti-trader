@@ -9,11 +9,11 @@
 
 ## 安装
 
-已发布版本为 `ti-trader@0.1.10`。需要 Node.js `>= 22.19.0`。
+已发布版本为 `ti-trader@0.1.11`。需要 Node.js `>= 22.19.0`。
 
 ```bash
 npm install -g ti-trader
-ti --version    # ti 0.1.10
+ti --version    # ti 0.1.11
 ti              # 交互模式（默认 paper 模拟盘）
 ti -p "..."     # 一次性无头模式
 ```

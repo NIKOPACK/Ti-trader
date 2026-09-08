@@ -1,6 +1,6 @@
 # Ti 功能设计文档
 
-> 版本：0.1.10（当前开发工作区版本，未声明已发布）　·　基于 pi agent harness（`@earendil-works/pi-coding-agent` 0.84.3）二开
+> 版本：0.1.11（当前开发工作区版本，未声明已发布）　·　基于 pi agent harness（`@earendil-works/pi-coding-agent` 0.84.3）二开
 > 最后更新：2026-09-08
 
 ---

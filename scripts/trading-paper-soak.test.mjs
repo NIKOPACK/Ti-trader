@@ -12,6 +12,7 @@ import {
 	inspectSoakSnapshot,
 	loadSoakSnapshot,
 	noteRestart,
+	placePaperRoundTrip,
 	unresolvedExecutionIds,
 } from "./trading-paper-soak.mjs";
 
@@ -75,6 +76,31 @@ test("rejects a sample gap over ten minutes so a stalled collector cannot be pat
 		lostUnresolvedRecords: 0, unresolvedExecutions: 0, healthy: true,
 	});
 	assert.equal(noteRestart(report), 1);
+});
+
+test("sizes Paper activity with quoteAmount and sells the filled lot", async () => {
+	const calls = [];
+	await placePaperRoundTrip(async () => ({
+		mode: "paper",
+		config: { risk: { maxOrderNotional: 500 } },
+		marketData: { getTicker: async () => ({ last: 108_234.56 }) },
+		tradingEngine: {
+			prepareOrder: async (side, intent) => {
+				calls.push({ side, intent });
+				return { side, intent };
+			},
+			placeOrder: async (plan) => {
+				if (plan.side === "buy") return { order: { filled: 0.0002 } };
+				return { order: { filled: plan.intent.amount } };
+			},
+		},
+		close: async () => {},
+	}));
+	assert.equal(calls[0].side, "buy");
+	assert.equal(calls[0].intent.quoteAmount, 25);
+	assert.equal(calls[0].intent.amount, undefined);
+	assert.equal(calls[1].side, "sell");
+	assert.equal(calls[1].intent.amount, 0.0002);
 });
 
 test("reads durable journal and paper ledgers from the isolated data directory", () => {
