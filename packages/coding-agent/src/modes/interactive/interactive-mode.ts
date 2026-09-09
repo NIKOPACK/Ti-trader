@@ -1021,14 +1021,16 @@ export class InteractiveMode {
 				...(this.options.allowUserBash === false ? [] : [rawKeyHint("!", "bash")]),
 				hint("app.tools.expand", "more"),
 			].join(theme.fg("muted", " · "));
-			const compactOnboarding = theme.fg(
-				"dim",
-				`Press ${keyText("app.tools.expand")} to show full startup help and loaded resources.`,
-			);
-			const onboarding = theme.fg("dim", this.startupAssistantText);
+			const onboardingText = this.startupAssistantText.trim();
+			const compactHeader = onboardingText
+				? `${logo}\n${compactInstructions}\n\n${theme.fg("dim", onboardingText)}`
+				: `${logo}\n${compactInstructions}`;
+			const expandedHeader = onboardingText
+				? `${logo}\n${expandedInstructions}\n\n${theme.fg("dim", onboardingText)}`
+				: `${logo}\n${expandedInstructions}`;
 			this.builtInHeader = new ExpandableText(
-				() => `${logo}\n${compactInstructions}\n${compactOnboarding}\n\n${onboarding}`,
-				() => `${logo}\n${expandedInstructions}\n\n${onboarding}`,
+				() => compactHeader,
+				() => expandedHeader,
 				this.getStartupExpansionState(),
 				1,
 				0,
@@ -1457,10 +1459,18 @@ export class InteractiveMode {
 		const parsedPath = path.posix.parse(packagePath);
 
 		if (parsedPath.name === "index") {
-			return !parsedPath.dir || parsedPath.dir === "." ? sourceLabel : `${sourceLabel}:${parsedPath.dir}`;
+			const dir = parsedPath.dir;
+			if (!dir || dir === "." || dir === "dist") {
+				return sourceLabel;
+			}
+			return `${sourceLabel}:${dir}`;
 		}
 
 		return `${sourceLabel}:${packagePath}`;
+	}
+
+	private compactExtensionSourceTag(sourceInfo?: SourceInfo): string | undefined {
+		return sourceInfo?.scope === "user" ? "user" : undefined;
 	}
 
 	private getCompactDisplayPathSegments(resourcePath: string): string[] {
@@ -1473,11 +1483,27 @@ export class InteractiveMode {
 	private getCompactNonPackageExtensionLabel(
 		resourcePath: string,
 		index: number,
-		allPaths: Array<{ path: string; segments: string[] }>,
+		allPaths: Array<{ path: string; segments: string[]; sourceInfo?: SourceInfo }>,
 	): string {
-		const segments = allPaths[index]?.segments;
+		const current = allPaths[index];
+		const segments = current?.segments;
 		if (!segments || segments.length === 0) {
 			return this.getCompactPathLabel(resourcePath);
+		}
+
+		const lastSegment = segments[segments.length - 1]!;
+		const taggedLabel = (item: { segments: string[]; sourceInfo?: SourceInfo }): string => {
+			const name = item.segments[item.segments.length - 1] ?? "";
+			const tag = this.compactExtensionSourceTag(item.sourceInfo);
+			return tag ? `${name} (${tag})` : name;
+		};
+		const currentTagged = taggedLabel(current);
+		const sameLastSegment = allPaths.filter((item) => item.segments[item.segments.length - 1] === lastSegment);
+		if (sameLastSegment.length === 1) {
+			return lastSegment;
+		}
+		if (sameLastSegment.filter((item) => taggedLabel(item) === currentTagged).length === 1) {
+			return currentTagged;
 		}
 
 		for (let segmentCount = 1; segmentCount <= segments.length; segmentCount += 1) {
@@ -1706,12 +1732,19 @@ export class InteractiveMode {
 		}
 
 		for (const d of otherDiagnostics) {
+			const color = d.type === "error" ? "error" : "warning";
+			const toolConflict = d.message.match(/^Tool "([^"]+)" conflicts with (.+)$/);
+			if (toolConflict && d.path) {
+				const loser = this.formatDisplayPath(d.path).replace(/\/index\.(ts|js)$/i, "");
+				lines.push(theme.fg(color, `  ${toolConflict[1]} skipped (${loser})`));
+				continue;
+			}
 			if (d.path) {
 				const formattedPath = this.formatPathWithSource(d.path, this.findSourceInfoForPath(d.path, sourceInfos));
-				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${formattedPath}`));
-				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `    ${d.message}`));
+				lines.push(theme.fg(color, `  ${formattedPath}`));
+				lines.push(theme.fg(color, `    ${d.message}`));
 			} else {
-				lines.push(theme.fg(d.type === "error" ? "error" : "warning", `  ${d.message}`));
+				lines.push(theme.fg(color, `  ${d.message}`));
 			}
 		}
 

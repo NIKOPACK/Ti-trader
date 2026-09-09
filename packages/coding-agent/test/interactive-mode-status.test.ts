@@ -592,6 +592,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 		systemPromptSource?: { path: string };
 		appendSystemPromptSources?: Array<{ path: string }>;
 		extensions?: ExtensionFixture[];
+		extensionErrors?: Array<{ path: string; error: string }>;
 		skills?: Array<{ filePath: string; name: string }>;
 		skillDiagnostics?: Array<{ type: "warning" | "error" | "collision"; message: string }>;
 		useRealScopeGroups?: boolean;
@@ -623,7 +624,11 @@ describe("InteractiveMode.showLoadedResources", () => {
 						diagnostics: options.skillDiagnostics ?? [],
 					}),
 					getPrompts: () => ({ prompts: [], diagnostics: [] }),
-					getExtensions: () => ({ extensions: options.extensions ?? [], errors: [], runtime: {} }),
+					getExtensions: () => ({
+						extensions: options.extensions ?? [],
+						errors: options.extensionErrors ?? [],
+						runtime: {},
+					}),
 					getThemes: () => ({ themes: [], diagnostics: [] }),
 				},
 			},
@@ -649,8 +654,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 			getCompactNonPackageExtensionLabel: (
 				p: string,
 				index: number,
-				allPaths: Array<{ path: string; segments: string[] }>,
+				allPaths: Array<{ path: string; segments: string[]; sourceInfo?: SourceInfo }>,
 			) => (InteractiveMode as any).prototype.getCompactNonPackageExtensionLabel.call(fakeThis, p, index, allPaths),
+			compactExtensionSourceTag: (sourceInfo?: SourceInfo) =>
+				(InteractiveMode as any).prototype.compactExtensionSourceTag.call(fakeThis, sourceInfo),
 			getCompactExtensionLabels: (extensions: ExtensionFixture[]) =>
 				(InteractiveMode as any).prototype.getCompactExtensionLabels.call(fakeThis, extensions),
 			formatDiagnostics: () => "diagnostics",
@@ -664,6 +671,18 @@ describe("InteractiveMode.showLoadedResources", () => {
 				(InteractiveMode as any).prototype.buildScopeGroups.call(fakeThis, items);
 			fakeThis.formatScopeGroups = (groups: unknown, formatOptions: unknown) =>
 				(InteractiveMode as any).prototype.formatScopeGroups.call(fakeThis, groups, formatOptions);
+		}
+		if (options.extensionErrors && options.extensionErrors.length > 0) {
+			fakeThis.formatDiagnostics = (
+				diagnostics: Array<{ type: string; message: string; path?: string }>,
+				sourceInfos: Map<string, SourceInfo>,
+			) => (InteractiveMode as any).prototype.formatDiagnostics.call(fakeThis, diagnostics, sourceInfos);
+			fakeThis.formatPathWithSource = (p: string, sourceInfo?: SourceInfo) =>
+				(InteractiveMode as any).prototype.formatPathWithSource.call(fakeThis, p, sourceInfo);
+			fakeThis.findSourceInfoForPath = (p: string, sourceInfos: Map<string, SourceInfo>) =>
+				(InteractiveMode as any).prototype.findSourceInfoForPath.call(fakeThis, p, sourceInfos);
+			fakeThis.getDisplaySourceInfo = (sourceInfo: SourceInfo) =>
+				(InteractiveMode as any).prototype.getDisplaySourceInfo.call(fakeThis, sourceInfo);
 		}
 
 		return fakeThis;
@@ -1318,5 +1337,75 @@ describe("InteractiveMode.showLoadedResources", () => {
 		const output = renderAll(fakeThis.loadedResourcesContainer);
 		expect(output).toContain("[Skill conflicts]");
 		expect(output).not.toContain("[Skills]");
+	});
+
+	test("omits :dist from npm package compact labels", () => {
+		const extensions: ExtensionFixture[] = [
+			{
+				path: "/tmp/agent/npm/node_modules/@pi-lab/websearch/dist/index.js",
+				sourceInfo: createSourceInfo("/tmp/agent/npm/node_modules/@pi-lab/websearch/dist/index.js", {
+					source: "npm:@pi-lab/websearch@1.0.4",
+					scope: "user",
+					origin: "package",
+					baseDir: "/tmp/agent/npm/node_modules/@pi-lab/websearch",
+				}),
+			},
+		];
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			extensions,
+			useRealScopeGroups: true,
+		});
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+		expect(normalizeRenderedOutput(fakeThis.loadedResourcesContainer)).toMatchInlineSnapshot(`
+"[Extensions]
+  @pi-lab/websearch@1.0.4"`);
+	});
+
+	test("tags a user extension when its folder name collides with a bundled one", () => {
+		const extensions: ExtensionFixture[] = [
+			{
+				path: "/home/ubuntu/Ti-trader/packages/trading-agent/dist/zhihu-research/index.js",
+				sourceInfo: createSourceInfo("/home/ubuntu/Ti-trader/packages/trading-agent/dist/zhihu-research/index.js", {
+					source: "cli",
+					scope: "temporary",
+					origin: "top-level",
+					baseDir: "/home/ubuntu/Ti-trader/packages/trading-agent/dist/zhihu-research",
+				}),
+			},
+			{
+				path: "/home/ubuntu/.ti-trader/agent/extensions/zhihu-research/index.js",
+				sourceInfo: createSourceInfo("/home/ubuntu/.ti-trader/agent/extensions/zhihu-research/index.js", {
+					source: "auto",
+					scope: "user",
+					origin: "top-level",
+					baseDir: "/home/ubuntu/.ti-trader/agent/extensions",
+				}),
+			},
+		];
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			extensions,
+			useRealScopeGroups: true,
+		});
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+		expect(normalizeRenderedOutput(fakeThis.loadedResourcesContainer)).toMatchInlineSnapshot(`
+"[Extensions]
+  zhihu-research, zhihu-research (user)"`);
+	});
+
+	test("collapses duplicate-tool diagnostics to one line", () => {
+		const loser = path.join(homedir(), ".ti-trader/agent/extensions/zhihu-research/index.js");
+		const winner = "/tmp/Ti-trader/packages/trading-agent/dist/zhihu-research/index.js";
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			extensions: [{ path: loser }, { path: winner }],
+			extensionErrors: [{ path: loser, error: `Tool "zhihu_global_search" conflicts with ${winner}` }],
+		});
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, { force: false });
+		expect(normalizeRenderedOutput(fakeThis.loadedResourcesContainer)).toContain(
+			"zhihu_global_search skipped (~/.ti-trader/agent/extensions/zhihu-research)",
+		);
+		expect(normalizeRenderedOutput(fakeThis.loadedResourcesContainer)).not.toContain("conflicts with");
 	});
 });
