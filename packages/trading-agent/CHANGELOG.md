@@ -7,6 +7,9 @@ All notable changes to `ti-trader` are documented in this file.
 ### Changed
 
 - Market-lab indicators, scans and replays use this session's `get_klines` and stamp `source`. Without the session bridge they still use Binance public spot klines and mark `kind: "binance-public-klines"`.
+- The trading prompt is rebuilt each turn from the session's active tools. Research tools are named only when loaded; futures account tools are documented on futures sessions; `screen_markets` uses this session's market family rather than spot-only candidates.
+- Interactive startup no longer prints the generic “ask Ti how to use Ti” onboarding line.
+- The operating loop is a scannable sequence with skip rules. Tool notes are grouped under the same step names.
 
 ## [0.2.0] - 2026-09-08
 

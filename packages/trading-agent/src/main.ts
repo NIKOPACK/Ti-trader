@@ -16,6 +16,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { parseTradingArgs, printHelp } from "./args.ts";
 import {
+	optionalBundledResearchToolNames,
 	resolveBundledMarketChartExtension,
 	resolveBundledMarketLabExtension,
 	resolveOptionalBundledExtensionPaths,
@@ -28,7 +29,12 @@ import { localizeDescription } from "./i18n.ts";
 import { installMarketLabSessionBridge } from "./market-lab-bridge.ts";
 import { createOrderMonitorExtension } from "./monitor.ts";
 import { createProjectTrustContext, resolveProjectTrusted } from "./project-trust.ts";
-import { buildTradingPrompt } from "./prompt.ts";
+import {
+	buildTradingPrompt,
+	collectTradingPromptTools,
+	DEFAULT_TRADING_PROMPT_TOOLS,
+	extraToolGuidelines,
+} from "./prompt.ts";
 import { createTradingTools } from "./tools/index.ts";
 import { createTriggerMonitorExtension } from "./trigger-monitor.ts";
 
@@ -166,15 +172,29 @@ export async function main(argv: string[]): Promise<void> {
 					resolveBundledMarketChartExtension(),
 					...resolveOptionalBundledExtensionPaths(),
 				],
-				systemPrompt: buildTradingPrompt(trading.config),
+				systemPrompt: buildTradingPrompt(trading.config, {
+					tools: collectTradingPromptTools({
+						fallbackTools: [...DEFAULT_TRADING_PROMPT_TOOLS, ...optionalBundledResearchToolNames()],
+					}),
+				}),
 				extensionFactories: [
 					{
 						name: "ti-system",
 						hidden: true,
 						factory: (pi) => {
-							pi.on("before_agent_start", async () => ({
-								systemPrompt: buildTradingPrompt(getTrading().config),
-							}));
+							pi.on("before_agent_start", async (event) => {
+								const tools = collectTradingPromptTools({
+									selectedTools: event.systemPromptOptions.selectedTools,
+									activeTools: pi.getActiveTools(),
+									fallbackTools: [...DEFAULT_TRADING_PROMPT_TOOLS, ...optionalBundledResearchToolNames()],
+								});
+								return {
+									systemPrompt: buildTradingPrompt(getTrading().config, {
+										tools,
+										toolGuidelines: extraToolGuidelines(tools, pi.getAllTools()),
+									}),
+								};
+							});
 						},
 					},
 					{ name: "ti-trading", hidden: true, factory: createTradingExtension() },
@@ -233,8 +253,7 @@ export async function main(argv: string[]): Promise<void> {
 			appName: APP_NAME,
 			appTitle: APP_NAME,
 			version: VERSION,
-			startupAssistantText:
-				"Ti can explain its trading features and look up its docs. Ask it how to use or extend Ti.",
+			startupAssistantText: "",
 		},
 		descriptionLocalizer: (key, fallback, params) =>
 			localizeDescription(getTrading().config.language, key, fallback, params),

@@ -82,3 +82,22 @@ export function resolveOptionalBundledExtensionPaths(): string[] {
 	}
 	return paths;
 }
+
+/**
+ * Tool names the optional bundled extensions register when their opt-in
+ * credentials or flags are present. Used for the startup prompt only;
+ * each agent turn rebuilds from the session's active tools.
+ */
+export function optionalBundledResearchToolNames(): string[] {
+	const names: string[] = [];
+	if (envHasNonEmptyValue("TAVILY_API_KEY")) {
+		names.push("web_search", "fetch_source");
+	}
+	if (hasZhihuAccessSecret()) {
+		names.push("zhihu_global_search");
+	}
+	if (envIsTruthyFlag("TI_MARKET_RESEARCH")) {
+		names.push("market_research");
+	}
+	return names;
+}

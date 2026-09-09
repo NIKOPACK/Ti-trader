@@ -9,6 +9,7 @@ import {
 } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
+	optionalBundledResearchToolNames,
 	resolveBundledMarketChartExtension,
 	resolveBundledMarketLabExtension,
 	resolveBundledMarketResearchExtension,
@@ -195,5 +196,15 @@ describe("optional bundled extension paths", () => {
 		process.env.ZHIHU_ACCESS_SECRET = "zhihu-secret";
 		process.env.TI_MARKET_RESEARCH = "1";
 		expect(optionalBasenames()).toEqual(["web-search", "zhihu-research", "market-research"]);
+		expect(optionalBundledResearchToolNames()).toEqual([
+			"web_search",
+			"fetch_source",
+			"zhihu_global_search",
+			"market_research",
+		]);
+	});
+
+	it("names no optional research tools when opt-in env is absent", () => {
+		expect(optionalBundledResearchToolNames()).toEqual([]);
 	});
 });

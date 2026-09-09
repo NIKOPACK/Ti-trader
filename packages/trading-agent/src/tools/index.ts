@@ -68,6 +68,35 @@ export {
 } from "./orders.ts";
 export type { TradingProvider } from "./shared.ts";
 
+/** Native trading tools registered on every Ti session. Order matches `createTradingTools`. */
+export const NATIVE_TRADING_TOOL_NAMES = [
+	"get_price",
+	"get_order_book",
+	"get_market_info",
+	"get_contract_stats",
+	"get_klines",
+	"get_top_markets",
+	"get_trading_capabilities",
+	"get_balance",
+	"get_positions",
+	"get_portfolio_snapshot",
+	"get_open_orders",
+	"get_order_history",
+	"get_order_status",
+	"get_order_list_status",
+	"check_order",
+	"buy",
+	"sell",
+	"place_oco",
+	"cancel_order",
+	"cancel_order_list",
+	"get_risk_status",
+	"get_funding_rate_history",
+	"set_leverage",
+	"set_margin_mode",
+	"set_multi_assets_mode",
+] as const;
+
 export function createTradingTools(provider: TradingProvider = getTrading): ToolDefinition[] {
 	return [
 		createGetPriceTool(provider),
