@@ -35,7 +35,7 @@ function fixture(
 		exchange: options.exchange ?? "binance",
 		marketType: options.futures ? "usdm-futures" : "spot",
 		positionMode: options.positionMode ?? "one-way",
-		confirmLiveOrders: false,
+		orderApproval: "unattended",
 	};
 	const marketInfo: MarketInfo = {
 		symbol,

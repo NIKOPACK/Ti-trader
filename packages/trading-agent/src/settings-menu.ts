@@ -3,10 +3,11 @@ import { getSelectListTheme, getSettingsListTheme } from "@earendil-works/pi-cod
 import { type Component, type SelectItem, SelectList, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
 import { AccountSwitchConfirmationRequired, getTrading } from "./context.ts";
 import { exchangeLabel, isSupportedExchangeId, SUPPORTED_EXCHANGES } from "./exchanges.ts";
-import { t, translate } from "./i18n.ts";
+import { orderApprovalLabel, t, translate } from "./i18n.ts";
 import {
 	loadExchangeKeys,
 	type MarketType,
+	type OrderApprovalMode,
 	saveExchangeKeys,
 	type TradingLanguage,
 	type TradingMode,
@@ -276,8 +277,10 @@ export class TradingSettingsPanel implements Component {
 					if (!quoteApplied) break;
 					break;
 				}
-				case "confirm-live":
-					await trading.patchConfig({ confirmLiveOrders: parseOnOff(language, value) });
+				case "order-approval":
+					await trading.setOrderApproval(value as OrderApprovalMode, {
+						confirmUnattendedTrading: value === "unattended",
+					});
 					break;
 				case "risk-reset":
 					trading.tradingEngine.risk.reset();
@@ -391,7 +394,7 @@ export class TradingSettingsPanel implements Component {
 						cfg.mode,
 						"live",
 						t(language, "confirmLiveTitle"),
-						`${translate(language, "confirmLiveMessage", { exchange: cfg.exchange })} ${translate(language, "confirmLiveOrdersState", { state: onOff(language, cfg.confirmLiveOrders) })}`,
+						`${translate(language, "confirmLiveMessage", { exchange: cfg.exchange })} ${translate(language, "orderApprovalState", { state: orderApprovalLabel(language, cfg.orderApproval) })}`,
 						t(language, "confirmLiveYes"),
 						t(language, "confirmLiveNo"),
 						(value) => done(value),
@@ -463,11 +466,28 @@ export class TradingSettingsPanel implements Component {
 				values: uniqueValues(["USDT", "USDC", cfg.quoteCurrency]),
 			},
 			{
-				id: "confirm-live",
-				label: t(language, "confirmLive"),
-				description: t(language, "confirmLiveDesc"),
-				currentValue: onOff(language, cfg.confirmLiveOrders),
-				values: [t(language, "on"), t(language, "off")],
+				id: "order-approval",
+				label: t(language, "orderApproval"),
+				description: t(language, "orderApprovalDesc"),
+				currentValue: orderApprovalLabel(language, cfg.orderApproval),
+				submenu: (_current, done) =>
+					new TwoStepSelect(
+						this.theme,
+						t(language, "orderApproval"),
+						t(language, "orderApprovalDesc"),
+						[
+							{ value: "confirm", label: t(language, "orderApprovalConfirm") },
+							{ value: "unattended", label: t(language, "orderApprovalUnattended") },
+						],
+						cfg.orderApproval,
+						"unattended",
+						t(language, "confirmUnattendedTitle"),
+						t(language, "confirmUnattendedMessage"),
+						t(language, "confirmUnattendedYes"),
+						t(language, "confirmUnattendedNo"),
+						(value) => done(value),
+						() => done(),
+					),
 			},
 			{
 				id: "api-keys",

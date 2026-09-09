@@ -13,6 +13,7 @@ import {
 	resolveBundledMarketChartExtension,
 	resolveBundledMarketLabExtension,
 	resolveBundledMarketResearchExtension,
+	resolveBundledSubagentExtension,
 	resolveBundledWebSearchExtension,
 	resolveBundledZhihuResearchExtension,
 	resolveOptionalBundledExtensionPaths,
@@ -23,6 +24,7 @@ const OPTIONAL_ENV_KEYS = [
 	"ZHIHU_ACCESS_SECRET",
 	"TI_ZHIHU_ACCESS_SECRET_FILE",
 	"TI_MARKET_RESEARCH",
+	"TI_SUBAGENT",
 ] as const;
 
 const originalOptionalEnv: Record<(typeof OPTIONAL_ENV_KEYS)[number], string | undefined> = {
@@ -30,6 +32,7 @@ const originalOptionalEnv: Record<(typeof OPTIONAL_ENV_KEYS)[number], string | u
 	ZHIHU_ACCESS_SECRET: process.env.ZHIHU_ACCESS_SECRET,
 	TI_ZHIHU_ACCESS_SECRET_FILE: process.env.TI_ZHIHU_ACCESS_SECRET_FILE,
 	TI_MARKET_RESEARCH: process.env.TI_MARKET_RESEARCH,
+	TI_SUBAGENT: process.env.TI_SUBAGENT,
 };
 
 const temporaryDirectories: string[] = [];
@@ -130,6 +133,7 @@ describe("bundled extension resolution", () => {
 		["web-search", resolveBundledWebSearchExtension],
 		["zhihu-research", resolveBundledZhihuResearchExtension],
 		["market-research", resolveBundledMarketResearchExtension],
+		["subagent", resolveBundledSubagentExtension],
 	] as const)("resolves the source or packaged %s directory", (name, resolve) => {
 		const path = resolve();
 		expect(basename(path)).toBe(name);
@@ -191,16 +195,28 @@ describe("optional bundled extension paths", () => {
 		expect(resolveOptionalBundledExtensionPaths()).toEqual([]);
 	});
 
+	it.each(["1", "true", "yes", "TRUE", " Yes "])("auto-loads subagent when TI_SUBAGENT is %j", (value) => {
+		process.env.TI_SUBAGENT = value;
+		expect(optionalBasenames()).toEqual(["subagent"]);
+	});
+
+	it.each(["", "0", "false", "on", "  "])("ignores TI_SUBAGENT=%j", (value) => {
+		process.env.TI_SUBAGENT = value;
+		expect(resolveOptionalBundledExtensionPaths()).toEqual([]);
+	});
+
 	it("auto-loads every opted-in bundled extension in stable order", () => {
 		process.env.TAVILY_API_KEY = "tvly-test";
 		process.env.ZHIHU_ACCESS_SECRET = "zhihu-secret";
 		process.env.TI_MARKET_RESEARCH = "1";
-		expect(optionalBasenames()).toEqual(["web-search", "zhihu-research", "market-research"]);
+		process.env.TI_SUBAGENT = "1";
+		expect(optionalBasenames()).toEqual(["web-search", "zhihu-research", "market-research", "subagent"]);
 		expect(optionalBundledResearchToolNames()).toEqual([
 			"web_search",
 			"fetch_source",
 			"zhihu_global_search",
 			"market_research",
+			"subagent",
 		]);
 	});
 

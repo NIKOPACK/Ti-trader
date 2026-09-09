@@ -1,0 +1,14 @@
+{
+	"name": "ti-subagent-extension",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"description": "Isolated subagents for Ti; propose_order is parent-approved",
+	"ti": { "extensions": ["./index.ts"], "skills": ["./SKILL.md"] },
+	"pi": { "extensions": ["./index.ts"], "skills": ["./SKILL.md"] },
+	"peerDependencies": {
+		"@earendil-works/pi-coding-agent": "*",
+		"typebox": "*"
+	},
+	"devDependencies": { "@types/node": "22.19.19", "typescript": "5.9.3" }
+}

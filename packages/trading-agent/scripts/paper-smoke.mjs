@@ -2,9 +2,9 @@
 import { initTrading } from "../dist/context.js";
 
 const trading = await initTrading({ mode: "paper", exchange: "okx" });
+await trading.resetPaperAccount();
 const marketData = trading.marketData;
 const engine = trading.tradingEngine;
-await trading.resetPaperAccount();
 console.log(`mode=${engine.mode} exchange=${engine.id} quote=${engine.quoteCurrency}`);
 
 try {
@@ -101,14 +101,15 @@ try {
 	console.log("top3:", top.map((t) => `${t.symbol}@${t.last}`).join(", "));
 
 	// 9. Paper account reset with a custom starting balance
-	await trading.resetPaperAccount(25_000);
-	const reset = await marketData.getBalances();
-	const resetQuote = reset.find((b) => b.asset === engine.quoteCurrency);
+	await trading.resetPaperAccount(25_000, { confirmExposure: true });
+	const resetEngine = trading.tradingEngine;
+	const reset = await trading.marketData.getBalances();
+	const resetQuote = reset.find((b) => b.asset === resetEngine.quoteCurrency);
 	if (resetQuote?.free !== 25_000) throw new Error(`expected 25000 after reset, got ${resetQuote?.free}`);
-	if ((await engine.getOrderHistory()).length !== 0) throw new Error("expected empty history after reset");
-	console.log(`reset OK: balance=${resetQuote.free} ${engine.quoteCurrency}, history empty`);
+	if ((await resetEngine.getOrderHistory()).length !== 0) throw new Error("expected empty history after reset");
+	console.log(`reset OK: balance=${resetQuote.free} ${resetEngine.quoteCurrency}, history empty`);
 	console.log("SMOKE OK");
 } finally {
-	await trading.resetPaperAccount(10_000);
+	await trading.resetPaperAccount(10_000, { confirmExposure: true });
 	await trading.close();
 }

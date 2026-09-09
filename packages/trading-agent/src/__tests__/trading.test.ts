@@ -140,10 +140,51 @@ afterAll(() => {
 
 describe("trading configuration", () => {
 	it("accepts the default configuration", () => expect(() => validateTradingConfig(DEFAULT_CONFIG)).not.toThrow());
-	it.each([null, 0, "false", undefined])("rejects non-boolean confirmLiveOrders (%s)", (confirmLiveOrders) => {
-		configFiles.set(TRADING_CONFIG_PATH, { ...DEFAULT_CONFIG, confirmLiveOrders });
+	it("defaults paper order approval to unattended and live to confirm", () => {
+		expect(DEFAULT_CONFIG.mode).toBe("paper");
+		expect(DEFAULT_CONFIG.orderApproval).toBe("unattended");
+		expect(loadTradingConfig().orderApproval).toBe("unattended");
+		configFiles.set(TRADING_CONFIG_PATH, { mode: "live" });
+		expect(loadTradingConfig().orderApproval).toBe("confirm");
+		expect(loadTradingConfig("live").orderApproval).toBe("confirm");
+	});
+	it("does not inherit persisted paper unattended when CLI overrides to live", () => {
+		configFiles.set(TRADING_CONFIG_PATH, { mode: "paper", orderApproval: "unattended" });
+		expect(loadTradingConfig().mode).toBe("paper");
+		expect(loadTradingConfig().orderApproval).toBe("unattended");
+		expect(loadTradingConfig("live").mode).toBe("live");
+		expect(loadTradingConfig("live").orderApproval).toBe("confirm");
+	});
+	it("keeps live unattended when the stored mode is already live", () => {
+		configFiles.set(TRADING_CONFIG_PATH, { mode: "live", orderApproval: "unattended" });
+		expect(loadTradingConfig("live").orderApproval).toBe("unattended");
+	});
+	it.each([null, 0, "false"])("rejects non-boolean legacy confirmLiveOrders (%s)", (confirmLiveOrders) => {
+		configFiles.set(TRADING_CONFIG_PATH, { confirmLiveOrders });
 
 		expect(() => loadTradingConfig()).toThrow(/confirmLiveOrders must be a boolean/);
+	});
+	it("migrates confirmLiveOrders false to orderApproval unattended", () => {
+		configFiles.set(TRADING_CONFIG_PATH, { confirmLiveOrders: false });
+		expect(loadTradingConfig().orderApproval).toBe("unattended");
+	});
+	it("migrates confirmLiveOrders true to orderApproval confirm", () => {
+		configFiles.set(TRADING_CONFIG_PATH, { confirmLiveOrders: true });
+		expect(loadTradingConfig().orderApproval).toBe("confirm");
+	});
+	it("migrates legacy orderApproval every-order and none", () => {
+		configFiles.set(TRADING_CONFIG_PATH, { orderApproval: "every-order" });
+		expect(loadTradingConfig().orderApproval).toBe("confirm");
+		configFiles.set(TRADING_CONFIG_PATH, { orderApproval: "none" });
+		expect(loadTradingConfig().orderApproval).toBe("unattended");
+	});
+	it("prefers orderApproval over legacy confirmLiveOrders", () => {
+		configFiles.set(TRADING_CONFIG_PATH, { orderApproval: "unattended", confirmLiveOrders: true });
+		expect(loadTradingConfig().orderApproval).toBe("unattended");
+	});
+	it.each(["auto", true, 1])("rejects invalid orderApproval (%s)", (orderApproval) => {
+		configFiles.set(TRADING_CONFIG_PATH, { orderApproval });
+		expect(() => loadTradingConfig()).toThrow(/orderApproval must be confirm or unattended/);
 	});
 	it("accepts Binance USDⓈ-M configuration", () => {
 		expect(() =>

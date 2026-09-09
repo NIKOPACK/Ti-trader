@@ -799,7 +799,7 @@ describe("deterministic default-tool availability", () => {
 		},
 		{
 			name: "get_funding_rate_history",
-			config: { mode: "live", exchange: "binance", marketType: "usdm-futures", confirmLiveOrders: false },
+			config: { mode: "live", exchange: "binance", marketType: "usdm-futures", orderApproval: "unattended" },
 			params: { symbol: FUTURES_SYMBOL, limit: 1 },
 			assert: (details) => expect(details).toMatchObject({ symbol: FUTURES_SYMBOL, count: 1 }),
 		},
@@ -817,7 +817,7 @@ describe("deterministic default-tool availability", () => {
 		},
 		{
 			name: "set_multi_assets_mode",
-			config: { mode: "live", exchange: "binance", marketType: "usdm-futures", confirmLiveOrders: false },
+			config: { mode: "live", exchange: "binance", marketType: "usdm-futures", orderApproval: "unattended" },
 			params: { enabled: false },
 			assert: (details) => expect(details).toMatchObject({ status: "ok", enabled: false }),
 		},
@@ -845,7 +845,7 @@ describe("deterministic default-tool availability", () => {
 			mode: "live",
 			exchange: "binance",
 			marketType: "usdm-futures",
-			confirmLiveOrders: false,
+			orderApproval: "unattended",
 		});
 		exchange.fundingRateValue = undefined;
 
@@ -868,7 +868,7 @@ describe("deterministic default-tool availability", () => {
 			mode: "live",
 			exchange: "binance",
 			marketType: "usdm-futures",
-			confirmLiveOrders: false,
+			orderApproval: "unattended",
 		});
 		exchange.fundingHistoryRate = undefined;
 
@@ -1017,7 +1017,7 @@ describe("deterministic default-tool availability", () => {
 			mode: "live",
 			exchange: "binance",
 			marketType: "usdm-futures",
-			confirmLiveOrders: false,
+			orderApproval: "unattended",
 		});
 		const details = await executeWithDetails(
 			registeredTool("get_trading_capabilities", runtime),

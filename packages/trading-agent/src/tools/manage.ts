@@ -99,14 +99,14 @@ export function createSetLeverageTool(
 		name: "set_leverage",
 		label: "set_leverage",
 		description:
-			"Set futures leverage. This changes account/order risk; live mode requires the same explicit UI confirmation as a live order when confirmLiveOrders is enabled.",
+			"Set futures leverage. This changes account/order risk; live mode requires the same explicit UI confirmation as a live order when order approval is confirm.",
 		parameters: leverageSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const trading = tradingProvider();
 			requireFuturesSymbol(trading, params.symbol, "Leverage");
 			const cancelled = await confirmLiveRiskChange(ctx, trading, {
 				missingUiMessage:
-					"Changing live leverage requires interactive confirmation but no UI is available. Set confirmLiveOrders=false only for an explicitly headless workflow.",
+					"Changing live leverage requires interactive confirmation but no UI is available. Set orderApproval to unattended only for an explicitly unattended workflow.",
 				title: `Confirm LIVE leverage change on ${trading.tradingEngine.id}`,
 				summary: `${params.symbol}: set leverage to ${params.leverage}x. This changes margin and liquidation risk for future orders.`,
 				cancelledMessage: "Leverage change cancelled",
@@ -125,14 +125,14 @@ export function createSetMarginModeTool(
 		name: "set_margin_mode",
 		label: "set_margin_mode",
 		description:
-			"Set futures margin mode. This changes account/order risk; live mode requires the same explicit UI confirmation as a live order when confirmLiveOrders is enabled.",
+			"Set futures margin mode. This changes account/order risk; live mode requires the same explicit UI confirmation as a live order when order approval is confirm.",
 		parameters: marginSchema,
 		async execute(_id, params, _signal, _onUpdate, ctx) {
 			const trading = tradingProvider();
 			requireFuturesSymbol(trading, params.symbol, "Margin mode");
 			const cancelled = await confirmLiveRiskChange(ctx, trading, {
 				missingUiMessage:
-					"Changing live margin mode requires interactive confirmation but no UI is available. Set confirmLiveOrders=false only for an explicitly headless workflow.",
+					"Changing live margin mode requires interactive confirmation but no UI is available. Set orderApproval to unattended only for an explicitly unattended workflow.",
 				title: `Confirm LIVE margin-mode change on ${trading.tradingEngine.id}`,
 				summary: `${params.symbol}: switch to ${params.marginType} margin. Review liquidation and cross-account exposure before continuing.`,
 				cancelledMessage: "Margin-mode change cancelled",

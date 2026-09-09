@@ -243,7 +243,7 @@ describe("default runtime durable execution integration", () => {
 	});
 
 	it("never looks up unknown live orders with rotated credentials or stores credentials", async () => {
-		saveTradingConfig({ ...DEFAULT_CONFIG, mode: "live", exchange: "binance", confirmLiveOrders: false });
+		saveTradingConfig({ ...DEFAULT_CONFIG, mode: "live", exchange: "binance", orderApproval: "unattended" });
 		saveExchangeKeys({ binance: { apiKey: "MOCK-KEY-A", secret: "MOCK-SECRET" } });
 		const first = await TradingRuntime.init();
 		await expect(

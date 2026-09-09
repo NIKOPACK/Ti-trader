@@ -23,6 +23,7 @@ export {
 	executionConstraints,
 	type FuturesMarginEstimate,
 	resolveExchangeAmount,
+	UNATTENDED_LIVE_CONFIG_HINT,
 } from "./execution.ts";
 export {
 	distinctOrderNotionals,

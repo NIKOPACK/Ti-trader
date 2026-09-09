@@ -404,7 +404,7 @@ describe("trading order tools", () => {
 				exchange: "binance",
 				marketType: "usdm-futures",
 				leverage: 10,
-				confirmLiveOrders: false,
+				orderApproval: "unattended",
 			},
 			balances: [{ asset: "USDT", free: 1_000, used: 0, total: 1_000, quoteValue: 1_000 }],
 			marketInfo: {
@@ -928,7 +928,7 @@ describe("trading order tools", () => {
 				mode: "live",
 				exchange: "binance",
 				marketType: "usdm-futures",
-				confirmLiveOrders: false,
+				orderApproval: "unattended",
 			},
 			positions: [position],
 			balances: [{ asset: "USDT", free: 1_000, used: 0, total: 1_000, quoteValue: 1_000 }],
@@ -986,7 +986,7 @@ describe("trading order tools", () => {
 				mode: "live",
 				exchange: "binance",
 				marketType: "usdm-futures",
-				confirmLiveOrders: false,
+				orderApproval: "unattended",
 			},
 			positions: [position],
 			balances: [{ asset: "USDT", free: 1_000, used: 0, total: 1_000, quoteValue: 1_000 }],
@@ -1063,7 +1063,7 @@ describe("trading order tools", () => {
 				exchange: "binance",
 				marketType: "usdm-futures",
 				positionMode: "hedge",
-				confirmLiveOrders: false,
+				orderApproval: "unattended",
 			},
 			positions: [position],
 			balances: [{ asset: "USDT", free: 1_000, used: 0, total: 1_000, quoteValue: 1_000 }],
@@ -1172,7 +1172,7 @@ describe("trading order tools", () => {
 				mode,
 				exchange: "binance",
 				marketType: "usdm-futures",
-				confirmLiveOrders: false,
+				orderApproval: "unattended",
 			},
 			positions: [position],
 		});
@@ -1196,7 +1196,7 @@ describe("trading order tools", () => {
 				mode: "live",
 				exchange: "binance",
 				marketType: "usdm-futures",
-				confirmLiveOrders: false,
+				orderApproval: "unattended",
 			},
 		});
 		const tool = createSellTool(() => runtime);
@@ -1234,7 +1234,7 @@ describe("trading order tools", () => {
 
 	it("cancels a live order when placeOrder policy confirm returns false", async () => {
 		const { placeOrder, runtime } = createRuntime({
-			config: { ...DEFAULT_CONFIG, mode: "live", confirmLiveOrders: true },
+			config: { ...DEFAULT_CONFIG, mode: "live", orderApproval: "confirm" },
 			balances: [{ asset: "USDT", free: 10_000, used: 0, total: 10_000, quoteValue: 10_000 }],
 		});
 		vi.spyOn(runtime.tradingEngine.risk, "reserve").mockRestore();
@@ -1265,7 +1265,7 @@ describe("trading order tools", () => {
 
 	it("confirms live order and order-list cancellations before submitting", async () => {
 		const { cancelOrder, cancelOrderList, runtime } = createRuntime({
-			config: { ...DEFAULT_CONFIG, mode: "live", confirmLiveOrders: true },
+			config: { ...DEFAULT_CONFIG, mode: "live", orderApproval: "confirm" },
 		});
 		const confirm = vi.fn(async () => true);
 		const liveContext = { hasUI: true, ui: { confirm, notify: vi.fn() } } as unknown as ExtensionContext;
@@ -1295,7 +1295,7 @@ describe("trading order tools", () => {
 
 	it("does not cancel live orders when confirmation is rejected", async () => {
 		const { cancelOrder, cancelOrderList, runtime } = createRuntime({
-			config: { ...DEFAULT_CONFIG, mode: "live", confirmLiveOrders: true },
+			config: { ...DEFAULT_CONFIG, mode: "live", orderApproval: "confirm" },
 		});
 		const confirm = vi.fn(async () => false);
 		const notify = vi.fn();
@@ -1325,7 +1325,7 @@ describe("trading order tools", () => {
 
 	it("rejects headless live order cancellations when confirmation is enabled", async () => {
 		const { cancelOrder, cancelOrderList, runtime } = createRuntime({
-			config: { ...DEFAULT_CONFIG, mode: "live", confirmLiveOrders: true },
+			config: { ...DEFAULT_CONFIG, mode: "live", orderApproval: "confirm" },
 		});
 		const orderTool = createCancelOrderTool(() => runtime);
 		const listTool = createCancelOrderListTool(() => runtime);
@@ -1349,7 +1349,7 @@ describe("trading order tools", () => {
 
 	it("keeps paper cancellations confirmation-free", async () => {
 		const { cancelOrder, cancelOrderList, runtime } = createRuntime({
-			config: { ...DEFAULT_CONFIG, mode: "paper", confirmLiveOrders: true },
+			config: { ...DEFAULT_CONFIG, mode: "paper", orderApproval: "confirm" },
 		});
 		const confirm = vi.fn(async () => {
 			throw new Error("paper cancellation should not prompt");
@@ -1376,9 +1376,35 @@ describe("trading order tools", () => {
 		expect(cancelOrderList).toHaveBeenCalledWith("list-4", "BTC/USDT");
 	});
 
+	it("submits a live order without a confirmation prompt when order approval is unattended", async () => {
+		const { placeOrder, runtime } = createRuntime({
+			config: { ...DEFAULT_CONFIG, mode: "live", orderApproval: "unattended" },
+			balances: [{ asset: "USDT", free: 10_000, used: 0, total: 10_000, quoteValue: 10_000 }],
+		});
+		vi.spyOn(runtime.tradingEngine.risk, "reserve").mockRestore();
+		const confirm = vi.fn(async () => false);
+		const liveContext = {
+			hasUI: false,
+			ui: { confirm, notify: vi.fn() },
+		} as unknown as ExtensionContext;
+		const tool = createBuyTool(() => runtime);
+
+		const result = await tool.execute(
+			"live-unattended",
+			{ symbol: "BTC/USDT", type: "market", amount: 1 },
+			undefined,
+			undefined,
+			liveContext,
+		);
+
+		expect(result.details).toMatchObject({ status: "ok", mode: "live" });
+		expect(placeOrder).toHaveBeenCalledOnce();
+		expect(confirm).not.toHaveBeenCalled();
+	});
+
 	it("submits a live order when placeOrder policy confirm returns true", async () => {
 		const { placeOrder, runtime } = createRuntime({
-			config: { ...DEFAULT_CONFIG, mode: "live", confirmLiveOrders: true },
+			config: { ...DEFAULT_CONFIG, mode: "live", orderApproval: "confirm" },
 			balances: [{ asset: "USDT", free: 10_000, used: 0, total: 10_000, quoteValue: 10_000 }],
 		});
 		vi.spyOn(runtime.tradingEngine.risk, "reserve").mockRestore();
@@ -1404,7 +1430,7 @@ describe("trading order tools", () => {
 
 	it("rejects headless live orders after reserving quota", async () => {
 		const { placeOrder, runtime } = createRuntime({
-			config: { ...DEFAULT_CONFIG, mode: "live", confirmLiveOrders: true },
+			config: { ...DEFAULT_CONFIG, mode: "live", orderApproval: "confirm" },
 			balances: [{ asset: "USDT", free: 10_000, used: 0, total: 10_000, quoteValue: 10_000 }],
 		});
 		vi.spyOn(runtime.tradingEngine.risk, "reserve").mockRestore();

@@ -1,6 +1,6 @@
 import type { Order, Position } from "@nikopack/ti-trading-engine";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { getTrading, TradingRuntime } from "../context.ts";
+import { getTrading, TradingRuntime, UnattendedTradingConfirmationRequired } from "../context.ts";
 
 /**
  * Deterministic replacement tests: the engine package's client/engine classes
@@ -84,7 +84,7 @@ const stateMocks = vi.hoisted(() => {
 		positionMode: "one-way",
 		exchange: "okx",
 		quoteCurrency: "USDT",
-		confirmLiveOrders: true,
+		orderApproval: "confirm" as const,
 		risk: { maxOrderNotional: 500, maxDailyNotional: 2000, allowedSymbols: [] },
 		paper: { startQuote: 10_000, feeRate: 0.001 },
 		monitor: {
@@ -117,6 +117,7 @@ const stateMocks = vi.hoisted(() => {
 		loadExchangeKeys,
 		validateTradingConfig,
 		normalizeTradingConfig,
+		defaultOrderApproval: (mode: "paper" | "live") => (mode === "live" ? "confirm" : "unattended"),
 	};
 });
 
@@ -128,6 +129,7 @@ vi.mock("../state.ts", () => ({
 	loadExchangeKeys: stateMocks.loadExchangeKeys,
 	validateTradingConfig: stateMocks.validateTradingConfig,
 	normalizeTradingConfig: stateMocks.normalizeTradingConfig,
+	defaultOrderApproval: stateMocks.defaultOrderApproval,
 }));
 
 vi.mock("@nikopack/ti-trading-engine", () => ({
@@ -314,6 +316,47 @@ describe("TradingRuntime client replacement", () => {
 		expect(() => Object.defineProperty(runtime.config.risk.allowedSymbols, "0", { value: "BTC/USDT" })).toThrow(
 			TypeError,
 		);
+	});
+
+	it("requires explicit confirmation to switch live order approval to unattended", async () => {
+		stateMocks.loadExchangeKeys.mockReturnValue({ binance: { apiKey: "k", secret: "s" } });
+		const runtime = await TradingRuntime.init({ mode: "paper", exchange: "binance" });
+
+		await runtime.patchConfig({ orderApproval: "unattended" });
+		expect(runtime.config.orderApproval).toBe("unattended");
+		await runtime.setMode("live");
+		expect(runtime.config.mode).toBe("live");
+		expect(runtime.config.orderApproval).toBe("confirm");
+
+		await expect(runtime.patchConfig({ orderApproval: "unattended" })).rejects.toBeInstanceOf(
+			UnattendedTradingConfirmationRequired,
+		);
+		expect(runtime.config.orderApproval).toBe("confirm");
+
+		await runtime.patchConfig({ orderApproval: "unattended", confirmUnattendedTrading: true });
+		expect(runtime.config.orderApproval).toBe("unattended");
+		await runtime.patchConfig({ orderApproval: "confirm" });
+		expect(runtime.config.orderApproval).toBe("confirm");
+	});
+
+	it("rejects paper unattended switching to live unattended without confirmation", async () => {
+		stateMocks.loadExchangeKeys.mockReturnValue({ binance: { apiKey: "k", secret: "s" } });
+		const runtime = await TradingRuntime.init({ mode: "paper", exchange: "binance" });
+		await runtime.patchConfig({ orderApproval: "unattended" });
+
+		await expect(runtime.patchConfig({ mode: "live", orderApproval: "unattended" })).rejects.toBeInstanceOf(
+			UnattendedTradingConfirmationRequired,
+		);
+		expect(runtime.config.mode).toBe("paper");
+		expect(runtime.config.orderApproval).toBe("unattended");
+
+		await runtime.patchConfig({
+			mode: "live",
+			orderApproval: "unattended",
+			confirmUnattendedTrading: true,
+		});
+		expect(runtime.config.mode).toBe("live");
+		expect(runtime.config.orderApproval).toBe("unattended");
 	});
 
 	it("patches monitor config without replacing the exchange client", async () => {

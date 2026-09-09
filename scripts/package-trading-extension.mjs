@@ -47,6 +47,18 @@ export function packageTradingExtension(extensionName) {
 		const sourcePath = join(sourceDir, file);
 		if (existsSync(sourcePath)) copyFileSync(sourcePath, join(targetDir, file));
 	}
+	const agentsDir = join(sourceDir, "agents");
+	if (existsSync(agentsDir)) {
+		const agentFiles = readdirSync(agentsDir, { withFileTypes: true })
+			.filter((entry) => entry.isFile() && entry.name.endsWith(".md"))
+			.map((entry) => entry.name)
+			.sort();
+		if (agentFiles.length > 0) {
+			const targetAgentsDir = join(targetDir, "agents");
+			mkdirSync(targetAgentsDir, { recursive: true });
+			for (const file of agentFiles) copyFileSync(join(agentsDir, file), join(targetAgentsDir, file));
+		}
+	}
 
 	const sourceManifest = JSON.parse(readFileSync(packageJsonPath, "utf8"));
 	const publishedManifest = createPublishedManifest(sourceManifest);

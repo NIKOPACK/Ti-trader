@@ -1,4 +1,4 @@
-import type { TradingLanguage } from "./state.ts";
+import type { OrderApprovalMode, TradingLanguage } from "./state.ts";
 
 export const MENU_EN = {
 	settingsTitle: "Settings",
@@ -22,8 +22,15 @@ export const MENU_EN = {
 	venueLive: "LIVE",
 	venuePaperSource: "market data: {exchange} public",
 	venueLiveSource: "orders and market data: {exchange}",
-	confirmLive: "Confirm live orders",
-	confirmLiveDesc: "Require confirmation before each live order",
+	orderApproval: "Order approval",
+	orderApprovalDesc: "Paper defaults to unattended; live defaults to confirm. Live unattended skips the operator box",
+	orderApprovalConfirm: "Confirm each order",
+	orderApprovalUnattended: "Unattended",
+	confirmUnattendedTitle: "Switch to unattended live trading?",
+	confirmUnattendedMessage:
+		"Live buy, sell, OCO, cancel, leverage and margin changes will submit without a per-order confirmation. Risk limits, unknown-submission recovery, and entry blocks still apply. This is unattended live trading.",
+	confirmUnattendedYes: "Switch to unattended",
+	confirmUnattendedNo: "Keep confirming each order",
 	confirmLiveTitle: "Switch to LIVE trading?",
 	confirmLiveMessage: "Real orders will be placed on {exchange} with real funds.",
 	confirmLiveYes: "Switch to live",
@@ -164,7 +171,14 @@ export const MENU_EN = {
 	notifyMarkets: "Top {count} markets by volume",
 	unknownMode: 'Unknown mode "{target}". Use paper or live.',
 	liveKeysMissingSlash: "No API keys for {exchange}. Set them with /exchange-login first.",
-	confirmLiveOrdersState: "Confirm-live-orders is {state}.",
+	orderApprovalState: "Order approval is {state}.",
+	titleApproval: "approval",
+	unknownApproval: 'Unknown approval mode "{target}". Use confirm or unattended.',
+	approvalUnattendedNeedsUi: "Switching to unattended live trading requires interactive confirmation",
+	approvalUnchanged: "Order approval unchanged",
+	switchedApproval: "Order approval is now {state}.",
+	notifyApproval: "Order approval: {state}",
+	approvalUsage: "Usage: /approval [confirm|unattended]",
 	stayedPaper: "Stayed in paper mode",
 	switchedMode: "Switched to {mode} trading on {exchange}.",
 	notifyMode: "Mode: {mode}",
@@ -199,7 +213,7 @@ export const MENU_EN = {
 	riskQuotaDaily: "(per day, live)",
 	riskReservedLine: "Reserved: {value} {quote}",
 	riskAllowedLine: "Allowed symbols: {symbols}",
-	riskConfirmLiveLine: "Confirm live: {value}",
+	riskOrderApprovalLine: "Order approval: {value}",
 	riskUnsettledNone: "Unsettled: none",
 	riskUnsettledCount: "Unsettled: {count}",
 	riskEditLimits: "Edit limits in ~/.ti-trader/agent/trading.json",
@@ -265,6 +279,7 @@ export const MENU_EN = {
 	cmdQuit: "Quit ti",
 	cmdLanguage: "Change TUI language",
 	cmdMode: "Show or switch paper/live",
+	cmdApproval: "Show or switch live order approval",
 	cmdExchange: "Show or switch exchange",
 	cmdMarket: "Show or switch market type",
 	cmdRisk: "Risk limits, used quota and entry pause",
@@ -382,8 +397,15 @@ export const MENU_ZH: { [K in MenuKey]: string } = {
 	venueLive: "实盘",
 	venuePaperSource: "行情来源：{exchange} 公开接口",
 	venueLiveSource: "下单与行情：{exchange}",
-	confirmLive: "实盘下单确认",
-	confirmLiveDesc: "每笔实盘订单都需要确认",
+	orderApproval: "订单审批",
+	orderApprovalDesc: "模拟盘默认无人值守，实盘默认逐单确认。实盘无人值守会跳过确认框",
+	orderApprovalConfirm: "逐单确认",
+	orderApprovalUnattended: "无人值守",
+	confirmUnattendedTitle: "切换到无人值守实盘？",
+	confirmUnattendedMessage:
+		"实盘买入、卖出、OCO、撤单、杠杆和保证金变更将不再逐笔确认。风控限额、未知提交恢复和开仓封锁仍然有效。这是无人值守实盘。",
+	confirmUnattendedYes: "切换到无人值守",
+	confirmUnattendedNo: "保留逐单确认",
 	confirmLiveTitle: "切换到实盘？",
 	confirmLiveMessage: "将在 {exchange} 使用真实资金下单。",
 	confirmLiveYes: "切换到实盘",
@@ -521,7 +543,14 @@ export const MENU_ZH: { [K in MenuKey]: string } = {
 	notifyMarkets: "成交额前 {count} 的市场",
 	unknownMode: "未知模式“{target}”。请使用 paper 或 live。",
 	liveKeysMissingSlash: "{exchange} 没有 API 密钥。请先用 /exchange-login 配置。",
-	confirmLiveOrdersState: "实盘下单确认为{state}。",
+	orderApprovalState: "订单审批为{state}。",
+	titleApproval: "审批",
+	unknownApproval: "未知审批模式“{target}”。请使用 confirm 或 unattended。",
+	approvalUnattendedNeedsUi: "切换到无人值守实盘必须交互确认",
+	approvalUnchanged: "订单审批未改变",
+	switchedApproval: "订单审批已设为 {state}。",
+	notifyApproval: "订单审批：{state}",
+	approvalUsage: "用法：/approval [confirm|unattended]",
 	stayedPaper: "仍留在模拟盘",
 	switchedMode: "已切换为 {exchange} 上的 {mode}。",
 	notifyMode: "模式：{mode}",
@@ -555,7 +584,7 @@ export const MENU_ZH: { [K in MenuKey]: string } = {
 	riskQuotaDaily: "（按日，实盘）",
 	riskReservedLine: "预占：{value} {quote}",
 	riskAllowedLine: "允许交易对：{symbols}",
-	riskConfirmLiveLine: "实盘确认：{value}",
+	riskOrderApprovalLine: "订单审批：{value}",
 	riskUnsettledNone: "未结算：无",
 	riskUnsettledCount: "未结算：{count}",
 	riskEditLimits: "限额写在 ~/.ti-trader/agent/trading.json",
@@ -619,6 +648,7 @@ export const MENU_ZH: { [K in MenuKey]: string } = {
 	cmdQuit: "退出 ti",
 	cmdLanguage: "切换 TUI 语言",
 	cmdMode: "查看或切换模拟盘/实盘",
+	cmdApproval: "查看或切换实盘订单审批",
 	cmdExchange: "查看或切换交易所",
 	cmdMarket: "查看或切换市场类型",
 	cmdRisk: "风险限额、已用额度和开仓暂停",
@@ -723,6 +753,10 @@ export function t(language: TradingLanguage, key: MenuKey): string {
 	return translate(language, key);
 }
 
+export function orderApprovalLabel(language: TradingLanguage, mode: OrderApprovalMode): string {
+	return t(language, mode === "unattended" ? "orderApprovalUnattended" : "orderApprovalConfirm");
+}
+
 export const SETTINGS_DESCRIPTION_KEYS: Record<string, MenuKey> = {
 	"settings.warning.anthropic-extra-usage": "settingWarningAnthropicExtraUsage",
 	"settings.theme.automatic": "settingThemeAutomatic",
@@ -796,6 +830,7 @@ export const SLASH_DESCRIPTION_KEYS: Record<string, MenuKey> = {
 	quit: "cmdQuit",
 	language: "cmdLanguage",
 	mode: "cmdMode",
+	approval: "cmdApproval",
 	exchange: "cmdExchange",
 	market: "cmdMarket",
 	risk: "cmdRisk",

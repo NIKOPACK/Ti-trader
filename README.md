@@ -6,7 +6,7 @@
 [![Node](https://img.shields.io/node/v/ti-trader.svg)](https://www.npmjs.com/package/ti-trader)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-AI trading agent CLI. Paper mode is the default. Live orders require confirmation.
+AI trading agent CLI. Paper mode is the default. Live orders require confirmation unless order approval is `unattended`.
 
 Ti is built on the [Pi agent harness](https://github.com/earendil-works/pi) and talks to exchanges through [ccxt](https://github.com/ccxt/ccxt). Coding tools from Pi are removed.
 
@@ -48,7 +48,7 @@ State lives in `~/.ti-trader/agent/` (`trading.json`, `keys.json`, sessions). It
 
 - **Paper** — local ledger, real public market data, fees and PnL. No API keys
 - **Live** — ccxt adapters; keys stored locally at mode `600`. Paper and Binance have offline contract coverage; other venues are experimental
-- **Risk** — per-order and daily notional caps, symbol allowlists, live confirmation, durable entry pause. Unknown submissions are never resent
+- **Risk** — per-order and daily notional caps, symbol allowlists, live order approval (`confirm` default; `unattended` is an explicit opt-in), durable entry pause. Unknown submissions are never resent
 - **Recovery** — bounded correlated lookup on restart; `/recovery`, `/audit`, `/health`
 - **Orders** — market, limit, stop, take-profit, trailing and spot OCO in paper spot and supported live markets. Paper futures is market-only
 - **Analysis** — bundled market-lab indicators and screens; they do not place orders
@@ -59,7 +59,7 @@ State lives in `~/.ti-trader/agent/` (`trading.json`, `keys.json`, sessions). It
 | --- | --- |
 | `/settings` | Language, mode, exchange, market, keys, risk, paper, monitor |
 | `/balance` `/positions` `/orders` `/trades` `/markets` | Account and market views |
-| `/mode` `/exchange` `/market` | Switch runtime; live needs keys and confirmation |
+| `/mode` `/exchange` `/market` `/approval` | Switch runtime or live order approval; live needs keys; `unattended` needs confirmation |
 | `/risk pause` `/risk resume` | Block or restore new exposure. Resume is interactive |
 | `/recovery` `/audit` `/health` | Executions, redacted history, local admission health |
 | `/trigger` | Persistent experimental conditions. Live triggers notify only |

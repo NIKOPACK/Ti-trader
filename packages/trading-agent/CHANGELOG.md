@@ -4,6 +4,11 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+### Added
+
+- Live order approval is now an explicit mode (`confirm` or `unattended`). Paper defaults to `unattended`; live defaults to `confirm`. Switching mode (including `ti --mode live` against a paper config) applies that mode's default. Switching live to `unattended` requires interactive confirmation via Settings or `/approval unattended`; unknown-submission recovery is unchanged.
+- Optional `subagent` extension (`TI_SUBAGENT=1` or `--extension`). Isolated children (`researcher`, `scanner`, `reviewer`) may `propose_order`; that does not submit. The parent must `check_order` then `buy`/`sell`. Paper/unattended: parent execution is the approval. Live/confirm: the operator confirmation box still appears.
+
 ### Changed
 
 - Market-lab indicators, scans and replays use this session's `get_klines` and stamp `source`. Without the session bridge they still use Binance public spot klines and mark `kind: "binance-public-klines"`.

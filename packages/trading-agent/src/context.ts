@@ -22,6 +22,7 @@ import {
 	requiresPaperFeeRateChange,
 } from "./runtime-config.ts";
 import {
+	defaultOrderApproval,
 	type FuturesMarginType,
 	type FuturesPositionMode,
 	loadExchangeKeys,
@@ -29,6 +30,7 @@ import {
 	loadTradingState,
 	type MarketType,
 	normalizeTradingConfig,
+	type OrderApprovalMode,
 	type RiskLimits,
 	saveTradingConfig,
 	saveTradingState,
@@ -48,9 +50,11 @@ export interface TradingConfigPatch {
 	positionMode?: FuturesPositionMode;
 	exchange?: string;
 	quoteCurrency?: string;
-	confirmLiveOrders?: boolean;
+	orderApproval?: OrderApprovalMode;
 	/** Required when switching accounts that still contain orders or positions. */
 	confirmAccountSwitch?: boolean;
+	/** Required when the next state is live and unattended. */
+	confirmUnattendedTrading?: boolean;
 	risk?: Partial<RiskLimits>;
 	paper?: Partial<TradingConfig["paper"]>;
 	monitor?: Partial<TradingConfig["monitor"]>;
@@ -71,6 +75,15 @@ export class AccountSwitchConfirmationRequired extends Error {
 	constructor(message: string) {
 		super(message);
 		this.name = "AccountSwitchConfirmationRequired";
+	}
+}
+
+export class UnattendedTradingConfirmationRequired extends Error {
+	readonly code = "UNATTENDED_TRADING_CONFIRMATION_REQUIRED" as const;
+
+	constructor(message: string) {
+		super(message);
+		this.name = "UnattendedTradingConfirmationRequired";
 	}
 }
 
@@ -132,8 +145,7 @@ export class TradingRuntime {
 				installation.nextGeneration !== generation + 1)
 		)
 			throw new Error("Runtime installation maintenance changed");
-		const config = loadTradingConfig();
-		if (overrides.mode) config.mode = overrides.mode;
+		const config = loadTradingConfig(overrides.mode);
 		if (overrides.exchange) config.exchange = overrides.exchange;
 		const normalized = normalizeTradingConfig(config);
 		validateTradingConfig(normalized);
@@ -229,6 +241,16 @@ export class TradingRuntime {
 		await this.patchConfig({ marketType, confirmAccountSwitch: options.confirmAccountSwitch });
 	}
 
+	async setOrderApproval(
+		orderApproval: OrderApprovalMode,
+		options: { confirmUnattendedTrading?: boolean } = {},
+	): Promise<void> {
+		await this.patchConfig({
+			orderApproval,
+			confirmUnattendedTrading: options.confirmUnattendedTrading,
+		});
+	}
+
 	async patchConfig(patch: TradingConfigPatch): Promise<void> {
 		await this.enqueueConfigOperation(() => this.applyConfigPatch(patch));
 	}
@@ -247,7 +269,7 @@ export class TradingRuntime {
 				positionMode: patch.positionMode,
 				exchange: patch.exchange,
 				quoteCurrency: patch.quoteCurrency,
-				confirmLiveOrders: patch.confirmLiveOrders,
+				orderApproval: patch.orderApproval,
 			}),
 			risk: {
 				...current.risk,
@@ -259,8 +281,22 @@ export class TradingRuntime {
 			paper: { ...current.paper, ...patch.paper },
 			monitor: { ...current.monitor, ...patch.monitor },
 		};
+		if (patch.mode !== undefined && patch.orderApproval === undefined && patch.mode !== current.mode) {
+			next.orderApproval = defaultOrderApproval(patch.mode);
+		}
 		if (configSnapshot(this.config) === configSnapshot(next)) return;
 		validateTradingConfig(next);
+		const alreadyLiveUnattended = current.mode === "live" && current.orderApproval === "unattended";
+		if (
+			next.mode === "live" &&
+			next.orderApproval === "unattended" &&
+			!alreadyLiveUnattended &&
+			patch.confirmUnattendedTrading !== true
+		) {
+			throw new UnattendedTradingConfirmationRequired(
+				"Switching order approval to unattended submits live orders without a per-order confirmation. Retry after an explicit operator confirmation.",
+			);
+		}
 		this.tradingEngine.recordConfigurationChange();
 		await this.installConfiguration(next, patch.confirmAccountSwitch);
 	}
@@ -588,7 +624,7 @@ function configSnapshot(config: ReadonlyTradingConfig | TradingConfig): string {
 		positionMode: config.positionMode,
 		exchange: config.exchange,
 		quoteCurrency: config.quoteCurrency,
-		confirmLiveOrders: config.confirmLiveOrders,
+		orderApproval: config.orderApproval,
 		risk: { ...config.risk, allowedSymbols: [...config.risk.allowedSymbols] },
 		paper: { ...config.paper },
 		monitor: { ...config.monitor },

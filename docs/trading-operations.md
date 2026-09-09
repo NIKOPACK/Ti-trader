@@ -19,7 +19,7 @@ node scripts/trading-package-install.mjs --report /tmp/ti-release-evidence/insta
 
 Confirm its version before opening a session. Initial configuration must be Paper; verify the displayed mode again after every account or market switch. Do not assume a restart resets a previously saved live configuration. For a controlled Paper soak, keep `TI_DATA_DIR` on that candidate and collect samples with `scripts/trading-paper-soak.mjs` rather than filling the observation record by hand.
 
-API permissions must exclude withdrawals. Keep exchange credentials in Ti's credential store, not in commands, source files, logs or release evidence. Require confirmation for each live order during a pilot. Do not disable confirmation to work around a failed UI or recovery workflow.
+API permissions must exclude withdrawals. Keep exchange credentials in Ti's credential store, not in commands, source files, logs or release evidence. Require confirmation for each live order during a pilot (`orderApproval: "confirm"`). Switching to `unattended` is an explicit opt-in and requires interactive confirmation in Settings or `/approval unattended`. Do not disable confirmation to work around a failed UI or recovery workflow.
 
 Only one candidate version may write a given data directory. A state schema upgrade is also an operational boundary: binaries that ignore execution, pause or monitor fields are not safe rollback targets.
 

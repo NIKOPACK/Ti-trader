@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { readdirSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
@@ -14,7 +14,14 @@ interface PackageManifest {
 	ti?: ResourceManifest;
 }
 
-const extensionNames = ["market-lab", "market-chart", "market-research", "web-search", "zhihu-research"] as const;
+const extensionNames = [
+	"market-lab",
+	"market-chart",
+	"market-research",
+	"web-search",
+	"zhihu-research",
+	"subagent",
+] as const;
 const defaultAutoloadExtensions = ["./dist/market-lab/index.js", "./dist/market-chart/index.js"];
 
 function readManifest(relativeUrl: string): PackageManifest {
@@ -50,5 +57,17 @@ describe("extension packaging", () => {
 
 		expect(manifest.pi?.skills).toEqual(["./SKILL.md"]);
 		expect(manifest.ti?.skills).toEqual(["./SKILL.md"]);
+	});
+
+	it("declares the subagent skill in both source manifests", () => {
+		const manifest = readManifest("../../../extensions/subagent/package.json");
+
+		expect(manifest.pi?.skills).toEqual(["./SKILL.md"]);
+		expect(manifest.ti?.skills).toEqual(["./SKILL.md"]);
+	});
+
+	it("ships bundled subagent definitions next to the extension entry", () => {
+		const agentsDir = fileURLToPath(new URL("../../../extensions/subagent/agents", import.meta.url));
+		expect(readdirSync(agentsDir).sort()).toEqual(["researcher.md", "reviewer.md", "scanner.md"]);
 	});
 });

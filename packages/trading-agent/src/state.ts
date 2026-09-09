@@ -21,6 +21,43 @@ export type { ExchangeCredentials, FuturesMarginType, FuturesPositionMode, Marke
 
 export type TradingLanguage = "zh-CN" | "en-US";
 
+export const ORDER_APPROVAL_MODES = ["confirm", "unattended"] as const;
+export type OrderApprovalMode = (typeof ORDER_APPROVAL_MODES)[number];
+
+export function isOrderApprovalMode(value: unknown): value is OrderApprovalMode {
+	return value === "confirm" || value === "unattended";
+}
+
+export function liveOrdersRequireConfirmation(mode: TradingMode, orderApproval: OrderApprovalMode): boolean {
+	return mode === "live" && orderApproval === "confirm";
+}
+
+type StoredTradingConfig = Partial<TradingConfig> & { confirmLiveOrders?: unknown };
+
+export function defaultOrderApproval(mode: TradingMode): OrderApprovalMode {
+	return mode === "live" ? "confirm" : "unattended";
+}
+
+export function resolveOrderApproval(
+	stored: {
+		orderApproval?: unknown;
+		confirmLiveOrders?: unknown;
+	},
+	mode: TradingMode = "paper",
+): OrderApprovalMode {
+	if (stored.orderApproval !== undefined) {
+		if (stored.orderApproval === "every-order") return "confirm";
+		if (stored.orderApproval === "none") return "unattended";
+		if (!isOrderApprovalMode(stored.orderApproval)) throw new Error("orderApproval must be confirm or unattended");
+		return stored.orderApproval;
+	}
+	if (stored.confirmLiveOrders !== undefined) {
+		if (typeof stored.confirmLiveOrders !== "boolean") throw new Error("confirmLiveOrders must be a boolean");
+		return stored.confirmLiveOrders ? "confirm" : "unattended";
+	}
+	return defaultOrderApproval(mode);
+}
+
 export interface TradingConfig {
 	/** Language used by Ti's trading TUI and prompt. */
 	language: TradingLanguage;
@@ -35,8 +72,8 @@ export interface TradingConfig {
 	exchange: string;
 	/** Quote currency used for valuation and risk limits. */
 	quoteCurrency: string;
-	/** When true, every live order requires interactive confirmation. */
-	confirmLiveOrders: boolean;
+	/** Live submission approval. `unattended` skips per-order confirmation. */
+	orderApproval: OrderApprovalMode;
 	risk: RiskLimits;
 	paper: {
 		/** Initial quote balance of a fresh paper account. */
@@ -72,7 +109,7 @@ export const DEFAULT_CONFIG: TradingConfig = {
 	// okx: broadly accessible (binance geo-blocks some regions with HTTP 451).
 	exchange: "okx",
 	quoteCurrency: "USDT",
-	confirmLiveOrders: true,
+	orderApproval: "unattended",
 	risk: {
 		maxOrderNotional: 500,
 		maxDailyNotional: 2000,
@@ -136,11 +173,21 @@ function alignAllowedSymbolsToSpot(quoteCurrency: string, symbols: string[]): st
 	return aligned;
 }
 
-export function loadTradingConfig(): TradingConfig {
-	const stored = readJsonFile<Partial<TradingConfig>>(TRADING_CONFIG_PATH) ?? {};
+export function loadTradingConfig(modeOverride?: TradingMode): TradingConfig {
+	const stored = readJsonFile<StoredTradingConfig>(TRADING_CONFIG_PATH) ?? {};
+	const rest: Partial<TradingConfig> = { ...stored };
+	delete (rest as { confirmLiveOrders?: unknown }).confirmLiveOrders;
+	const storedMode = stored.mode === "paper" || stored.mode === "live" ? stored.mode : DEFAULT_CONFIG.mode;
+	const mode = modeOverride ?? storedMode;
+	const orderApproval =
+		modeOverride !== undefined && modeOverride !== storedMode
+			? defaultOrderApproval(modeOverride)
+			: resolveOrderApproval(stored, mode);
 	const config: TradingConfig = {
 		...DEFAULT_CONFIG,
-		...stored,
+		...rest,
+		mode,
+		orderApproval,
 		risk: { ...DEFAULT_CONFIG.risk, ...stored.risk },
 		paper: { ...DEFAULT_CONFIG.paper, ...stored.paper },
 		monitor: { ...DEFAULT_CONFIG.monitor, ...stored.monitor },
@@ -154,7 +201,7 @@ export function validateTradingConfig(config: TradingConfig): void {
 		throw new Error(`Invalid language: ${String(config.language)}`);
 	if (config.mode !== "paper" && config.mode !== "live")
 		throw new Error(`Invalid trading mode: ${String(config.mode)}`);
-	if (typeof config.confirmLiveOrders !== "boolean") throw new Error("confirmLiveOrders must be a boolean");
+	if (!isOrderApprovalMode(config.orderApproval)) throw new Error("orderApproval must be confirm or unattended");
 	if (!(["spot", "usdm-futures", "both"] as const).includes(config.marketType))
 		throw new Error("marketType must be spot, usdm-futures, or both");
 	if ((config.marketType === "usdm-futures" || config.marketType === "both") && config.exchange !== "binance")

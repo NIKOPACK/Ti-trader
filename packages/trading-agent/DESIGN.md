@@ -47,7 +47,7 @@ Ti 是一个 **AI 驱动的加密货币现货与 Binance USDⓈ-M 合约交易 a
 | 交易引擎 | `@nikopack/ti-trading-engine`：ccxt 实盘客户端、模拟盘客户端、统一 `ExchangeClient`、规划、保护和风控 | ✅ |
 | 模拟盘 | 真实行情撮合、手续费、均价成本、PnL、跨进程持久化 | ✅ |
 | 风控 | 单笔/单日名义限额、币种白名单、日计数持久化、未结算 reservation 对账 | ✅ |
-| 安全 | paper 默认、live 三重门（key/切换确认/逐单确认；配置持久化后下次启动不再确认）、无头保护 | ✅ |
+| 安全 | paper 默认 `unattended`、live 默认 `confirm`（key/切换确认/逐单确认；live 切到 `unattended` 需确认）、无头保护 | ✅ |
 | 模型层 | 继承 pi：OpenAI/Anthropic/Google 等多 provider、`/login`、`/model` | ✅（上游） |
 | 会话层 | 继承 pi：会话持久化、`/new` `/resume` `/fork` `/compact` 等 | ✅（上游） |
 | 自动化 | `--print` 无头一次性模式 | ✅ |
@@ -174,6 +174,7 @@ live 模式的现货在交易历史完整且能与余额核对时返回手续费
 | `/trades [symbol]` | 历史订单 | 最近 20 条已完结订单 |
 | `/markets [n]` | 热门市场 | 按 24h quote 成交量排序，默认前 15，上限 50 |
 | `/mode [paper\|live]` | 查看/切换交易模式 | 切 live 需二次确认且有 key 校验；配置持久化后下次启动不再确认 |
+| `/approval [confirm\|unattended]` | 实盘订单审批 | 默认逐单确认；切到 `unattended` 需交互确认，之后 live 下单不再弹框 |
 | `/exchange [id]` | 查看/切换交易所 | ccxt 交易所 id，如 `okx` `bybit` |
 | `/market [type]` | 查看/切换市场类型 | `spot`、`usdm-futures` 或 `both`（`both` 仅 Paper） |
 | `/risk [show\|reset\|reconcile <id> commit\|release]` | 风控状态 | 限额、已用/预留额度、未结算占用；`reset` 二次确认后手动清零（paper 额度为累计制）；`reconcile` 在核对交易所后结算卡住的占用 |
@@ -286,8 +287,8 @@ interface ExchangeClient {
 | 默认安全 | 首次运行即 paper 模式；live 必须显式开启 |
 | 凭证隔离 | 交易所 key 独立存放于 `~/.ti-trader/agent/keys.json`（0600），与模型凭证分离 |
 | 切换确认 | `/mode live` 需交互确认，且预先校验该交易所 key 存在。切到 live 后写入 `trading.json`，下次启动按已保存模式进入，不再弹启动确认 |
-| 逐单确认 | live 模式每笔订单弹确认框（显示方向/数量/名义金额/当日累计），`confirmLiveOrders: false` 仅在显式 headless 工作流中关闭确认；引擎默认拒绝没有确认策略的 live 提交 |
-| 无头保护 | `--print`/RPC 等无 UI 场景下，若 `confirmLiveOrders: true`，live 下单一律拒绝——防止无人值守时误触实盘 |
+| 逐单确认 | Paper 默认 `orderApproval: "unattended"`，live 默认 `"confirm"`。live+confirm 每笔订单弹确认框。live+unattended 必须经 Settings 或 `/approval unattended` 交互确认后才能开启。切换模式会套用该模式的默认审批，除非同一次 patch 显式带了 `orderApproval` |
+| 无头保护 | `--print`/RPC 等无 UI 场景下，若审批仍是 `confirm`，live 下单一律拒绝——防止无人值守时误触实盘 |
 | Trigger | 实验性 `/trigger` 不是下单授权。live 与 `--print` 从不因 trigger 自动唤醒 agent |
 | 提示词约束 | 系统提示词内置仓位比例、下单前查余额、下单后必验证等规则（软约束） |
 
@@ -339,7 +340,7 @@ ti [options] [message...]
   "mode": "paper",
   "exchange": "okx",
   "quoteCurrency": "USDT",
-  "confirmLiveOrders": true,
+  "orderApproval": "unattended",
   "risk": { "maxOrderNotional": 500, "maxDailyNotional": 2000, "allowedSymbols": [] },
   "paper": { "startQuote": 10000, "feeRate": 0.001 }
 }

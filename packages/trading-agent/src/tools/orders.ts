@@ -30,6 +30,7 @@ import {
 	round,
 	symbolFilterSchema,
 	type TradingProvider,
+	UNATTENDED_LIVE_CONFIG_HINT,
 } from "./shared.ts";
 
 function requireExactlyOne(left: string | undefined, right: string | undefined, names: string): void {
@@ -422,7 +423,7 @@ export function createCheckOrderTool(
 					usage,
 					remainingDailyNotional: Math.max(0, usage.limit - usage.used - usage.reserved),
 				},
-				requiresLiveConfirmation: trading.mode === "live" && trading.config.confirmLiveOrders,
+				requiresLiveConfirmation: trading.mode === "live" && trading.config.orderApproval === "confirm",
 				validation: {
 					orderFilters: "deferred_to_place",
 					note: "A successful preflight is not an exchange acceptance or a reservation. ok_with_warnings still requires reviewing warnings and the live confirmation step.",
@@ -485,9 +486,7 @@ export function createCancelOrderTool(
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const trading = tradingProvider();
 			const cancelled = await confirmLiveRiskChange(ctx, trading, {
-				missingUiMessage:
-					"Cancelling live orders requires interactive confirmation but no UI is available. " +
-					"Set confirmLiveOrders=false in ~/.ti-trader/agent/trading.json to allow headless live trading.",
+				missingUiMessage: `Cancelling live orders requires interactive confirmation but no UI is available. ${UNATTENDED_LIVE_CONFIG_HINT}`,
 				title: `Confirm LIVE order cancellation on ${trading.tradingEngine.id}`,
 				summary: `Cancel order ${params.id} on ${params.symbol}. This may remove a protective stop-loss or OCO leg.`,
 				cancelledMessage: "Live order cancellation cancelled",
@@ -516,9 +515,7 @@ export function createCancelOrderListTool(
 		async execute(_id, params, signal, _onUpdate, ctx) {
 			const trading = tradingProvider();
 			const cancelled = await confirmLiveRiskChange(ctx, trading, {
-				missingUiMessage:
-					"Cancelling live order lists requires interactive confirmation but no UI is available. " +
-					"Set confirmLiveOrders=false in ~/.ti-trader/agent/trading.json to allow headless live trading.",
+				missingUiMessage: `Cancelling live order lists requires interactive confirmation but no UI is available. ${UNATTENDED_LIVE_CONFIG_HINT}`,
 				title: `Confirm LIVE order-list cancellation on ${trading.tradingEngine.id}`,
 				summary: `Cancel every open order in list ${params.orderListId} on ${params.symbol}. This may remove protective OCO legs.`,
 				cancelledMessage: "Live order-list cancellation cancelled",

@@ -11,6 +11,7 @@ import {
 	RiskCommitError,
 } from "@nikopack/ti-trading-engine";
 import type { TradingRuntime } from "../context.ts";
+import { liveOrdersRequireConfirmation } from "../state.ts";
 import { paperFuturesOrderUnsupported } from "./capabilities.ts";
 import {
 	errorMessage,
@@ -176,12 +177,17 @@ export function resolveExchangeAmount(
 
 const USER_CANCELLED_ORDER = "Order cancelled by user";
 
+export const UNATTENDED_LIVE_CONFIG_HINT =
+	"Set orderApproval to unattended in ~/.ti-trader/agent/trading.json to allow unattended live trading.";
+
 function needsLiveConfirmation(trading: TradingRuntime): boolean {
-	return trading.mode === "live" && trading.config.confirmLiveOrders;
+	return liveOrdersRequireConfirmation(trading.mode, trading.config.orderApproval);
 }
 
 function liveSubmissionOverride(trading: TradingRuntime): { allowUnconfirmedLive?: true } {
-	return trading.mode === "live" && !trading.config.confirmLiveOrders ? { allowUnconfirmedLive: true } : {};
+	return trading.mode === "live" && trading.config.orderApproval === "unattended"
+		? { allowUnconfirmedLive: true }
+		: {};
 }
 
 function liveOrderConfirm(
@@ -193,8 +199,7 @@ function liveOrderConfirm(
 	return async (summary) => {
 		if (!ctx.hasUI) {
 			throw new Error(
-				"Live orders require interactive confirmation but no UI is available. " +
-					"Set confirmLiveOrders=false in ~/.ti-trader/agent/trading.json to allow headless live trading.",
+				`Live orders require interactive confirmation but no UI is available. ${UNATTENDED_LIVE_CONFIG_HINT}`,
 			);
 		}
 		const usage = trading.tradingEngine.risk.usage();

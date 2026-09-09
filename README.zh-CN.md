@@ -6,7 +6,7 @@
 [![Node](https://img.shields.io/node/v/ti-trader.svg)](https://www.npmjs.com/package/ti-trader)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-AI 交易 agent CLI。默认 Paper 模拟盘。实盘下单需要确认。
+AI 交易 agent CLI。默认 Paper 模拟盘。实盘下单默认需要确认，可将订单审批设为 `unattended` 关闭逐单确认。
 
 基于 [Pi agent harness](https://github.com/earendil-works/pi)，通过 [ccxt](https://github.com/ccxt/ccxt) 连接交易所。Pi 的编码工具已全部移除。
 
@@ -48,7 +48,7 @@ npm install -g ti-trader
 
 - **模拟盘** — 本地账本、公开行情、手续费和盈亏，无需 API key
 - **实盘** — ccxt 适配器；密钥本地保存，权限 `600`。Paper 与 Binance 有离线契约覆盖，其他交易所仍属实验性
-- **风控** — 单笔和每日名义金额、币种白名单、实盘确认、持久化开仓暂停。未知提交不会自动重发
+- **风控** — 单笔和每日名义金额、币种白名单、实盘订单审批（默认 `confirm`；`unattended` 是显式无人值守开关）、持久化开仓暂停。未知提交不会自动重发
 - **恢复** — 启动时有界关联查询；`/recovery`、`/audit`、`/health`
 - **订单** — Paper 现货和支持的实盘市场提供市价、限价、止损、止盈、移动止损和 OCO；Paper 合约目前仅市价
 - **分析** — 内置 market-lab 指标和筛选，不会下单
@@ -59,7 +59,7 @@ npm install -g ti-trader
 | --- | --- |
 | `/settings` | 语言、模式、交易所、市场、密钥、风控、模拟账户、监控 |
 | `/balance` `/positions` `/orders` `/trades` `/markets` | 账户与市场视图 |
-| `/mode` `/exchange` `/market` | 切换运行时；live 需要密钥和确认 |
+| `/mode` `/exchange` `/market` `/approval` | 切换运行时或实盘订单审批；live 需要密钥；`unattended` 需要确认 |
 | `/risk pause` `/risk resume` | 暂停或恢复新增敞口。恢复必须交互确认 |
 | `/recovery` `/audit` `/health` | 执行记录、脱敏审计、本地开仓健康 |
 | `/trigger` | 持久化实验性条件。live 触发器只通知 |

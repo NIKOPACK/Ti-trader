@@ -64,6 +64,7 @@ describe("menu i18n", () => {
 			"trades",
 			"markets",
 			"mode",
+			"approval",
 			"exchange",
 			"market",
 			"risk",

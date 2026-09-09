@@ -65,6 +65,11 @@ export function resolveBundledMarketResearchExtension(): string {
 	return resolveBundledExtension("market-research");
 }
 
+/** Resolve the bundled subagent extension directory. */
+export function resolveBundledSubagentExtension(): string {
+	return resolveBundledExtension("subagent");
+}
+
 /**
  * Extra bundled extension directories to auto-load when their opt-in
  * credentials or flags are present. Does not include market-lab or market-chart.
@@ -79,6 +84,9 @@ export function resolveOptionalBundledExtensionPaths(): string[] {
 	}
 	if (envIsTruthyFlag("TI_MARKET_RESEARCH")) {
 		paths.push(resolveBundledMarketResearchExtension());
+	}
+	if (envIsTruthyFlag("TI_SUBAGENT")) {
+		paths.push(resolveBundledSubagentExtension());
 	}
 	return paths;
 }
@@ -98,6 +106,9 @@ export function optionalBundledResearchToolNames(): string[] {
 	}
 	if (envIsTruthyFlag("TI_MARKET_RESEARCH")) {
 		names.push("market_research");
+	}
+	if (envIsTruthyFlag("TI_SUBAGENT")) {
+		names.push("subagent");
 	}
 	return names;
 }

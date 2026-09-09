@@ -2,10 +2,16 @@ import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@e
 import type { Balance } from "@nikopack/ti-trading-engine";
 import { AccountSwitchConfirmationRequired, getTrading } from "./context.ts";
 import { isSupportedExchangeId } from "./exchanges.ts";
-import { t, translate } from "./i18n.ts";
+import { orderApprovalLabel, t, translate } from "./i18n.ts";
 import { loginExchange, openTradingSettings } from "./settings-menu.ts";
 import { wrapTradingAutocomplete } from "./slash-autocomplete.ts";
-import { loadExchangeKeys, type MarketType, type TradingLanguage, type TradingMode } from "./state.ts";
+import {
+	isOrderApprovalMode,
+	loadExchangeKeys,
+	type MarketType,
+	type TradingLanguage,
+	type TradingMode,
+} from "./state.ts";
 import { padEndWidth, padStartWidth, renderTradingTable, type TableData, type TableLine } from "./table.ts";
 import { formatTradingVenue } from "./venue.ts";
 
@@ -382,7 +388,7 @@ export function createTradingExtension() {
 					}
 					liveConfirmed = await ctx.ui.confirm(
 						t(language, "confirmLiveTitle"),
-						`${translate(language, "confirmLiveMessage", { exchange: trading.config.exchange })} ${translate(language, "confirmLiveOrdersState", { state: t(language, trading.config.confirmLiveOrders ? "on" : "off") })}`,
+						`${translate(language, "confirmLiveMessage", { exchange: trading.config.exchange })} ${translate(language, "orderApprovalState", { state: orderApprovalLabel(language, trading.config.orderApproval) })}`,
 					);
 					if (!liveConfirmed) {
 						ctx.ui.notify(t(language, "stayedPaper"), "info");
@@ -407,6 +413,62 @@ export function createTradingExtension() {
 						},
 					]);
 					ctx.ui.notify(translate(language, "notifyMode", { mode: target }), "info");
+				} catch (error) {
+					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+				}
+			},
+		});
+
+		pi.registerCommand("approval", {
+			description: "Show or switch live order approval. Usage: /approval [confirm|unattended]",
+			handler: async (args, ctx) => {
+				const trading = getTrading();
+				const target = args.trim().toLowerCase();
+				if (!target) {
+					await openSettings(ctx);
+					return;
+				}
+				const language = trading.config.language;
+				if (!isOrderApprovalMode(target)) {
+					ctx.ui.notify(translate(language, "unknownApproval", { target }), "error");
+					return;
+				}
+				if (trading.config.orderApproval === target) {
+					ctx.ui.notify(
+						translate(language, "notifyApproval", { state: orderApprovalLabel(language, target) }),
+						"info",
+					);
+					return;
+				}
+				if (target === "unattended") {
+					if (!ctx.hasUI) {
+						ctx.ui.notify(t(language, "approvalUnattendedNeedsUi"), "error");
+						return;
+					}
+					const confirmed = await ctx.ui.confirm(
+						t(language, "confirmUnattendedTitle"),
+						t(language, "confirmUnattendedMessage"),
+					);
+					if (!confirmed) {
+						ctx.ui.notify(t(language, "approvalUnchanged"), "info");
+						return;
+					}
+				}
+				try {
+					await waitForIdleBeforeMutation(ctx);
+					if (getTrading() !== trading) throw new Error(t(language, "riskRuntimeChanged"));
+					await trading.setOrderApproval(target, { confirmUnattendedTrading: target === "unattended" });
+					const state = orderApprovalLabel(language, target);
+					show(t(language, "titleApproval"), [
+						{
+							text: translate(language, "switchedApproval", { state }),
+							tone: target === "unattended" ? "warn" : undefined,
+						},
+					]);
+					ctx.ui.notify(
+						translate(language, "notifyApproval", { state }),
+						target === "unattended" ? "warning" : "info",
+					);
 				} catch (error) {
 					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
 				}
@@ -666,8 +728,8 @@ export function createTradingExtension() {
 						symbols:
 							risk.allowedSymbols.length > 0 ? risk.allowedSymbols.join(", ") : t(language, "riskAllowedAll"),
 					}),
-					translate(language, "riskConfirmLiveLine", {
-						value: t(language, trading.config.confirmLiveOrders ? "yes" : "no"),
+					translate(language, "riskOrderApprovalLine", {
+						value: orderApprovalLabel(language, trading.config.orderApproval),
 					}),
 					...(pending.length === 0
 						? [t(language, "riskUnsettledNone")]

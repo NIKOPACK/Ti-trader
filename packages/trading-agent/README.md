@@ -80,11 +80,12 @@ node packages/trading-agent/dist/cli.js --mode paper --exchange binance
 
 首次运行用 `/login` 配置模型 Provider；使用 `/settings` 或 `/exchange-login` 配置交易所 API。交易所支持 Binance（币安）、OKX、Bybit。语言、模式和市场类型在 `/settings` 中切换，设置保存于 `~/.ti-trader/agent/trading.json`。模型认证存于 `~/.ti-trader/agent/auth.json`，交易所 API key 存于 `~/.ti-trader/agent/keys.json`，与 pi coding agent 隔离。
 
-可选扩展位于仓库根目录 `extensions/`，发布包仍全部打进 `ti-trader/dist/`。默认自动加载只有 `market-lab` 和 `market-chart`。其余三个按条件加载，也可用 `--extension <path>` 显式加载（可重复指定）；`--no-extensions` 禁用自动发现的用户扩展：
+可选扩展位于仓库根目录 `extensions/`，发布包仍全部打进 `ti-trader/dist/`。默认自动加载只有 `market-lab` 和 `market-chart`。其余四个按条件加载，也可用 `--extension <path>` 显式加载（可重复指定）；`--no-extensions` 禁用自动发现的用户扩展：
 
 - `web-search`：`TAVILY_API_KEY` 去空白后非空
 - `zhihu-research`：`ZHIHU_ACCESS_SECRET` 去空白后非空，或密钥文件存在且含非空白内容。默认文件为 `~/.ti-trader/agent/zhihu-access-secret`，可用 `TI_ZHIHU_ACCESS_SECRET_FILE` 覆盖
 - `market-research`：`TI_MARKET_RESEARCH` 为 `1`、`true` 或 `yes`（去空白、不区分大小写）
+- `subagent`：`TI_SUBAGENT` 为 `1`、`true` 或 `yes`（去空白、不区分大小写）。只读隔离子代理，不能交易
 
 交易所 ccxt 连接、订单规划、风控和保护逻辑属于 `@nikopack/ti-trading-engine`；agent 通过 `marketData` 读取市场和账户数据，通过 `tradingEngine` 执行规划、风控与订单编排。
 
@@ -101,7 +102,7 @@ node packages/trading-agent/dist/cli.js --mode paper --exchange binance
 	"marginType": "isolated",
 	"positionMode": "one-way",
 	"quoteCurrency": "USDT",
-	"confirmLiveOrders": true,
+	"orderApproval": "unattended",
 	"risk": { "maxOrderNotional": 500, "maxDailyNotional": 2000, "allowedSymbols": [] },
 	"paper": { "startQuote": 10000, "feeRate": 0.001 },
 	"monitor": {
@@ -253,6 +254,7 @@ extensions/
   market-lab/           默认只读量化（指标、筛选、回放）
   market-chart/         默认只读图表（show_market_view /chart）
   market-research/      按需加载的市场研究子代理（TI_MARKET_RESEARCH）
+  subagent/             按需加载的只读隔离子代理（TI_SUBAGENT）
   web-search/           按需加载的公开互联网研究（TAVILY_API_KEY）
   zhihu-research/       按需加载的知乎全网搜索（ZHIHU_ACCESS_SECRET 或密钥文件）
 ```

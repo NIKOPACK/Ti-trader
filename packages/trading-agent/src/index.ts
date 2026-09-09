@@ -40,6 +40,7 @@ export {
 	getTrading,
 	initTrading,
 	TradingRuntime,
+	UnattendedTradingConfirmationRequired,
 } from "./context.ts";
 export { createOperationalHealthExtension, readOperationalHealth } from "./health.ts";
 export { main } from "./main.ts";
@@ -57,6 +58,7 @@ export {
 	loadExchangeKeys,
 	loadTradingConfig,
 	type MarketType,
+	type OrderApprovalMode,
 	type RiskLimits,
 	saveExchangeKeys,
 	saveTradingConfig,

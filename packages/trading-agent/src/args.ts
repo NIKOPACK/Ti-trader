@@ -106,7 +106,7 @@ Options:
   -v, --version           Show version
 
 Trading commands (interactive mode):
-  /settings    Trading settings (language, mode, exchange, market, keys, risk, paper, monitor)
+  /settings    Trading settings (language, mode, approval, exchange, market, keys, risk, paper, monitor)
   /balance     Account balances with valuation
   /positions   Holdings with entry price and PnL
   /orders      Open orders
@@ -114,6 +114,7 @@ Trading commands (interactive mode):
   /markets     Top markets by volume
   /language    Change TUI language (中文 / English)
   /mode        Show/switch paper|live
+  /approval    Show/switch confirm|unattended live order approval
   /exchange    Show/switch exchange
   /market      Show/switch spot|usdm-futures|both
   /risk        Limits, usage, pause/resume and legacy reservation reconciliation

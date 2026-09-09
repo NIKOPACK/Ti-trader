@@ -35,7 +35,7 @@ grants that access or crosses an operating-system privilege boundary.
 - Behavior of extensions or skills installed by the user.
 - Exposed secrets that are third-party/user-controlled credentials.
 - Issues caused by intentionally weakened configuration (e.g.
-  `confirmLiveOrders: false`).
+  `orderApproval: "unattended"`).
 
 ## Credential handling
 

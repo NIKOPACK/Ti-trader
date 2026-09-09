@@ -9,10 +9,11 @@ const trading = vi.hoisted(() => ({
 		exchange: "okx",
 		marketType: "spot" as const,
 		quoteCurrency: "USDT",
-		confirmLiveOrders: true,
+		orderApproval: "confirm" as "confirm" | "unattended",
 		risk: { maxOrderNotional: 500, maxDailyNotional: 2000, allowedSymbols: [] as string[] },
 	},
 	setMode: vi.fn(async (_mode: "paper" | "live") => {}),
+	setOrderApproval: vi.fn(async (_mode: "confirm" | "unattended") => {}),
 	close: vi.fn(async () => {}),
 	resolveExecution: vi.fn(),
 	resolveMaintenance: vi.fn(),
@@ -84,11 +85,11 @@ function registerCommands(): Map<string, RegisteredCommand> {
 	return commands;
 }
 
-function commandContext(idle: boolean, confirm = true): ExtensionCommandContext {
+function commandContext(idle: boolean, confirm = true, hasUI = true): ExtensionCommandContext {
 	return {
 		isIdle: vi.fn(() => idle),
 		waitForIdle: vi.fn(async () => {}),
-		hasUI: true,
+		hasUI,
 		ui: {
 			notify: vi.fn(),
 			setStatus: vi.fn(),
@@ -105,6 +106,7 @@ describe("trading commands", () => {
 		vi.clearAllMocks();
 		shutdownHandler = undefined;
 		sessionStartHandlers.length = 0;
+		trading.config.orderApproval = "confirm";
 		trading.tradingEngine.listExecutions.mockReturnValue([]);
 		trading.tradingEngine.getExecutionStatus.mockReturnValue({ maintenance: undefined });
 	});
@@ -216,6 +218,7 @@ describe("trading commands", () => {
 			"trades",
 			"markets",
 			"mode",
+			"approval",
 			"exchange",
 			"market",
 			"risk",
@@ -368,6 +371,66 @@ describe("trading commands", () => {
 		expect(vi.mocked(ctx.waitForIdle).mock.invocationCallOrder[0]).toBeLessThan(
 			trading.setMode.mock.invocationCallOrder[0],
 		);
+	});
+
+	it("opens trading settings when /approval is invoked without arguments", async () => {
+		const command = registerCommands().get("approval");
+		if (!command) throw new Error("approval command was not registered");
+		const ctx = commandContext(true);
+
+		await command.handler("", ctx);
+
+		expect(settingsMenu.openTradingSettings).toHaveBeenCalledOnce();
+		expect(trading.setOrderApproval).not.toHaveBeenCalled();
+	});
+
+	it("requires confirmation before switching order approval to unattended", async () => {
+		const command = registerCommands().get("approval");
+		if (!command) throw new Error("approval command was not registered");
+		const ctx = commandContext(true);
+
+		await command.handler("unattended", ctx);
+
+		expect(ctx.ui.confirm).toHaveBeenCalledOnce();
+		expect(trading.setOrderApproval).toHaveBeenCalledWith("unattended", { confirmUnattendedTrading: true });
+	});
+
+	it("does not switch order approval to unattended when confirmation is declined", async () => {
+		const command = registerCommands().get("approval");
+		if (!command) throw new Error("approval command was not registered");
+		const ctx = commandContext(true, false);
+
+		await command.handler("unattended", ctx);
+
+		expect(trading.setOrderApproval).not.toHaveBeenCalled();
+		expect(ctx.waitForIdle).not.toHaveBeenCalled();
+	});
+
+	it("rejects headless /approval unattended without changing config", async () => {
+		const command = registerCommands().get("approval");
+		if (!command) throw new Error("approval command was not registered");
+		const ctx = commandContext(true, true, false);
+
+		await command.handler("unattended", ctx);
+
+		expect(ctx.ui.confirm).not.toHaveBeenCalled();
+		expect(trading.setOrderApproval).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Switching to unattended live trading requires interactive confirmation",
+			"error",
+		);
+	});
+
+	it("switches back to confirm without an extra confirmation", async () => {
+		trading.config.orderApproval = "unattended";
+		const command = registerCommands().get("approval");
+		if (!command) throw new Error("approval command was not registered");
+		const ctx = commandContext(true);
+
+		await command.handler("confirm", ctx);
+
+		expect(ctx.ui.confirm).not.toHaveBeenCalled();
+		expect(trading.setOrderApproval).toHaveBeenCalledWith("confirm", { confirmUnattendedTrading: false });
 	});
 
 	it("reconciles a pending reservation after confirmation", async () => {
