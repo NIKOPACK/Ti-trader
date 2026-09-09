@@ -7,6 +7,8 @@ import marketLabExtension, {
 	parseLabArgs,
 	parseScreenArgs,
 	screenMarkets,
+	sessionSymbol,
+	setMarketLabCandleProvider,
 } from "../../../extensions/market-lab/index.ts";
 import {
 	type Candle,
@@ -48,7 +50,10 @@ function fallingCandles(count: number): Candle[] {
 	});
 }
 
-afterEach(() => vi.restoreAllMocks());
+afterEach(() => {
+	vi.restoreAllMocks();
+	setMarketLabCandleProvider(undefined);
+});
 
 describe("market-lab", () => {
 	it("registers remaining lab tools and not the removed duplicates", () => {
@@ -72,6 +77,31 @@ describe("market-lab", () => {
 		expect(binanceSymbol("btc/usdt")).toBe("BTCUSDT");
 		expect(() => binanceSymbol("BTC/USDT:USDT")).toThrow();
 		expect(() => binanceSymbol("BTC/JPY")).toThrow();
+	});
+
+	it("accepts session futures symbols only through the session path", () => {
+		expect(sessionSymbol("btc/usdt:usdt")).toBe("BTC/USDT:USDT");
+		expect(() => sessionSymbol("BTC/JPY")).not.toThrow();
+		expect(() => sessionSymbol("BTCUSDT")).toThrow(/session market symbol/);
+	});
+
+	it("uses a session candle provider instead of Binance public klines", async () => {
+		const fetchSpy = vi.spyOn(globalThis, "fetch");
+		setMarketLabCandleProvider(async () => ({
+			candles: Array.from({ length: 20 }, (_, index) => ({
+				timestamp: (index + 1) * 3_600_000,
+				open: 100,
+				high: 101,
+				low: 99,
+				close: 100,
+				volume: 10,
+			})),
+			source: { venue: "okx", market: "spot", kind: "session-klines", mode: "paper" },
+		}));
+		const result = await analyze({ symbol: "BTC/USDT", timeframe: "1h", limit: 20 });
+		expect(fetchSpy).not.toHaveBeenCalled();
+		expect(result.source).toEqual({ venue: "okx", market: "spot", kind: "session-klines", mode: "paper" });
+		expect(result.warnings[0]).toContain("okx");
 	});
 
 	it("calculates stable indicators after enough candles", () => {
@@ -106,6 +136,7 @@ describe("market-lab", () => {
 		const result = await analyze({ symbol: "BTC/USDT", timeframe: "1h", limit: 60 });
 		expect(result.bias).toBe("neutral");
 		expect(result.reasons).toContain("EMA20 equals EMA50");
+		expect(result.source).toEqual({ venue: "binance", market: "spot", kind: "binance-public-klines" });
 	});
 
 	it("keeps every calculated number finite when all volumes are zero", () => {

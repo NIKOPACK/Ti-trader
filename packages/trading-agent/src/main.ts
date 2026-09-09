@@ -25,6 +25,7 @@ import { AGENT_DIR, APP_NAME, CONFIG_DIR_NAME, ensureAgentDir } from "./config.t
 import { getTrading, initTrading } from "./context.ts";
 import { createOperationalHealthExtension } from "./health.ts";
 import { localizeDescription } from "./i18n.ts";
+import { installMarketLabSessionBridge } from "./market-lab-bridge.ts";
 import { createOrderMonitorExtension } from "./monitor.ts";
 import { createProjectTrustContext, resolveProjectTrusted } from "./project-trust.ts";
 import { buildTradingPrompt } from "./prompt.ts";
@@ -99,6 +100,7 @@ export async function main(argv: string[]): Promise<void> {
 
 	// Trading runtime: config + exchange client (paper by default, live needs keys).
 	const trading = await initTrading({ mode: parsed.mode, exchange: parsed.exchange });
+	installMarketLabSessionBridge();
 
 	const sessionManager = SessionManager.create(cwd, getTradingSessionDir(cwd, agentDir));
 

@@ -4,6 +4,10 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Market-lab indicators, scans and replays use this session's `get_klines` and stamp `source`. Without the session bridge they still use Binance public spot klines and mark `kind: "binance-public-klines"`.
+
 ## [0.2.0] - 2026-09-08
 
 ### Breaking Changes

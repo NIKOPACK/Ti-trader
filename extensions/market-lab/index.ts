@@ -17,6 +17,8 @@ import {
 } from "./strategies.ts";
 
 const BINANCE_API = "https://api.binance.com";
+/** Shared with `packages/trading-agent/src/market-lab-bridge.ts` via `Symbol.for`. */
+export const MARKET_LAB_CANDLE_PROVIDER_KEY = Symbol.for("ti.marketLab.candleProvider");
 const MAX_CANDLES = 200;
 const REQUEST_TIMEOUT_MS = 10_000;
 const MAX_RESPONSE_BYTES = 256 * 1024;
@@ -31,7 +33,7 @@ const presetSchema = Type.Optional(
 	}),
 );
 const marketFields = {
-	symbol: Type.String({ description: 'Spot symbol, e.g. "BTC/USDT".' }),
+	symbol: Type.String({ description: 'Session market symbol, e.g. "BTC/USDT" or "BTC/USDT:USDT".' }),
 	timeframe: Type.Optional(Type.String({ description: "Binance interval, e.g. 1m, 15m, 1h, 4h, 1d. Default 1h." })),
 	limit: Type.Optional(
 		Type.Integer({ minimum: 20, maximum: MAX_CANDLES, description: "Closed candles to use. Default 100." }),
@@ -51,10 +53,10 @@ const strategySchema = Type.Object({
 const MAX_SCREEN_SYMBOLS = 8;
 const SAMPLE_TRADES = 10;
 const screenSchema = Type.Object({
-	symbols: Type.Array(Type.String({ description: 'Spot symbol, e.g. "BTC/USDT".' }), {
+	symbols: Type.Array(Type.String({ description: 'Session market symbol, e.g. "BTC/USDT".' }), {
 		minItems: 1,
 		maxItems: MAX_SCREEN_SYMBOLS,
-		description: "Spot symbols to scan. 1-8 items.",
+		description: "Session-market symbols to scan. 1-8 items.",
 	}),
 	timeframe: marketFields.timeframe,
 	limit: marketFields.limit,
@@ -88,6 +90,38 @@ type ScreenParams = {
 	limit?: number;
 	preset?: StrategyPreset;
 };
+
+export type MarketLabSource = {
+	venue: string;
+	market: "spot" | "swap";
+	kind: "session-klines" | "binance-public-klines";
+	mode?: "paper" | "live";
+};
+
+export type MarketLabCandleProvider = (params: {
+	symbol: string;
+	timeframe: string;
+	limit: number;
+	signal?: AbortSignal;
+}) => Promise<{ candles: Candle[]; source: MarketLabSource }>;
+
+export function setMarketLabCandleProvider(provider: MarketLabCandleProvider | undefined): void {
+	const holders = globalThis as Record<PropertyKey, unknown>;
+	if (provider === undefined) delete holders[MARKET_LAB_CANDLE_PROVIDER_KEY];
+	else holders[MARKET_LAB_CANDLE_PROVIDER_KEY] = provider;
+}
+
+function getMarketLabCandleProvider(): MarketLabCandleProvider | undefined {
+	const value = (globalThis as Record<PropertyKey, unknown>)[MARKET_LAB_CANDLE_PROVIDER_KEY];
+	return typeof value === "function" ? (value as MarketLabCandleProvider) : undefined;
+}
+
+function sourceWarning(source: MarketLabSource): string {
+	if (source.kind === "session-klines") {
+		return `Data source is this session's ${source.venue} ${source.market} klines (same as get_klines).`;
+	}
+	return "Data source is Binance public spot klines (no session market-data bridge).";
+}
 
 function jsonResult(data: unknown) {
 	return { content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }], details: data };
@@ -168,7 +202,7 @@ function uniqueSymbols(symbols: string[]): string[] {
 		seen.add(symbol);
 		output.push(symbol);
 	}
-	if (output.length === 0) throw new Error("At least one spot symbol is required");
+	if (output.length === 0) throw new Error("At least one symbol is required");
 	if (output.length > MAX_SCREEN_SYMBOLS) throw new Error(`Screen at most ${MAX_SCREEN_SYMBOLS} symbols`);
 	return output;
 }
@@ -184,14 +218,62 @@ function binanceSymbol(symbol: string): string {
 	return parts.join("");
 }
 
+function sessionSymbol(symbol: string): string {
+	const text = symbol.trim().toUpperCase();
+	if (/^[A-Z0-9]{2,20}\/[A-Z0-9]{2,20}$/.test(text)) return text;
+	if (/^[A-Z0-9]{2,20}\/[A-Z0-9]{2,20}:[A-Z0-9]{2,20}$/.test(text)) return text;
+	throw new Error("Use a session market symbol such as BTC/USDT or BTC/USDT:USDT");
+}
+
+function candleFromValues(values: number[]): Candle {
+	if (values.some((value) => !Number.isFinite(value))) throw new Error("Market data contained a non-finite value");
+	if (
+		values[0] <= 0 ||
+		values[1] <= 0 ||
+		values[2] < values[1] ||
+		values[3] > values[1] ||
+		values[3] <= 0 ||
+		values[2] < values[3] ||
+		values[4] < values[3] ||
+		values[4] > values[2] ||
+		values[5] < 0
+	) {
+		throw new Error("Market data candle had invalid OHLCV values");
+	}
+	return {
+		timestamp: values[0],
+		open: values[1],
+		high: values[2],
+		low: values[3],
+		close: values[4],
+		volume: values[5],
+	};
+}
+
+function finalizeCandles(candles: Candle[], symbol: string, timeframe: string, source: MarketLabSource) {
+	for (const candle of candles)
+		candleFromValues([candle.timestamp, candle.open, candle.high, candle.low, candle.close, candle.volume]);
+	for (let index = 1; index < candles.length; index++)
+		if (candles[index].timestamp <= candles[index - 1].timestamp)
+			throw new Error("Market data candles were not ordered");
+	if (candles.length < 20) throw new Error("Not enough closed candles for analysis");
+	return { symbol: symbol.toUpperCase(), timeframe, candles, source };
+}
+
 async function fetchCandles(
 	params: MarketParams,
 	signal?: AbortSignal,
-): Promise<{ symbol: string; timeframe: string; candles: Candle[] }> {
-	const symbol = binanceSymbol(params.symbol);
+): Promise<{ symbol: string; timeframe: string; candles: Candle[]; source: MarketLabSource }> {
 	const timeframe = params.timeframe?.trim() || "1h";
 	if (!TIMEFRAMES.has(timeframe)) throw new Error(`Unsupported timeframe: ${timeframe}`);
 	const limit = Math.min(Math.max(Math.floor(params.limit ?? 100), 20), MAX_CANDLES);
+	const provider = getMarketLabCandleProvider();
+	if (provider) {
+		const symbol = sessionSymbol(params.symbol);
+		const result = await provider({ symbol, timeframe, limit, signal });
+		return finalizeCandles(result.candles, params.symbol, timeframe, result.source);
+	}
+	const symbol = binanceSymbol(params.symbol);
 	const controller = new AbortController();
 	const timeout = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 	const relay = (): void => controller.abort();
@@ -237,35 +319,13 @@ async function fetchCandles(
 		if (!Array.isArray(payload)) throw new Error("Market data response was invalid");
 		const candles = payload.slice(0, -1).map((row): Candle => {
 			if (!Array.isArray(row) || row.length < 6) throw new Error("Market data candle was invalid");
-			const values = row.slice(0, 6).map(Number);
-			if (values.some((value) => !Number.isFinite(value)))
-				throw new Error("Market data contained a non-finite value");
-			if (
-				values[0] <= 0 ||
-				values[1] <= 0 ||
-				values[2] < values[1] ||
-				values[3] > values[1] ||
-				values[3] <= 0 ||
-				values[2] < values[3] ||
-				values[4] < values[3] ||
-				values[4] > values[2] ||
-				values[5] < 0
-			)
-				throw new Error("Market data candle had invalid OHLCV values");
-			return {
-				timestamp: values[0],
-				open: values[1],
-				high: values[2],
-				low: values[3],
-				close: values[4],
-				volume: values[5],
-			};
+			return candleFromValues(row.slice(0, 6).map(Number));
 		});
-		for (let index = 1; index < candles.length; index++)
-			if (candles[index].timestamp <= candles[index - 1].timestamp)
-				throw new Error("Market data candles were not ordered");
-		if (candles.length < 20) throw new Error("Not enough closed candles for analysis");
-		return { symbol: params.symbol.toUpperCase(), timeframe, candles };
+		return finalizeCandles(candles, params.symbol, timeframe, {
+			venue: "binance",
+			market: "spot",
+			kind: "binance-public-klines",
+		});
 	} catch (error) {
 		if (controller.signal.aborted) throw new Error("Market data request timed out or was cancelled");
 		throw error;
@@ -301,7 +361,7 @@ async function analyze(params: MarketParams, signal?: AbortSignal) {
 			reasons.push(`Latest volume is ${latest.volumeRatio.toFixed(2)}x its ${periods.volumeSma}-candle average`);
 		}
 	}
-	const warnings = ["Data source is Binance public spot market data, not account data.", ...evaluation.warnings];
+	const warnings = [sourceWarning(data.source), ...evaluation.warnings];
 	if ((latest.emaSlow ?? latest.ema50) === undefined) {
 		warnings.push(`Fewer than ${periods.emaSlow} candles were available; slow EMA is unavailable.`);
 	}
@@ -312,6 +372,7 @@ async function analyze(params: MarketParams, signal?: AbortSignal) {
 				? "medium"
 				: "low";
 	return {
+		source: data.source,
 		symbol: data.symbol,
 		timeframe: data.timeframe,
 		candleCount: data.candles.length,
@@ -353,6 +414,7 @@ async function screenMarkets(params: ScreenParams, signal?: AbortSignal) {
 		try {
 			const result = await analyze({ symbol, timeframe: params.timeframe, limit: params.limit, preset }, signal);
 			rows.push({
+				source: result.source,
 				symbol: result.symbol,
 				timeframe: result.timeframe,
 				close: result.latest.close,
@@ -376,14 +438,20 @@ async function screenMarkets(params: ScreenParams, signal?: AbortSignal) {
 		if (rank !== 0) return rank;
 		return String(left.symbol).localeCompare(String(right.symbol));
 	});
+	const source = (rows.find((row) => row.source !== undefined)?.source ?? {
+		venue: getMarketLabCandleProvider() ? "session" : "binance",
+		market: "spot",
+		kind: getMarketLabCandleProvider() ? "session-klines" : "binance-public-klines",
+	}) as MarketLabSource;
 	return {
+		source,
 		timeframe: params.timeframe?.trim() || "1h",
 		preset,
 		scanned: symbols.length,
 		failed: rows.filter((row) => row.error !== undefined).length,
 		rows,
 		warnings: [
-			"Data source is Binance public spot market data, not account data.",
+			sourceWarning(source),
 			"This is a read-only scan; no order was created.",
 			"Volume ranking from get_top_markets is not a signal.",
 		],
@@ -405,6 +473,7 @@ async function replayRule(params: MarketParams, signal?: AbortSignal) {
 	const points = calculateIndicators(data.candles, periods);
 	const replay = simulateRule(points, data.candles, preset, periods, horizon);
 	return {
+		source: data.source,
 		symbol: data.symbol,
 		timeframe: data.timeframe,
 		closedThrough: new Date(data.candles.at(-1)?.timestamp ?? 0).toISOString(),
@@ -430,7 +499,7 @@ async function replayRule(params: MarketParams, signal?: AbortSignal) {
 			returnPct: Number(trade.returnPct.toFixed(8)),
 			at: new Date(trade.timestamp).toISOString(),
 		})),
-		warnings: ["Data source is Binance public spot market data, not account data.", ...replay.warnings],
+		warnings: [sourceWarning(data.source), ...replay.warnings],
 	};
 }
 
@@ -453,13 +522,14 @@ export default function marketLabExtension(pi: ExtensionAPI): void {
 	};
 	register(
 		"calculate_indicators",
-		"Read-only technical indicators from closed public Binance spot candles. Does not execute trades.",
+		"Read-only technical indicators from this session's closed klines (same source as get_klines). Does not execute trades.",
 		indicatorSchema,
 		async (params, signal) => {
 			const periods = periodsFromParams(params);
 			const data = await fetchCandles(params, signal);
 			const points = calculateIndicators(data.candles, periods);
 			return {
+				source: data.source,
 				symbol: data.symbol,
 				timeframe: data.timeframe,
 				candleCount: points.length,
@@ -467,7 +537,7 @@ export default function marketLabExtension(pi: ExtensionAPI): void {
 				periods,
 				latest: { close: points.at(-1)?.close, ...rounded(points.at(-1)) },
 				warnings: [
-					"Public Binance spot data only; no account or order access.",
+					sourceWarning(data.source),
 					"The currently forming candle was excluded.",
 					"This is analysis only; no order was created.",
 				],
@@ -483,7 +553,7 @@ export default function marketLabExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "screen_markets",
 		label: "screen_markets",
-		description: "Read-only scan of up to 8 Binance spot symbols with a named preset. Does not execute trades.",
+		description: "Read-only scan of up to 8 session-market symbols with a named preset. Does not execute trades.",
 		parameters: screenSchema,
 		async execute(_id, params, signal) {
 			return jsonResult(await screenMarkets(params as ScreenParams, signal));
@@ -492,7 +562,8 @@ export default function marketLabExtension(pi: ExtensionAPI): void {
 	pi.registerTool({
 		name: "simulate_rule",
 		label: "simulate_rule",
-		description: "Replay a named preset on closed Binance spot candles. Not a backtest and never places an order.",
+		description:
+			"Replay a named preset on this session's closed klines (same source as get_klines). Not a backtest and never places an order.",
 		parameters: replaySchema,
 		async execute(_id, params, signal) {
 			return jsonResult(await replayRule(params as MarketParams, signal));
@@ -570,7 +641,7 @@ export default function marketLabExtension(pi: ExtensionAPI): void {
 	});
 }
 
-export { analyze, binanceSymbol, fetchCandles, replayRule, screenMarkets };
+export { analyze, binanceSymbol, fetchCandles, replayRule, screenMarkets, sessionSymbol };
 export {
 	calculateIndicators,
 	DEFAULT_INDICATOR_PERIODS,

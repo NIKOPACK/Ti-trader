@@ -56,13 +56,13 @@ describe("trading prompt", () => {
 		expect(prompt).not.toContain("generate_trade_signal");
 	});
 
-	it("treats market-lab output as Binance public spot background, not a venue-native signal", () => {
-		const prompt = promptFor({ exchange: "binance", marketType: "usdm-futures" });
+	it("treats market-lab as session klines when the Ti bridge is installed", () => {
+		const prompt = promptFor({ exchange: "okx", marketType: "spot" });
 
-		expect(prompt).toContain("Binance public SPOT closed klines only");
-		expect(prompt).toContain("does not follow the session exchange");
-		expect(prompt).toContain("not USDⓈ-M or other-venue data");
-		expect(prompt).toContain("never as a fillable signal for the active venue");
+		expect(prompt).toContain("same market-data klines as `get_klines`");
+		expect(prompt).toContain('kind: "session-klines"');
+		expect(prompt).toContain('kind: "binance-public-klines"');
+		expect(prompt).toContain("BTC/USDT:USDT");
 	});
 
 	it("documents show_market_view as a TUI chart after stated levels", () => {
