@@ -13,6 +13,7 @@ import {
 	type RiskStateStore,
 	TradingEngine,
 	type TradingEngineConfig,
+	validateLiveVenueCredentials,
 } from "@nikopack/ti-trading-engine";
 import { PAPER_DIR } from "./config.ts";
 import type { MonitoringScope } from "./monitoring-state.ts";
@@ -559,6 +560,7 @@ export class TradingRuntime {
 					`{ "${exchange}": { "apiKey": "...", "secret": "..." } }`,
 			);
 		}
+		validateLiveVenueCredentials(exchange, keys);
 		const client = new CcxtExchangeClient(
 			exchange,
 			quoteCurrency,

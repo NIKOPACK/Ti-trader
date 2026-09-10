@@ -81,6 +81,10 @@ describe("menu i18n", () => {
 			"trigger",
 			"zhihu",
 			"zhihu-login",
+			"ft-status",
+			"ft-backtest",
+			"ft-signal",
+			"ft-login",
 		];
 		for (const name of commands) expect(SLASH_DESCRIPTION_KEYS[name], name).toBeDefined();
 	});

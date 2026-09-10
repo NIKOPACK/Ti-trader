@@ -21,10 +21,13 @@ const RESEARCH_TOOL_NAMES = [
 	"subagent",
 ] as const;
 
+const FREQTRADE_TOOL_NAMES = ["freqtrade_status", "freqtrade_backtest", "freqtrade_signals"] as const;
+
 const KNOWN_PROMPT_TOOL_NAMES = new Set<string>([
 	...NATIVE_TRADING_TOOL_NAMES,
 	...BUNDLED_ANALYSIS_TOOL_NAMES,
 	...RESEARCH_TOOL_NAMES,
+	...FREQTRADE_TOOL_NAMES,
 ]);
 
 /** Native tools plus always-on market-lab and market-chart. */
@@ -209,6 +212,53 @@ ${toolNotes}
 - Never claim you executed a trade unless a buy/sell tool call actually succeeded.`;
 }
 
+function analyzeToolNames(has: (name: string) => boolean): string[] {
+	const names: string[] = [];
+	if (has("calculate_indicators")) names.push("`calculate_indicators`");
+	if (has("evaluate_strategy")) names.push("`evaluate_strategy`");
+	if (has("simulate_rule")) names.push("`simulate_rule`");
+	if (has("freqtrade_backtest")) names.push("`freqtrade_backtest`");
+	if (has("freqtrade_signals")) names.push("`freqtrade_signals`");
+	return names;
+}
+
+function buildAnalyzeStep(has: (name: string) => boolean): LoopStep {
+	const hasLab =
+		has("calculate_indicators") || has("evaluate_strategy") || has("simulate_rule") || has("screen_markets");
+	const tools = analyzeToolNames(has);
+	const rules: string[] = [
+		hasLab
+			? "Do not invent EMA/RSI/MACD/ATR values from raw klines. These tools never place orders."
+			: "Do not invent EMA/RSI/MACD/ATR values from raw klines.",
+	];
+	if (!hasLab) {
+		rules.push("Indicator and strategy tools are not loaded in this session; say so if asked for those values.");
+	}
+	if (has("simulate_rule")) {
+		rules.push(
+			"Use `simulate_rule` before claiming a setup worked recently; it is closed-candle replay, not a backtest.",
+		);
+	}
+	if (has("freqtrade_backtest")) {
+		rules.push(
+			"Use `freqtrade_backtest` for historical strategy evidence with fees; results are not permission to trade.",
+		);
+	}
+	rules.push(
+		hasLab
+			? "Combine with existing exposure and order conflicts."
+			: "Then combine with existing exposure and order conflicts.",
+	);
+	return {
+		title: "Analyze",
+		when: hasLab
+			? "for a named symbol, before stating trend, momentum, volatility, or invalidation"
+			: "for a named symbol",
+		...(tools.length > 0 ? { tools: tools.join(", ") } : {}),
+		rules,
+	};
+}
+
 function buildOperatingLoop(
 	has: (name: string) => boolean,
 	futuresSession: boolean,
@@ -231,33 +281,7 @@ function buildOperatingLoop(
 		);
 	}
 
-	const analyze: LoopStep =
-		has("calculate_indicators") && has("evaluate_strategy")
-			? {
-					title: "Analyze",
-					when: "for a named symbol, before stating trend, momentum, volatility, or invalidation",
-					tools: has("simulate_rule")
-						? "`calculate_indicators`, `evaluate_strategy`, `simulate_rule`"
-						: "`calculate_indicators`, `evaluate_strategy`",
-					rules: [
-						"Do not invent EMA/RSI/MACD/ATR values from raw klines. These tools never place orders.",
-						...(has("simulate_rule")
-							? [
-									"Use `simulate_rule` before claiming a setup worked recently; it is closed-candle replay, not a backtest.",
-								]
-							: []),
-						"Combine with existing exposure and order conflicts.",
-					],
-				}
-			: {
-					title: "Analyze",
-					when: "for a named symbol",
-					rules: [
-						"Do not invent EMA/RSI/MACD/ATR values from raw klines.",
-						"Indicator and strategy tools are not loaded in this session; say so if asked for those values.",
-						"Then combine with existing exposure and order conflicts.",
-					],
-				};
+	const analyze = buildAnalyzeStep(has);
 
 	return [
 		{
@@ -394,6 +418,11 @@ function buildToolNotes(input: {
 	if (has("simulate_rule")) {
 		analyze.push(
 			"simulate_rule: closed-candle replay of a named preset. Reports tradeCount/winRate/avgReturnPct without fees or fills. Not a backtest and not an order.",
+		);
+	}
+	if (has("freqtrade_status") || has("freqtrade_backtest") || has("freqtrade_signals")) {
+		analyze.push(
+			"Freqtrade sidecar (`freqtrade_status`, `freqtrade_backtest`, `freqtrade_signals`): local webserver research only. Compact backtest metrics and strategy signals are untrusted and never trading authorization. Do not wrap or call Freqtrade forceenter/start/stop. Execution stays on native buy/sell after check_order.",
 		);
 	}
 	if (has("show_market_view")) {

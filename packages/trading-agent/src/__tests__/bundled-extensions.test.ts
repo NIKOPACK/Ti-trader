@@ -10,6 +10,7 @@ import {
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	optionalBundledResearchToolNames,
+	resolveBundledFreqtradeExtension,
 	resolveBundledMarketChartExtension,
 	resolveBundledMarketLabExtension,
 	resolveBundledMarketResearchExtension,
@@ -25,6 +26,7 @@ const OPTIONAL_ENV_KEYS = [
 	"TI_ZHIHU_ACCESS_SECRET_FILE",
 	"TI_MARKET_RESEARCH",
 	"TI_SUBAGENT",
+	"TI_FREQTRADE_URL",
 ] as const;
 
 const originalOptionalEnv: Record<(typeof OPTIONAL_ENV_KEYS)[number], string | undefined> = {
@@ -33,6 +35,7 @@ const originalOptionalEnv: Record<(typeof OPTIONAL_ENV_KEYS)[number], string | u
 	TI_ZHIHU_ACCESS_SECRET_FILE: process.env.TI_ZHIHU_ACCESS_SECRET_FILE,
 	TI_MARKET_RESEARCH: process.env.TI_MARKET_RESEARCH,
 	TI_SUBAGENT: process.env.TI_SUBAGENT,
+	TI_FREQTRADE_URL: process.env.TI_FREQTRADE_URL,
 };
 
 const temporaryDirectories: string[] = [];
@@ -126,6 +129,49 @@ describe("bundled market-lab extension", () => {
 	});
 });
 
+describe("bundled freqtrade extension", () => {
+	it("registers research tools and commands without --extension", async () => {
+		tempDir = join(tmpdir(), `ti-freqtrade-${Date.now()}-${Math.random().toString(36).slice(2)}`);
+		const agentDir = join(tempDir, "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const settingsManager = SettingsManager.create(tempDir, agentDir);
+		const sessionManager = SessionManager.create(tempDir, join(agentDir, "sessions"));
+		const services = await createAgentSessionServices({
+			cwd: tempDir,
+			agentDir,
+			settingsManager,
+			resourceLoaderOptions: {
+				manifestFlavor: "ti",
+				noContextFiles: true,
+				noSkills: true,
+				noExtensions: true,
+				additionalExtensionPaths: [resolveBundledFreqtradeExtension()],
+			},
+		});
+		const { session } = await createAgentSessionFromServices({
+			services,
+			sessionManager,
+			noTools: "builtin",
+			customTools: [],
+		});
+		try {
+			const toolNames = (session.agent.state.tools ?? []).map((tool) =>
+				typeof tool === "string" ? tool : tool.name,
+			);
+			expect(toolNames).toEqual(
+				expect.arrayContaining(["freqtrade_status", "freqtrade_backtest", "freqtrade_signals"]),
+			);
+			expect(toolNames.join(" ")).not.toMatch(/forceenter|forceexit/);
+			const commands = services.resourceLoader
+				.getExtensions()
+				.extensions.flatMap((extension) => [...(extension.commands?.keys() ?? [])]);
+			expect(commands).toEqual(expect.arrayContaining(["ft-status", "ft-backtest", "ft-signal", "ft-login"]));
+		} finally {
+			session.dispose();
+		}
+	});
+});
+
 describe("bundled extension resolution", () => {
 	it.each([
 		["market-lab", resolveBundledMarketLabExtension],
@@ -134,6 +180,7 @@ describe("bundled extension resolution", () => {
 		["zhihu-research", resolveBundledZhihuResearchExtension],
 		["market-research", resolveBundledMarketResearchExtension],
 		["subagent", resolveBundledSubagentExtension],
+		["freqtrade", resolveBundledFreqtradeExtension],
 	] as const)("resolves the source or packaged %s directory", (name, resolve) => {
 		const path = resolve();
 		expect(basename(path)).toBe(name);
@@ -205,18 +252,32 @@ describe("optional bundled extension paths", () => {
 		expect(resolveOptionalBundledExtensionPaths()).toEqual([]);
 	});
 
+	it("auto-loads freqtrade when TI_FREQTRADE_URL is non-empty", () => {
+		process.env.TI_FREQTRADE_URL = "http://127.0.0.1:8080";
+		expect(optionalBasenames()).toEqual(["freqtrade"]);
+	});
+
+	it("ignores a whitespace-only TI_FREQTRADE_URL", () => {
+		process.env.TI_FREQTRADE_URL = "  \n";
+		expect(resolveOptionalBundledExtensionPaths()).toEqual([]);
+	});
+
 	it("auto-loads every opted-in bundled extension in stable order", () => {
 		process.env.TAVILY_API_KEY = "tvly-test";
 		process.env.ZHIHU_ACCESS_SECRET = "zhihu-secret";
 		process.env.TI_MARKET_RESEARCH = "1";
 		process.env.TI_SUBAGENT = "1";
-		expect(optionalBasenames()).toEqual(["web-search", "zhihu-research", "market-research", "subagent"]);
+		process.env.TI_FREQTRADE_URL = "http://127.0.0.1:8080";
+		expect(optionalBasenames()).toEqual(["web-search", "zhihu-research", "market-research", "subagent", "freqtrade"]);
 		expect(optionalBundledResearchToolNames()).toEqual([
 			"web_search",
 			"fetch_source",
 			"zhihu_global_search",
 			"market_research",
 			"subagent",
+			"freqtrade_status",
+			"freqtrade_backtest",
+			"freqtrade_signals",
 		]);
 	});
 

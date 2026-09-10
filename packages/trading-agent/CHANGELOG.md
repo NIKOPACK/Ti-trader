@@ -8,13 +8,20 @@ All notable changes to `ti-trader` are documented in this file.
 
 - Live order approval is now an explicit mode (`confirm` or `unattended`). Paper defaults to `unattended`; live defaults to `confirm`. Switching mode (including `ti --mode live` against a paper config) applies that mode's default. Switching live to `unattended` requires interactive confirmation via Settings or `/approval unattended`; unknown-submission recovery is unchanged.
 - Optional `subagent` extension (`TI_SUBAGENT=1` or `--extension`). Isolated children (`researcher`, `scanner`, `reviewer`) may `propose_order`; that does not submit. The parent must `check_order` then `buy`/`sell`. Paper/unattended: parent execution is the approval. Live/confirm: the operator confirmation box still appears.
+- Optional `freqtrade` extension (`TI_FREQTRADE_URL` or `--extension`). Talks to a loopback `freqtrade webserver` for compact backtests and strategy signals. Live sidecars and `forceenter`/`start`/`stop` are rejected. Each research call re-reads `/show_config`; cancel/timeout abort the sidecar job; loopback requests bypass `HTTP_PROXY`. Execution stays on native `buy`/`sell`.
 
 ### Changed
 
+- `/exchange-login` follows the live venue credential policy: Binance does not prompt for a passphrase; OKX requires one. Live runtime construction rejects an OKX key set that is missing a passphrase.
 - Market-lab indicators, scans and replays use this session's `get_klines` and stamp `source`. Without the session bridge they still use Binance public spot klines and mark `kind: "binance-public-klines"`.
 - The trading prompt is rebuilt each turn from the session's active tools. Research tools are named only when loaded; futures account tools are documented on futures sessions; `screen_markets` uses this session's market family rather than spot-only candidates.
 - Interactive startup no longer prints the generic “ask Ti how to use Ti” onboarding line.
 - The operating loop is a scannable sequence with skip rules. Tool notes are grouped under the same step names.
+- Pinned `undici` `8.9.0` on `ti-trader` so the bundled freqtrade extension can resolve its loopback HTTP agent after publish.
+
+### Fixed
+
+- The Analyze operating loop now documents Freqtrade sidecar tools when market-lab tools are not in the session.
 
 ## [0.2.0] - 2026-09-08
 

@@ -56,6 +56,7 @@ describe("trading prompt", () => {
 		expect(prompt).toContain("screen_markets");
 		expect(prompt).toContain("simulate_rule");
 		expect(prompt).toContain("closed-candle replay, not a backtest");
+		expect(prompt).not.toContain("freqtrade_backtest");
 		expect(prompt).not.toContain("analyze_market_structure");
 		expect(prompt).not.toContain("generate_trade_signal");
 	});
@@ -108,6 +109,40 @@ describe("trading prompt", () => {
 		expect(withSubagent).toContain("propose_order");
 		expect(withSubagent).toContain("not a fill");
 		expect(withSubagent).not.toContain("No `web_search`");
+	});
+
+	it("documents Freqtrade sidecar tools only when they are loaded", () => {
+		const without = promptFor({ marketType: "spot" });
+		expect(without).not.toContain("freqtrade_backtest");
+		expect(without).not.toContain("Freqtrade sidecar");
+
+		const withFreqtrade = promptFor({ marketType: "spot" }, [
+			...DEFAULT_TRADING_PROMPT_TOOLS,
+			"freqtrade_status",
+			"freqtrade_backtest",
+			"freqtrade_signals",
+		]);
+		expect(withFreqtrade).toContain("`freqtrade_backtest`");
+		expect(withFreqtrade).toContain("Freqtrade sidecar");
+		expect(withFreqtrade).toContain("never trading authorization");
+		expect(withFreqtrade).toContain("Use `freqtrade_backtest` for historical strategy evidence with fees");
+	});
+
+	it("documents Freqtrade sidecar tools in the operating loop without market-lab", () => {
+		const prompt = promptFor({ marketType: "spot" }, [
+			"get_top_markets",
+			"get_market_info",
+			"check_order",
+			"buy",
+			"freqtrade_status",
+			"freqtrade_backtest",
+			"freqtrade_signals",
+		]);
+		expect(prompt).toContain("Indicator and strategy tools are not loaded in this session");
+		expect(prompt).toContain("Tools: `freqtrade_backtest`, `freqtrade_signals`");
+		expect(prompt).toContain("Use `freqtrade_backtest` for historical strategy evidence with fees");
+		expect(prompt).toContain("Freqtrade sidecar");
+		expect(prompt).not.toContain("Tools: `calculate_indicators`");
 	});
 
 	it("documents futures account tools only on futures sessions", () => {

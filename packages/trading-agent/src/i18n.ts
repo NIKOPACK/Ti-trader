@@ -257,6 +257,9 @@ export const MENU_EN = {
 	loginSecretPlaceholder: "paste API secret",
 	loginPasswordTitle: "Password/passphrase for {exchange} (optional)",
 	loginPasswordPlaceholder: "leave empty if none",
+	loginPasswordRequiredTitle: "Password/passphrase for {exchange}",
+	loginPasswordRequiredPlaceholder: "paste passphrase",
+	loginPassphraseRequired: "A passphrase is required for {exchange}",
 	loginKeysSaved: "Keys for {exchange} saved to ~/.ti-trader/agent/keys.json (mode 600)",
 	monitorUsage: "Usage: /monitor [on|off]",
 	monitorStatus:
@@ -314,6 +317,10 @@ export const MENU_EN = {
 	cmdReload: "Reload settings, extensions, skills, and themes",
 	cmdZhihu: "Search the Zhihu index",
 	cmdZhihuLogin: "Configure Zhihu API credentials",
+	cmdFtStatus: "Show the local Freqtrade sidecar status",
+	cmdFtBacktest: "Run a Freqtrade webserver backtest",
+	cmdFtSignal: "Show recent Freqtrade strategy signals",
+	cmdFtLogin: "Save local Freqtrade REST credentials",
 	settingWarningAnthropicExtraUsage: "Warn when Anthropic subscription auth may use paid extra usage",
 	settingThemeAutomatic: "Use separate themes for light and dark terminal appearance",
 	settingThemeSelect: "Select a theme, or choose Automatic to follow terminal appearance.",
@@ -626,6 +633,9 @@ export const MENU_ZH: { [K in MenuKey]: string } = {
 	loginSecretPlaceholder: "粘贴 API secret",
 	loginPasswordTitle: "{exchange} 的 Password/passphrase（可选）",
 	loginPasswordPlaceholder: "没有则留空",
+	loginPasswordRequiredTitle: "{exchange} 的 Password/passphrase",
+	loginPasswordRequiredPlaceholder: "粘贴 passphrase",
+	loginPassphraseRequired: "{exchange} 需要 passphrase",
 	loginKeysSaved: "{exchange} 的密钥已保存到 ~/.ti-trader/agent/keys.json（权限 600）",
 	monitorUsage: "用法：/monitor [on|off]",
 	monitorStatus:
@@ -683,6 +693,10 @@ export const MENU_ZH: { [K in MenuKey]: string } = {
 	cmdReload: "重新加载设置、扩展、技能和主题",
 	cmdZhihu: "搜索知乎索引",
 	cmdZhihuLogin: "配置知乎 API 凭证",
+	cmdFtStatus: "查看本机 Freqtrade 侧车状态",
+	cmdFtBacktest: "运行 Freqtrade webserver 回测",
+	cmdFtSignal: "查看 Freqtrade 策略进出场信号",
+	cmdFtLogin: "保存本机 Freqtrade REST 凭证",
 	settingWarningAnthropicExtraUsage: "当 Anthropic 订阅认证可能产生额外付费用量时告警",
 	settingThemeAutomatic: "为终端浅色和深色外观分别使用主题",
 	settingThemeSelect: "选择主题，或选择自动模式以跟随终端外观。",
@@ -865,6 +879,10 @@ export const SLASH_DESCRIPTION_KEYS: Record<string, MenuKey> = {
 	reload: "cmdReload",
 	zhihu: "cmdZhihu",
 	"zhihu-login": "cmdZhihuLogin",
+	"ft-status": "cmdFtStatus",
+	"ft-backtest": "cmdFtBacktest",
+	"ft-signal": "cmdFtSignal",
+	"ft-login": "cmdFtLogin",
 };
 
 export const PINNED_SLASH_COMMANDS = [

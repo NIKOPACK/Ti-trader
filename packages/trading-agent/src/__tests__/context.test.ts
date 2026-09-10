@@ -1,5 +1,6 @@
 import type { Order, Position } from "@nikopack/ti-trading-engine";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { validateLiveVenueCredentials } from "../../../trading-engine/src/venues/index.ts";
 import { getTrading, TradingRuntime, UnattendedTradingConfirmationRequired } from "../context.ts";
 
 /**
@@ -132,16 +133,22 @@ vi.mock("../state.ts", () => ({
 	defaultOrderApproval: stateMocks.defaultOrderApproval,
 }));
 
+const venueMocks = vi.hoisted(() => ({
+	validateLiveVenueCredentials: vi.fn(),
+}));
+
 vi.mock("@nikopack/ti-trading-engine", () => ({
 	CcxtExchangeClient: engineMocks.CapturingExchangeClient,
 	PaperExchangeClient: engineMocks.CapturingExchangeClient,
 	TradingEngine: engineMocks.StubTradingEngine,
 	createMarketDataView: engineMocks.createMarketDataView,
+	validateLiveVenueCredentials: venueMocks.validateLiveVenueCredentials,
 }));
 
 beforeEach(() => {
 	vi.clearAllMocks();
 	engineMocks.reset();
+	venueMocks.validateLiveVenueCredentials.mockImplementation(validateLiveVenueCredentials);
 });
 
 describe("TradingRuntime client replacement", () => {
@@ -316,6 +323,12 @@ describe("TradingRuntime client replacement", () => {
 		expect(() => Object.defineProperty(runtime.config.risk.allowedSymbols, "0", { value: "BTC/USDT" })).toThrow(
 			TypeError,
 		);
+	});
+
+	it("rejects live OKX keys that are missing a passphrase", async () => {
+		stateMocks.loadExchangeKeys.mockReturnValue({ okx: { apiKey: "k", secret: "s" } });
+		const runtime = await TradingRuntime.init({ exchange: "okx" });
+		await expect(runtime.setMode("live")).rejects.toThrow(/passphrase/);
 	});
 
 	it("requires explicit confirmation to switch live order approval to unattended", async () => {

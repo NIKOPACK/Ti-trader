@@ -70,6 +70,11 @@ export function resolveBundledSubagentExtension(): string {
 	return resolveBundledExtension("subagent");
 }
 
+/** Resolve the bundled freqtrade extension directory. */
+export function resolveBundledFreqtradeExtension(): string {
+	return resolveBundledExtension("freqtrade");
+}
+
 /**
  * Extra bundled extension directories to auto-load when their opt-in
  * credentials or flags are present. Does not include market-lab or market-chart.
@@ -87,6 +92,9 @@ export function resolveOptionalBundledExtensionPaths(): string[] {
 	}
 	if (envIsTruthyFlag("TI_SUBAGENT")) {
 		paths.push(resolveBundledSubagentExtension());
+	}
+	if (envHasNonEmptyValue("TI_FREQTRADE_URL")) {
+		paths.push(resolveBundledFreqtradeExtension());
 	}
 	return paths;
 }
@@ -109,6 +117,9 @@ export function optionalBundledResearchToolNames(): string[] {
 	}
 	if (envIsTruthyFlag("TI_SUBAGENT")) {
 		names.push("subagent");
+	}
+	if (envHasNonEmptyValue("TI_FREQTRADE_URL")) {
+		names.push("freqtrade_status", "freqtrade_backtest", "freqtrade_signals");
 	}
 	return names;
 }

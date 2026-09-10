@@ -9,6 +9,7 @@ interface ResourceManifest {
 
 interface PackageManifest {
 	keywords?: string[];
+	dependencies?: Record<string, string>;
 	peerDependencies?: Record<string, string>;
 	pi?: ResourceManifest;
 	ti?: ResourceManifest;
@@ -21,6 +22,7 @@ const extensionNames = [
 	"web-search",
 	"zhihu-research",
 	"subagent",
+	"freqtrade",
 ] as const;
 const defaultAutoloadExtensions = ["./dist/market-lab/index.js", "./dist/market-chart/index.js"];
 
@@ -39,6 +41,7 @@ describe("extension packaging", () => {
 		expect(manifest.ti).toEqual(manifest.pi);
 		expect(manifest.pi?.skills).toBeUndefined();
 		expect(manifest.ti?.skills).toBeUndefined();
+		expect(manifest.dependencies).toMatchObject({ undici: "8.9.0" });
 	});
 
 	it.each(extensionNames)("keeps the %s source package on one TypeScript entry", (name) => {
@@ -50,6 +53,9 @@ describe("extension packaging", () => {
 			"@earendil-works/pi-coding-agent": "*",
 			typebox: "*",
 		});
+		if (name === "freqtrade") {
+			expect(manifest.peerDependencies).toMatchObject({ undici: "*" });
+		}
 	});
 
 	it("declares the market research skill in both source manifests", () => {

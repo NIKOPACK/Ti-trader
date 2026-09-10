@@ -54,7 +54,7 @@ Ti 是一个 **AI 驱动的加密货币现货与 Binance USDⓈ-M 合约交易 a
 | 事件驱动 | 实验性内存 `/trigger`（通知/paper 唤醒；live 只通知）；WebSocket 行情推送 | 部分 |
 | 定时任务 | cron 式自动运行 | ❌ 未实现 |
 | 合约/杠杆 | Paper 与 Binance USDⓈ-M live：杠杆、保证金模式、持仓方向、reduceOnly；Binance live 支持资金费率查询，Paper 不模拟资金费率扣款或历史 | ✅ v1 |
-| 回测 | 历史数据回放 | ❌ 未实现 |
+| 回测 | 历史数据回放 | 可选 `freqtrade` 扩展：本机 webserver 侧车；默认不加载，不进入下单路径 |
 
 ---
 

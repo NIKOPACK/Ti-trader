@@ -1,6 +1,7 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { getSelectListTheme, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
 import { type Component, type SelectItem, SelectList, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
+import { resolveLiveVenue } from "@nikopack/ti-trading-engine";
 import { AccountSwitchConfirmationRequired, getTrading } from "./context.ts";
 import { exchangeLabel, isSupportedExchangeId, SUPPORTED_EXCHANGES } from "./exchanges.ts";
 import { orderApprovalLabel, t, translate } from "./i18n.ts";
@@ -827,13 +828,27 @@ export async function loginExchange(exchange: string, ctx: ExtensionCommandConte
 		ctx.ui.notify(t(language, "cancelled"), "info");
 		return;
 	}
-	const password = await ctx.ui.input(
-		translate(language, "loginPasswordTitle", { exchange }),
-		t(language, "loginPasswordPlaceholder"),
-		inputOptions,
-	);
 	const keys = loadExchangeKeys();
-	keys[exchange] = { apiKey: apiKey.trim(), secret: secret.trim(), password: password?.trim() || undefined };
+	const venue = resolveLiveVenue(exchange);
+	if (venue.password === "unused") {
+		keys[exchange] = { apiKey: apiKey.trim(), secret: secret.trim() };
+	} else {
+		const required = venue.password === "required";
+		const password = await ctx.ui.input(
+			translate(language, required ? "loginPasswordRequiredTitle" : "loginPasswordTitle", { exchange }),
+			t(language, required ? "loginPasswordRequiredPlaceholder" : "loginPasswordPlaceholder"),
+			inputOptions,
+		);
+		if (required && !password?.trim()) {
+			ctx.ui.notify(translate(language, "loginPassphraseRequired", { exchange }), "warning");
+			return;
+		}
+		keys[exchange] = {
+			apiKey: apiKey.trim(),
+			secret: secret.trim(),
+			password: password?.trim() || undefined,
+		};
+	}
 	saveExchangeKeys(keys);
 	ctx.ui.notify(translate(language, "loginKeysSaved", { exchange }), "info");
 }
