@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Pinned `chalk` `6.0.0`.
+
 ### Added
 
 - SettingsList accepts an optional `hint` to replace the default footer help line.

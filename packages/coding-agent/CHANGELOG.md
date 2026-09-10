@@ -10,6 +10,7 @@
 
 ### Changed
 
+- Pinned `chalk` `6.0.0`.
 - Improved the built-in dark theme's Markdown contrast for headings, links, code, lists, quotes, and separators on light terminal backgrounds.
 - Compact startup no longer repeats the ctrl+o help line. Empty `startupAssistantText` hides the onboarding paragraph. Extension compact labels omit a redundant `:dist` package path, tag colliding user extensions as `(user)`, and collapse duplicate-tool issues to one line.
 

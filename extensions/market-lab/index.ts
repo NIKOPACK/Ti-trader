@@ -641,7 +641,6 @@ export default function marketLabExtension(pi: ExtensionAPI): void {
 	});
 }
 
-export { analyze, binanceSymbol, fetchCandles, replayRule, screenMarkets, sessionSymbol };
 export {
 	calculateIndicators,
 	DEFAULT_INDICATOR_PERIODS,
@@ -653,3 +652,4 @@ export {
 	STRATEGY_PRESETS,
 	simulateRule,
 } from "./strategies.ts";
+export { analyze, binanceSymbol, fetchCandles, replayRule, screenMarkets, sessionSymbol };

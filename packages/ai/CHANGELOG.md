@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Changed
+
+- Pinned `http-proxy-agent` and `https-proxy-agent` `9.1.0`.
+
 ### Fixed
 
 - Fixed OpenAI-compatible Chat Completions requests sending `tool_choice` without tools, which gateways can reject during compaction ([#8607](https://github.com/earendil-works/pi/issues/8607)).

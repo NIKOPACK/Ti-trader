@@ -1,9 +1,12 @@
 {
-	"$schema": "https://biomejs.dev/schemas/2.3.5/schema.json",
+	"$schema": "https://biomejs.dev/schemas/2.5.12/schema.json",
 	"linter": {
 		"enabled": true,
 		"rules": {
 			"recommended": true,
+			"complexity": {
+				"useOptionalChain": "off"
+			},
 			"style": {
 				"noNonNullAssertion": "off",
 				"useConst": "error",
