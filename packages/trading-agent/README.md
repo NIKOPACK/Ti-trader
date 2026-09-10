@@ -1,24 +1,32 @@
-# Ti — AI Trading Agent
+# Ti — AI 交易助手
 
-基于 [pi](https://github.com/earendil-works/pi) agent harness 二开的加密货币 AI 自动交易 CLI（npm 包名 `ti-trader`，命令 `ti`）。
-复用 pi 的 agent 运行时、多模型层（`pi-ai`）、TUI，**原生内置交易工具**，移除了全部编码工具。
+npm 包名 `ti-trader`，命令 `ti`。仓库总览见根目录 [README](../../README.zh-CN.md)；本文是安装后的使用说明和操作参考。
 
-## 安全提示
+Ti 跑在终端里。用自然语言看盘、在模拟盘试单；实盘默认仍要你确认每一笔。它不是 coding agent 外挂交易所：[Pi](https://github.com/earendil-works/pi) 的 `read` / `bash` / `edit` / `write` 已去掉，`buy` / `sell` 是一等工具。密钥只留本机。
 
-启用 live 模式后，Ti 可能通过交易所 API 提交真实订单，可能造成全部资金损失。Ti 不提供投资建议，也不保证盈利。请先使用 paper 模式，设置严格的风控上限，并为交易所 API key 关闭提现权限。网络超时或进程退出不会撤销已经提交的订单；使用前请确认订单和交易所账户状态。
+> 启用 live 后可能亏光账户。Ti 不是投资建议。先用 paper，收紧风控，API key **不要**开提现。超时或进程退出不会撤销已经到达交易所的订单。
+
+一次典型对话：
+
+```text
+你:  分析 BTC 1h。如果结构允许，用 100 USDT 在模拟盘买入。
+Ti:  读 K 线 / 指标 / 余额 → check_order → paper 成交
+```
+
+`check_order` 只读预检，不预留额度、不提交。实盘最后一步是确认框。
 
 ## 安装
 
-已发布版本为 `ti-trader@0.1.11`。需要 Node.js `>= 22.19.0`。
+需要 Node.js `>= 22.19.0`。
 
 ```bash
 npm install -g ti-trader
-ti --version    # ti 0.1.11
-ti              # 交互模式（默认 paper 模拟盘）
-ti -p "..."     # 一次性无头模式
+ti --version
+ti                          # 交互模式，默认 paper
+ti -p "分析 BTC 1h 走势"     # 一次性无头
 ```
 
-`ti` 由 npm `bin` 提供。全局目录必须可写且在 `PATH` 中。不要用 `sudo` 往系统 npm 里装。若出现 `EACCES`：
+不要用 `sudo` 往系统 npm 装。若出现 `EACCES`：
 
 ```bash
 mkdir -p ~/.npm-global
@@ -28,67 +36,39 @@ source ~/.zshrc
 npm install -g ti-trader
 ```
 
-已安装旧版本时用 `npm install -g ti-trader@latest`。安装后用 `ti --version` 确认。
+Ti 与 Pi 的配置完全隔离。首次启动创建 `~/.ti-trader/agent/`，不读写 `~/.pi/`。模型用 `/login`，交易所 key 用 `/exchange-login`。
 
-Ti 与 pi 使用完全独立的配置目录。Ti 首次启动会创建 `~/.ti-trader/agent/`，不会读取或修改 pi 的 `~/.pi/` 配置、认证或会话文件。模型使用 pi 内置的 `/login`；交易所 API 使用 Ti 的 `/exchange-login`。安装 pi 后再安装 Ti 不需要迁移或删除 pi 文件。
+## 第一次运行
 
-## 特性
+1. `/login` 配模型。
+2. 留在 paper，不必配交易所 key。
+3. `/settings` 设语言、风控上限、市场。
+4. 真要实盘再用 `/exchange-login`。
 
-- **原生买卖工具**：`buy` / `sell` 是 agent 的一等工具（不是扩展），支持市价/限价、base/quote 双向下单
-- **交易前置检查**：`check_order` 只读解析下单意图，返回参考价、数量、名义金额、余额和风险额度；`get_trading_capabilities` 区分 `supported`、`unsupported`、`unknown`
-- **组合与候选市场**：`get_portfolio_snapshot` 聚合余额、持仓、挂单和风险使用量；`get_top_markets` 提供有界的成交量候选排名（不是交易信号）
-- **交易向 slash 命令**：`/settings` 打开交易设置（语言、模式、交易所、市场、密钥、风控、模拟账户、监控）；账户视图 `/balance` `/positions` `/orders` `/trades` `/markets`；配置命令无参数时同样打开设置。模型 Provider 仍使用 `/login`，Agent 界面使用 `/tui-settings`
-- **编码功能已移除**：`read`/`bash`/`edit`/`write`/`grep`/`find`/`ls` 工具全部禁用（`noTools: "builtin"`）
-- **模拟盘优先**：默认 paper 模式，用真实行情撮合的本地模拟账户（含手续费、均价成本、PnL）
-- **实盘安全门**：live 模式需要 API key + 切换确认 + 每笔订单交互确认（可关）。切换到 live 后配置会持久化，下次启动不再确认。
-- **风控层**：单笔/总名义金额上限、币种白名单，运行时强制，重启不重置。paper 额度为累计制，仅 `/risk reset` 或 `/paper reset` 手动重置；live 额度按日自动恢复。新执行记录及关联额度通过 `/recovery` 一起对账，历史独立占用仍使用 `/risk reconcile`，不要重试原订单。
-- **持久化开仓暂停**：`/risk pause [原因]` 立即阻止当前模式的新增敞口；重启、重置额度不会解除。`/risk resume` 必须人工确认，未决额度占用会阻止恢复。经校验的减仓、保护卖单和撤单仍可执行。
-- **止盈止损**：Paper 现货支持五种条件单类型：`stop`/`stop_market`（止损触发）、`take_profit`/`take_profit_market`（止盈触发）、`trailing_stop_market`（按百分比回撤的移动止损）；实盘是否支持取决于交易所，Paper 合约目前仅支持市价单
-- **现货 OCO 括号单**：`place_oco` 一次挂上止损+止盈，任一成交自动撤销另一腿；合约不支持 OCO
-- **后台监控与仓位守护**：轮询挂单成交、止损保护和浮亏变化；基线、冷却和通知标识持久化。实验性 `/trigger` 按账户保存条件与状态；live 触发器只通知，不自动拉起交易回合，恢复和重试通知也不会唤醒交易
-- **执行恢复与运维**：启动及运行时替换会对未决执行做有界查询，不会自动重发订单；`/recovery` 查看和处置，`/audit` 查看脱敏审计记录，`/health` 查看本地阻断和观测健康
-- **Binance USDⓈ-M 合约**：Binance 专用 swap 模式；Paper 支持独立合约账户、杠杆、逐仓/全仓、单向/双向持仓、reduceOnly、平仓、盈亏和保证金模拟，实盘支持交易所提供的合约订单参数及资金费率查询
-- **市场数据完整性**：`get_order_book`、`get_market_info`、`get_contract_stats` 分别读取订单簿、Binance `exchangeInfo` 市场规则、`premiumIndex`/资金费率及未平仓量；live futures 可能提供 premium-index、资金费率和未平仓量字段；Paper futures 只返回其 ticker 模拟可提供的字段，不可用字段以 `warnings`/`null` 标记，不模拟资金费率或未平仓量观测；缺失数据返回 `null` 和 `warnings`，不会伪装为 0
-- **默认只读量化与图表**：会话自动加载 market-lab 和 market-chart。market-lab 提供 `calculate_indicators`、`evaluate_strategy`、`screen_markets`、`simulate_rule` 以及 `/indicators` `/signal` `/screen` `/replay`，数据来自 Binance 公共现货已收盘 K 线；market-chart 提供 `show_market_view` 和 `/chart`，读取当前 Ti 运行时快照。二者都不会下单
+交易所：Binance（现货与 USDⓈ-M 覆盖最完整）、OKX、Bybit（后两者 experimental）。语言、模式、市场类型在 `/settings`，写入 `~/.ti-trader/agent/trading.json`。模型认证 `auth.json`，交易所 key `keys.json`（权限 600）。
 
-默认注入 agent 的交易工具共 25 个：行情 `get_price`、`get_order_book`、`get_market_info`、`get_contract_stats`、`get_klines`、`get_top_markets`；能力与账户 `get_trading_capabilities`、`get_balance`、`get_positions`、`get_portfolio_snapshot`、`get_open_orders`、`get_order_history`；订单查询与预检 `get_order_status`、`get_order_list_status`、`check_order`；执行 `buy`、`sell`、`place_oco`、`cancel_order`、`cancel_order_list`；风控与合约设置 `get_risk_status`、`get_funding_rate_history`、`set_leverage`、`set_margin_mode`、`set_multi_assets_mode`。另有 4 个只读量化工具由内置 market-lab 扩展注入：`calculate_indicators`、`evaluate_strategy`、`screen_markets`、`simulate_rule`；market-chart 注入 `show_market_view`。`get_funding_rate` 和 `get_futures_positions` 仍可由程序调用其 factory，但不再进入默认工具集，避免与统一的 `get_contract_stats`/`get_positions` 重复。
+可选扩展在仓库 `extensions/`，发布时打进 `ti-trader/dist/`。默认只自动加载 `market-lab` 和 `market-chart`（只读，不下单）。其余按环境变量或 `--extension` 加载；`--no-extensions` 关掉用户扩展发现：
 
-## 构建
+- `web-search`：`TAVILY_API_KEY` 非空
+- `zhihu-research`：`ZHIHU_ACCESS_SECRET` 非空，或密钥文件有内容。默认 `~/.ti-trader/agent/zhihu-access-secret`，可用 `TI_ZHIHU_ACCESS_SECRET_FILE` 覆盖
+- `market-research`：`TI_MARKET_RESEARCH` 为 `1` / `true` / `yes`
+- `subagent`：`TI_SUBAGENT` 为 `1` / `true` / `yes`。只读隔离子代理，不能交易
+- `freqtrade`：`TI_FREQTRADE_URL` 非空。本机 Freqtrade webserver 回测侧车，不下单；仅 `--extension` 时 URL 才回落到 `http://127.0.0.1:8080`
+
+默认 25 个原生交易工具（行情、账户、预检、买卖、风控）加上 market-lab / market-chart。清单与参数见 [DESIGN.md](DESIGN.md)。交易所连接、规划、风控在 `@nikopack/ti-trading-engine`。
+
+## 从源码运行
 
 ```bash
-# 在 monorepo 根目录：先构建上游包（仅需一次）
 npm install --ignore-scripts
 cd packages/coding-agent && npm run build:unbundled && cd ../..
-# 先构建 trading-engine，再构建 trading-agent
 npm run build:trading
-```
-
-> 注：根 `npm run build` 里 coding-agent 的 esbuild 打包步骤在本机环境有已知的
-> `<runtime>` external 报错（上游问题，与二开无关）。`build:unbundled` 产物即本包所需。
-
-## 运行
-
-```bash
-node packages/trading-agent/dist/cli.js            # 交互模式（paper）
-node packages/trading-agent/dist/cli.js -p "分析 BTC 1h 走势并说明是否适合开多"   # 一次性模式
-node packages/trading-agent/dist/cli.js --mode live --exchange okx
-# Binance USDⓈ-M futures（使用 BTC/USDT:USDT 等 ccxt 合约 symbol）
+node packages/trading-agent/dist/cli.js
+node packages/trading-agent/dist/cli.js -p "分析 BTC 1h 走势并说明是否适合开多"
 node packages/trading-agent/dist/cli.js --mode live --exchange binance
-# Paper 同时启用现货和 USDⓈ-M 合约
-node packages/trading-agent/dist/cli.js --mode paper --exchange binance
 ```
 
-首次运行用 `/login` 配置模型 Provider；使用 `/settings` 或 `/exchange-login` 配置交易所 API。交易所支持 Binance（币安）、OKX、Bybit。语言、模式和市场类型在 `/settings` 中切换，设置保存于 `~/.ti-trader/agent/trading.json`。模型认证存于 `~/.ti-trader/agent/auth.json`，交易所 API key 存于 `~/.ti-trader/agent/keys.json`，与 pi coding agent 隔离。
-
-可选扩展位于仓库根目录 `extensions/`，发布包仍全部打进 `ti-trader/dist/`。默认自动加载只有 `market-lab` 和 `market-chart`。其余按条件加载，也可用 `--extension <path>` 显式加载（可重复指定）；`--no-extensions` 禁用自动发现的用户扩展：
-
-- `web-search`：`TAVILY_API_KEY` 去空白后非空
-- `zhihu-research`：`ZHIHU_ACCESS_SECRET` 去空白后非空，或密钥文件存在且含非空白内容。默认文件为 `~/.ti-trader/agent/zhihu-access-secret`，可用 `TI_ZHIHU_ACCESS_SECRET_FILE` 覆盖
-- `market-research`：`TI_MARKET_RESEARCH` 为 `1`、`true` 或 `yes`（去空白、不区分大小写）
-- `subagent`：`TI_SUBAGENT` 为 `1`、`true` 或 `yes`（去空白、不区分大小写）。只读隔离子代理，不能交易
-- `freqtrade`：`TI_FREQTRADE_URL` 去空白后非空。本机 Freqtrade webserver 回测与信号侧车，不下单；默认 URL 仅在 `--extension` 时回落到 `http://127.0.0.1:8080`
-
-交易所 ccxt 连接、订单规划、风控和保护逻辑属于 `@nikopack/ti-trading-engine`；agent 通过 `marketData` 读取市场和账户数据，通过 `tradingEngine` 执行规划、风控与订单编排。
+根 `npm run build` 里 coding-agent 的 esbuild 打包在本机有已知的 `<runtime>` external 报错（上游问题）。`build:unbundled` 即本包所需。
 
 ## 配置
 

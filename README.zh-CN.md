@@ -6,11 +6,38 @@
 [![Node](https://img.shields.io/node/v/ti-trader.svg)](https://www.npmjs.com/package/ti-trader)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-AI 交易 agent CLI。默认 Paper 模拟盘。实盘下单默认需要确认，可将订单审批设为 `unattended` 关闭逐单确认。
+**Ti** 是跑在终端里的加密货币 AI 交易助手。用自然语言说话：它读行情、核对仓位和风控，默认在模拟盘成交；只有你打开实盘，并且确认之后，才会把订单送到交易所。
 
-基于 [Pi agent harness](https://github.com/earendil-works/pi)，通过 [ccxt](https://github.com/ccxt/ccxt) 连接交易所。Pi 的编码工具已全部移除。
+它是交易 agent，不是「coding agent 外挂了一个交易所」。[Pi](https://github.com/earendil-works/pi) 的 `read` / `bash` / `edit` / `write` 已全部去掉。交易所密钥只留在本机（`~/.ti-trader`，权限 `600`）。模型拿着 key 也不能翻你的磁盘、也不能跑 shell。
 
-> 启用 live 后可能造成全部资金损失。Ti 不提供投资建议。请先用 paper，收紧风控，API key **不要**开提现。超时或进程退出不会撤销已经到达交易所的订单。
+> 启用 live 后可能亏光账户里的钱。Ti 不是投资建议，也不保证盈利。先用 paper，把风控上限收紧，API key **不要**开提现。超时或进程退出，不会撤销已经到达交易所的订单。
+
+## 给谁用
+
+会交易（或正在用模拟盘学），能用 CLI，希望 LLM 帮你看盘、试单、执行，但**不愿意**把文件系统或静默实盘通道交给模型。
+
+不是信号源、跟单机器人，也不是「设好就不管」的无人值守服务。
+
+## 实际拿到的东西
+
+**默认就是模拟盘。** 本地账本、公开行情、手续费和盈亏。不需要交易所 API key。
+
+**实盘是一扇你自己开的门。** Binance 现货和 USDⓈ-M 的适配覆盖最完整；OKX、Bybit 仍标 experimental。实盘默认逐单确认。把审批改成 `unattended` 必须显式确认。
+
+**风控不靠提示词。** 单笔/每日名义上限、币种白名单、持久化「暂停新开仓」由引擎强制。未知提交不会自动重发。重启只对账，不会悄悄恢复开仓权限。
+
+**分析不会成交。** 内置 market-lab 指标、筛选和图表走本会话 K 线。可选 Freqtrade 侧车连本机 webserver 做回测。这些路径都不下单。
+
+一次典型对话：
+
+```text
+你:  分析 BTC 1h。如果结构允许，用 100 USDT 在模拟盘买入。
+Ti:  读 K 线 / 指标 / 余额
+     check_order  → 数量、名义金额、剩余额度
+     paper 成交   → 本地账本，公开行情
+```
+
+实盘时最后一步是确认框，然后才是 `buy` / `sell`。`check_order` 不预留额度，也不提交。
 
 ## 安装
 
@@ -18,12 +45,12 @@ AI 交易 agent CLI。默认 Paper 模拟盘。实盘下单默认需要确认，
 
 ```bash
 npm install -g ti-trader
-ti --version    # ti 0.1.11
-ti              # 交互模式，默认模拟盘
-ti -p "分析 BTC 1h 走势"
+ti --version
+ti                          # 交互 TUI，默认模拟盘
+ti -p "分析 BTC 1h 走势"     # 一次性，无界面
 ```
 
-若出现 `EACCES`，不要用 `sudo`。把 npm 全局目录改到用户目录：
+不要 `sudo npm install -g`。若出现 `EACCES`：
 
 ```bash
 mkdir -p ~/.npm-global
@@ -33,62 +60,61 @@ source ~/.zshrc
 npm install -g ti-trader
 ```
 
+升级用 `npm install -g ti-trader@latest`。
+
 ## 第一次运行
 
-| 步骤 | 操作 |
+| 步骤 | 做什么 |
 | --- | --- |
-| 1 | `/login` 配置模型供应商 |
+| 1 | `/login` — 配置模型供应商（与 Pi 同一套 provider） |
 | 2 | 留在 paper，不必配交易所 key |
-| 3 | 要做实盘时再用 `/exchange-login` |
-| 4 | `/settings` 切换语言、模式、市场、风控、模拟账户和监控 |
+| 3 | 中文或英文都行。例如：`看 ETH 4h，给观察计划，先不要下单` |
+| 4 | `/settings` — 语言、风控上限、市场、模拟资金、监控 |
+| 5 | 真要做实盘再用 `/exchange-login` |
 
-数据在 `~/.ti-trader/agent/`（`trading.json`、`keys.json`、会话），不读写 Pi 的 `~/.pi`。长跑或验收请设置独立的 `TI_DATA_DIR`。
+数据在 `~/.ti-trader/agent/`（`trading.json`、`keys.json`、会话）。不读写 Pi 的 `~/.pi`。长跑或隔离验收请设独立的 `TI_DATA_DIR`。
 
-## 能力
-
-- **模拟盘** — 本地账本、公开行情、手续费和盈亏，无需 API key
-- **实盘** — ccxt 适配器；密钥本地保存，权限 `600`。Paper 与 Binance 有离线契约覆盖，其他交易所仍属实验性
-- **风控** — 单笔和每日名义金额、币种白名单、实盘订单审批（默认 `confirm`；`unattended` 是显式无人值守开关）、持久化开仓暂停。未知提交不会自动重发
-- **恢复** — 启动时有界关联查询；`/recovery`、`/audit`、`/health`
-- **订单** — Paper 现货和支持的实盘市场提供市价、限价、止损、止盈、移动止损和 OCO；Paper 合约目前仅市价
-- **分析** — 内置 market-lab 指标和筛选，不会下单
-
-## 命令
+## 常用命令
 
 | 命令 | 作用 |
 | --- | --- |
 | `/settings` | 语言、模式、交易所、市场、密钥、风控、模拟账户、监控 |
-| `/balance` `/positions` `/orders` `/trades` `/markets` | 账户与市场视图 |
-| `/mode` `/exchange` `/market` `/approval` | 切换运行时或实盘订单审批；live 需要密钥；`unattended` 需要确认 |
-| `/risk pause` `/risk resume` | 暂停或恢复新增敞口。恢复必须交互确认 |
-| `/recovery` `/audit` `/health` | 执行记录、脱敏审计、本地开仓健康 |
-| `/trigger` | 持久化实验性条件。live 触发器只通知 |
+| `/balance` `/positions` `/orders` `/trades` `/markets` | 账户与市场 |
+| `/mode` `/exchange` `/market` `/approval` | 切换运行时。live 需要密钥。`unattended` 需要确认 |
+| `/risk pause` `/risk resume` | 暂停或恢复**新增**敞口。恢复必须交互确认 |
+| `/recovery` `/audit` `/health` | 未决执行、脱敏审计、本地开仓健康 |
 | `/exchange-login <id>` | 写入交易所 API key |
-| `/login` | 模型供应商（Pi） |
-| `/tui-settings` | Agent 界面设置 |
+| `/login` | 模型供应商 |
+| `/tui-settings` | Agent 界面 |
 
-## 状态
+`/trigger` 是实验性功能。live 触发器只通知，不会拉起交易回合。
 
-运维：[手册](docs/trading-operations.md)。发布证据：[门槛](docs/trading-release-evidence.md)。计划：[里程碑](docs/product-readiness-plan.md)。
+## 先说清楚的边界
 
-已发布 CLI 不等于生产验收完成。七天 Paper 长跑、独立候选安装和授权实盘试点仍需各自的证据。
+- Paper 合约目前只有市价单。Paper 现货支持限价、止损、止盈、移动止损和 OCO。
+- `get_trading_capabilities` 会返回 `supported`、`unsupported` 或 `unknown`。`unknown` 不能当成「大概可以」。
+- 缺 bid/ask、资金费率或未平仓量时返回 `null` 加 `warnings`，不会伪装成 `0`。
+- 可选研究扩展（`web-search`、`zhihu-research`、`market-research`、`subagent`、`freqtrade`）只在对应环境变量或 `--extension` 时加载，都不能下单。
+- 已发布 CLI 不等于生产验收完成。七天 Paper 长跑和任何实盘试点都要单独留证据。
+
+运维手册：[docs/trading-operations.md](docs/trading-operations.md)。设计：[packages/trading-agent/DESIGN.md](packages/trading-agent/DESIGN.md)。引擎契约：[packages/trading-engine/README.md](packages/trading-engine/README.md)。
 
 ## 包
 
-已公开发布：
+公开发布：
 
 | 包 | 作用 |
 | --- | --- |
-| **[ti-trader](https://www.npmjs.com/package/ti-trader)** `0.1.11` | CLI（`ti`） |
-| **[@nikopack/ti-trading-engine](https://www.npmjs.com/package/@nikopack/ti-trading-engine)** `0.3.1` | 适配器、规划、保护 |
-| **[@nikopack/ti-trading-risk](https://www.npmjs.com/package/@nikopack/ti-trading-risk)** `0.2.0` | 名义金额限制与持久化占用 |
-| **[@nikopack/ti-triggers](https://www.npmjs.com/package/@nikopack/ti-triggers)** `0.1.0` | 确定性条件求值 |
+| **[ti-trader](https://www.npmjs.com/package/ti-trader)** | CLI（`ti`） |
+| **[@nikopack/ti-trading-engine](https://www.npmjs.com/package/@nikopack/ti-trading-engine)** | 适配器、规划、保护 |
+| **[@nikopack/ti-trading-risk](https://www.npmjs.com/package/@nikopack/ti-trading-risk)** | 名义上限与持久化占用 |
+| **[@nikopack/ti-triggers](https://www.npmjs.com/package/@nikopack/ti-triggers)** | 确定性条件求值 |
 
-上游 Pi 仍是私有 workspace 依赖（`@earendil-works/pi-coding-agent` 等），不要从本仓库发布。
+上游 Pi 仍是私有 workspace 依赖。不要从本仓库发布 `@earendil-works/*`。
 
 ## 开发
 
-提交 PR 前阅读 [CONTRIBUTING.md](CONTRIBUTING.md)。交易相关改动必须保留 paper-first、风控限制和实盘确认。
+提交前读 [CONTRIBUTING.md](CONTRIBUTING.md)。削弱 paper-first、风控层或实盘确认的改动，需要很强的理由。
 
 ```bash
 npm install --ignore-scripts
@@ -97,8 +123,6 @@ npm run build:trading
 npm run check
 ./test.sh
 ```
-
-`npm run build:trading` 依次构建 tui、triggers、risk、engine、agent。隔离回归：`node scripts/trading-readiness.mjs --report /tmp/ti-offline.json`。可发布包的直接依赖保持精确版本。
 
 ## 许可证
 
