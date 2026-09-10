@@ -34,7 +34,7 @@
 		"@types/ms": "2.1.0",
 		"@types/node": "22.19.19",
 		"@typescript/native-preview": "7.0.0-dev.20260120.1",
-		"esbuild": "0.28.1",
+		"esbuild": "0.28.2",
 		"husky": "9.1.7",
 		"shx": "0.4.0",
 		"tsx": "4.22.1",
