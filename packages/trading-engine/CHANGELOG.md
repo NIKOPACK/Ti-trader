@@ -4,6 +4,8 @@ All notable changes to `@nikopack/ti-trading-engine` are documented in this file
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-09-10
+
 ### Changed
 
 - Live venue differences now live in `src/venues/` profiles, including Binance native lookup, Spot OCO/trailing, opposite-wallet probes, and Multi-Assets. `CcxtExchangeClient` delegates those operations to the resolved profile. OKX/Bybit remain experimental; unknown ccxt ids use the experimental profile.

@@ -4,6 +4,8 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-09-10
+
 ### Added
 
 - Live order approval is now an explicit mode (`confirm` or `unattended`). Paper defaults to `unattended`; live defaults to `confirm`. Switching mode (including `ti --mode live` against a paper config) applies that mode's default. Switching live to `unattended` requires interactive confirmation via Settings or `/approval unattended`; unknown-submission recovery is unchanged.
@@ -18,6 +20,7 @@ All notable changes to `ti-trader` are documented in this file.
 - Interactive startup no longer prints the generic “ask Ti how to use Ti” onboarding line.
 - The operating loop is a scannable sequence with skip rules. Tool notes are grouped under the same step names.
 - Pinned `undici` `8.9.0` on `ti-trader` so the bundled freqtrade extension can resolve its loopback HTTP agent after publish.
+- Pinned `@nikopack/ti-trading-engine` `0.3.3`.
 
 ### Fixed
 
