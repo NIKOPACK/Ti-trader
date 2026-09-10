@@ -1,5 +1,12 @@
 import type { FuturesPositionMode } from "./client-types.ts";
 import type { MarketInfo, OrderSide, PlaceOrderInput, PlaceOrderType } from "./types.ts";
+import {
+	defaultWireMapping,
+	LIVE_ADAPTER_LIMITATIONS,
+	liveCapabilityMatrixRows,
+	resolveLiveVenue,
+	venueWireContextFromOrder,
+} from "./venues/index.ts";
 
 export type CapabilityStatus = "supported" | "unsupported" | "unknown";
 export type CapabilityEvidenceLevel = "offline-contract" | "experimental" | "externally-verified";
@@ -74,20 +81,11 @@ const PAPER_LIMITATIONS = [
 	"Paper fills do not model partial fills, order-book slippage or live execution quality",
 	"Paper futures do not simulate funding payments or exchange-specific liquidation rules",
 ] as const;
-const LIVE_LIMITATIONS = [
-	"Offline adapter contracts are not live/testnet certification; no externally verified evidence is recorded",
-	"Exchange permissions, market filters and availability must still be checked at submission",
-] as const;
-const BINANCE_HEDGE_REDUCTION =
-	"Binance hedge mode omits reduceOnly; the opposing side plus positionSide enforces the reducing direction";
-const BINANCE_CLOSE_ALL =
-	"Binance close-all triggers use closePosition and omit wire-level reduceOnly and exchange quantity";
-
 interface CapabilityProfile {
 	readonly id: string;
 	readonly label: string;
 	readonly mode: "paper" | "live";
-	readonly exchangeId: "*" | "binance";
+	readonly exchangeId: string;
 	readonly marketFamily: "spot" | "futures";
 	readonly orderTypes: readonly PlaceOrderType[];
 	readonly ocoSides: readonly OrderSide[];
@@ -95,8 +93,7 @@ interface CapabilityProfile {
 	readonly references: readonly string[];
 }
 
-/** Supported adapter contracts, not a list of certified live integrations. */
-export const TRADING_CAPABILITY_MATRIX = [
+const PAPER_CAPABILITY_MATRIX = [
 	{
 		id: "paper-spot",
 		label: "Paper spot",
@@ -119,29 +116,13 @@ export const TRADING_CAPABILITY_MATRIX = [
 		limitations: PAPER_LIMITATIONS,
 		references: ["src/capabilities.test.ts", "src/paper-client.test.ts"],
 	},
-	{
-		id: "binance-spot",
-		label: "Binance Spot",
-		mode: "live",
-		exchangeId: "binance",
-		marketFamily: "spot",
-		orderTypes: ORDER_TYPES,
-		ocoSides: ["sell"],
-		limitations: LIVE_LIMITATIONS,
-		references: ["src/capabilities.test.ts", "src/ccxt-client.test.ts", "src/ccxt-binance-spot.ts"],
-	},
-	{
-		id: "binance-usdm",
-		label: "Binance USDⓈ-M futures",
-		mode: "live",
-		exchangeId: "binance",
-		marketFamily: "futures",
-		orderTypes: ORDER_TYPES,
-		ocoSides: [],
-		limitations: LIVE_LIMITATIONS,
-		references: ["src/capabilities.test.ts", "src/ccxt-client.test.ts", "src/contract-size.test.ts"],
-	},
 ] as const satisfies readonly CapabilityProfile[];
+
+/** Supported adapter contracts, not a list of certified live integrations. */
+export const TRADING_CAPABILITY_MATRIX: readonly CapabilityProfile[] = [
+	...PAPER_CAPABILITY_MATRIX,
+	...liveCapabilityMatrixRows(),
+];
 
 export function capability(
 	status: CapabilityStatus,
@@ -168,13 +149,15 @@ export function unavailableMarketCapability(
 
 export function getTradingCapabilities(context: TradingCapabilityContext) {
 	const { marketFamily: family } = context;
+	const liveVenue = context.mode === "live" ? resolveLiveVenue(context.exchangeId) : undefined;
 	const profile: CapabilityProfile | undefined = TRADING_CAPABILITY_MATRIX.find(
 		(row) =>
 			row.mode === context.mode &&
 			row.marketFamily === family &&
 			(row.exchangeId === "*" || row.exchangeId === context.exchangeId),
 	);
-	const constraints = profile?.limitations ?? (context.mode === "paper" ? PAPER_LIMITATIONS : LIVE_LIMITATIONS);
+	const constraints =
+		profile?.limitations ?? (context.mode === "paper" ? PAPER_LIMITATIONS : LIVE_ADAPTER_LIMITATIONS);
 	const contract = (status: CapabilityStatus, reason: string, extra: readonly string[] = []): Capability =>
 		capability(status, reason, profile ? "offline-contract" : "experimental", profile?.references ?? [], [
 			...constraints,
@@ -192,15 +175,7 @@ export function getTradingCapabilities(context: TradingCapabilityContext) {
 		if (profile && !profile.orderTypes.includes(type))
 			return contract("unsupported", `Paper futures currently accept market orders only; ${type} is unsupported`);
 		if (unavailable || unresolvedFamily) return (unavailable ?? unresolvedFamily)!;
-		// Binance Spot trailing uses native TAKE_PROFIT + trailingDelta, not a
-		// TRAILING_STOP_MARKET entry in exchangeInfo.orderTypes.
-		const metadataTypes =
-			context.mode === "live" &&
-			context.exchangeId === "binance" &&
-			family === "spot" &&
-			type === "trailing_stop_market"
-				? ["trailing_stop_market", "take_profit_market"]
-				: [type];
+		const metadataTypes = liveVenue?.orderTypeMetadataNames(family, type) ?? [type];
 		if (orderTypeFromMarketInfo(context.marketInfo, metadataTypes) === "unsupported")
 			return contract("unsupported", `The exchange market metadata does not support ${type} orders`);
 		return profile
@@ -208,8 +183,8 @@ export function getTradingCapabilities(context: TradingCapabilityContext) {
 					...(type === "trailing_stop_market" && context.mode === "paper"
 						? ["Paper trailing stops accept trailingPercent only, not activation stopPrice"]
 						: []),
-					...(type === "trailing_stop_market" && context.mode === "live" && family === "spot"
-						? ["Binance trailingPercent must convert to integer BIPS within the market TRAILING_DELTA filter"]
+					...(type === "trailing_stop_market" && family === "spot"
+						? (liveVenue?.trailingSpotConstraints() ?? [])
 						: []),
 				])
 			: experimental;
@@ -218,7 +193,10 @@ export function getTradingCapabilities(context: TradingCapabilityContext) {
 		if (family === "invalid") return unavailable!;
 		if (family === "futures") return contract("unsupported", "OCO orders are supported only for spot markets");
 		if (profile && !profile.ocoSides.includes(side))
-			return contract("unsupported", "Binance Spot native OCO buy brackets are not supported safely");
+			return contract(
+				"unsupported",
+				liveVenue?.unsupportedOcoSideReason(side) ?? `OCO ${side} orders are not supported`,
+			);
 		if (unavailable || unresolvedFamily) return (unavailable ?? unresolvedFamily)!;
 		// Native lists are not individual order types in Binance exchangeInfo.
 		if (!profile && orderTypeFromMarketInfo(context.marketInfo, ["oco"]) === "unsupported")
@@ -232,7 +210,7 @@ export function getTradingCapabilities(context: TradingCapabilityContext) {
 		if (unresolvedFamily) return unresolvedFamily;
 		if (list && family === "futures")
 			return contract("unsupported", `Futures order-list ${operation} is not implemented`);
-		if (list && context.mode === "live" && context.exchangeId !== "binance")
+		if (list && liveVenue && !liveVenue.supportsNativeOrderList("spot"))
 			return contract("unsupported", `Live ${context.exchangeId} order-list ${operation} is not implemented`);
 		return profile
 			? contract("supported", `${profile.label} ${operation} has offline correlated adapter contract coverage`, [
@@ -249,6 +227,8 @@ export function getTradingCapabilities(context: TradingCapabilityContext) {
 				(profile
 					? contract("supported", `${profile.label} validates matching position reductions`)
 					: experimental));
+	const hedgeConstraint = liveVenue?.hedgeReductionConstraint(context.positionMode);
+	const hedgeReductionConstraints = hedgeConstraint ? [hedgeConstraint] : [];
 	const closePosition = (type: PlaceOrderType) => {
 		if (type !== "market" && type !== "stop_market" && type !== "take_profit_market")
 			return contract(
@@ -263,23 +243,18 @@ export function getTradingCapabilities(context: TradingCapabilityContext) {
 			constraints: [
 				...result.constraints,
 				"closePosition omits user amount/quoteAmount and requires a matching open position",
-				...(context.mode === "live" && context.exchangeId === "binance" && family === "futures" && type !== "market"
-					? [BINANCE_CLOSE_ALL]
-					: ["Close uses the matching position snapshot as an explicit base quantity"]),
+				liveVenue?.closePositionQuantityConstraint(family, type) ??
+					"Close uses the matching position snapshot as an explicit base quantity",
 			],
 		};
 	};
 	const ambiguousFuturesNativeId =
-		context.mode === "live" &&
-		context.exchangeId === "binance" &&
-		family === "futures" &&
-		context.orderType !== "market" &&
-		context.orderType !== "limit";
+		family === "futures" && (liveVenue?.futuresNativeIdAmbiguous(context.orderType) ?? false);
 	const nativeIdCapability = (operation: string) =>
 		ambiguousFuturesNativeId
 			? capability(
 					"unknown",
-					`Binance futures ${operation} by native ID cannot distinguish overlapping ordinary/Algo ID spaces without order-type routing`,
+					`${context.exchangeId} futures ${operation} by native ID cannot distinguish overlapping ordinary/Algo ID spaces without order-type routing`,
 					"experimental",
 					["src/ccxt-client.ts"],
 					["Use correlated client-ID lookup for recovery; conditional native-ID cancellation is not proven"],
@@ -297,12 +272,7 @@ export function getTradingCapabilities(context: TradingCapabilityContext) {
 			...readContract(false, "client order-ID lookup"),
 			constraints: [
 				...readContract(false, "client order-ID lookup").constraints,
-				...(context.mode === "live" && context.exchangeId === "binance" && family === "futures"
-					? [
-							"Ordinary orders use origClientOrderId; conditional/trailing Algo orders use clientAlgoId",
-							"Offline Algo lookup contracts cover correlated parent orders, not terminal child fills; missing fill evidence must remain unresolved",
-						]
-					: []),
+				...(liveVenue?.clientIdLookupNotes(family) ?? []),
 			],
 		},
 		queryOrderListById: readContract(true, "native list-ID lookup"),
@@ -333,9 +303,7 @@ export function getTradingCapabilities(context: TradingCapabilityContext) {
 			constraints: [
 				...positionControls.constraints,
 				"Reduction amount cannot exceed the matching open position",
-				...(context.mode === "live" && context.exchangeId === "binance" && context.positionMode === "hedge"
-					? [BINANCE_HEDGE_REDUCTION]
-					: []),
+				...hedgeReductionConstraints,
 			],
 		},
 		closePosition: Object.fromEntries(ORDER_TYPES.map((type) => [type, closePosition(type)])) as Record<
@@ -347,7 +315,9 @@ export function getTradingCapabilities(context: TradingCapabilityContext) {
 			exchangeUnit: family === "futures" ? ("contracts" as const) : family === "spot" ? ("base" as const) : null,
 			quoteAmount: "reference_price_conversion_not_fixed_spend" as const,
 			futuresConversion: "base_amount_divided_by_confirmed_contract_size" as const,
-			closePosition: "matching_position_snapshot; native Binance trigger closes may omit wire quantity" as const,
+			closePosition:
+				liveVenue?.quantityClosePositionNote() ??
+				"matching_position_snapshot; native trigger closes may omit wire quantity",
 		},
 		fundingRates:
 			family === "spot"
@@ -401,21 +371,14 @@ export function evaluateOrderCapability(
 	}
 	if (futures && context.positionMode === "one-way" && input.positionSide && input.positionSide !== "BOTH")
 		unsupported("One-way mode futures orders must use positionSide BOTH or omit it");
-	const binanceFutures = futures && context.mode === "live" && context.exchangeId === "binance";
-	const omitExchangeQuantity =
-		binanceFutures &&
-		input.closePosition === true &&
-		(input.type === "stop_market" || input.type === "take_profit_market");
-	const hedgeReduction =
-		binanceFutures && context.positionMode === "hedge" && (input.reduceOnly === true || input.closePosition === true);
-	const constraints = [
-		...(hedgeReduction ? [BINANCE_HEDGE_REDUCTION] : []),
-		...(omitExchangeQuantity ? [BINANCE_CLOSE_ALL] : []),
-	];
+	const liveVenue = context.mode === "live" ? resolveLiveVenue(context.exchangeId) : undefined;
+	const mapping = liveVenue
+		? liveVenue.wireMapping(venueWireContextFromOrder(context.marketFamily, context.positionMode, input))
+		: defaultWireMapping();
 	return {
 		capability: result,
-		omitExchangeQuantity,
-		omitReduceOnly: omitExchangeQuantity || hedgeReduction,
-		constraints,
+		omitExchangeQuantity: mapping.omitExchangeQuantity,
+		omitReduceOnly: mapping.omitReduceOnly,
+		constraints: mapping.constraints,
 	};
 }

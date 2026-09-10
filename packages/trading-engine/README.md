@@ -8,7 +8,7 @@ The engine does not depend on the Ti agent, LLM runtime, TUI, or extensions. It 
 
 The package exports normalized types and contracts for market data, balances, positions, orders, conditional orders, OCO orders, and contract metadata. It provides:
 
-- `CcxtExchangeClient` for live exchange access through ccxt;
+- `CcxtExchangeClient` for live exchange access through ccxt. Venue-specific lookup, placement and credential policy lives in `src/venues/` profiles (`resolveLiveVenue`); unknown ids stay experimental;
 - `PaperExchangeClient` for local paper accounts driven by public market data. Paper Futures is a deliberately simplified workflow simulation: it applies a configurable maintenance-margin liquidation boundary, but does not model exchange-specific risk tiers, liquidation fees, bankruptcy or insurance funds, funding payments/rates, slippage, or partial fills. Funding queries therefore return an omitted `rate` (current value) or an empty history to represent unavailable data, not a zero rate;
 - shared order planning for amount/notional resolution, market-family and contract-unit validation, and trigger checks;
 - risk accounting with atomic reservations and mode-specific usage state, provided by `@nikopack/ti-trading-risk`;
@@ -51,7 +51,7 @@ Paper account transactions synchronize their transaction marker, both ledger sna
 
 Successful acknowledgements of open orders keep conservative quota accounting; later cancellation/fill observations are not automatic quota refunds. Terminal retention follows settlement order, so resolving an old execution does not immediately discard its new evidence. Manual outcome, notional and evidence reference also share the settlement's audit transaction. History and audit events are bounded, but unresolved records are not silently evicted. Recovery cannot reconstruct executions made outside this journal.
 
-The shared `getTradingCapabilities()` matrix drives preview, final preflight, adapter quantity/reduction mapping and recovery lookup selection. Technical `supported` status is separate from `offline-contract`, `experimental` and `externally-verified` evidence. No externally verified integration is currently claimed; see the [capability scope](../../docs/product-readiness-plan.md#m4-executable-capability-matrix).
+The shared `getTradingCapabilities()` matrix is assembled from Paper rows plus each live venue profile. It drives preview, final preflight, adapter quantity/reduction mapping and recovery lookup selection. Technical `supported` status is separate from `offline-contract`, `experimental` and `externally-verified` evidence. No externally verified integration is currently claimed; see the [capability scope](../../docs/product-readiness-plan.md#m4-executable-capability-matrix).
 
 The engine is independently buildable, testable, and packable:
 

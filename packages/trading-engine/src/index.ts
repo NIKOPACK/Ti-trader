@@ -127,3 +127,9 @@ export {
 	SubmissionStatusUnknownError,
 	timeframeDurationMs,
 } from "./types.ts";
+export {
+	type CredentialPasswordPolicy,
+	type LiveVenueProfile,
+	resolveLiveVenue,
+	validateLiveVenueCredentials,
+} from "./venues/index.ts";

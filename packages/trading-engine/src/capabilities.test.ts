@@ -200,7 +200,12 @@ class ContractExchange {
 	}
 }
 
-function fixture(mode: "paper" | "live", family: "spot" | "futures", positionMode: FuturesPositionMode = "one-way") {
+function fixture(
+	mode: "paper" | "live",
+	family: "spot" | "futures",
+	positionMode: FuturesPositionMode = "one-way",
+	exchangeId = "binance",
+) {
 	const wire = new ContractExchange();
 	const marketType = family === "spot" ? "spot" : "usdm-futures";
 	let client: ExchangeClient;
@@ -209,7 +214,7 @@ function fixture(mode: "paper" | "live", family: "spot" | "futures", positionMod
 		mkdirSync(directory);
 		directories.push(directory);
 		client = new PaperExchangeClient(
-			"binance",
+			exchangeId,
 			"USDT",
 			100_000,
 			0,
@@ -222,7 +227,7 @@ function fixture(mode: "paper" | "live", family: "spot" | "futures", positionMod
 		(client as unknown as { futuresExchange: ContractExchange }).futuresExchange = wire;
 	} else {
 		client = new CcxtExchangeClient(
-			"binance",
+			exchangeId,
 			"USDT",
 			{ apiKey: "", secret: "" },
 			marketType,
@@ -233,7 +238,7 @@ function fixture(mode: "paper" | "live", family: "spot" | "futures", positionMod
 	}
 	(client as unknown as { exchange: ContractExchange }).exchange = wire;
 	clients.push(client);
-	const context: TradingCapabilityContext = { exchangeId: "binance", mode, marketFamily: family, positionMode };
+	const context: TradingCapabilityContext = { exchangeId, mode, marketFamily: family, positionMode };
 	const planning: OrderPlanningContext = {
 		mode,
 		config: { marketType, quoteCurrency: "USDT", positionMode },
@@ -272,14 +277,15 @@ describe("executable capability contracts", () => {
 					family: row.marketFamily,
 					positionMode,
 					type,
+					exchangeId: row.exchangeId === "*" ? "binance" : row.exchangeId,
 				})),
 		),
 	);
 
 	it.each(cases)(
 		"$profile $positionMode $type uses the advertised submission, lookup and cancellation contract",
-		async ({ mode, family, positionMode, type }) => {
-			const { client, wire, context, planning, symbol } = fixture(mode, family, positionMode);
+		async ({ mode, family, positionMode, type, exchangeId }) => {
+			const { client, wire, context, planning, symbol } = fixture(mode, family, positionMode, exchangeId);
 			const matrix = getTradingCapabilities({ ...context, orderType: type });
 			const conditional = type !== "market" && type !== "limit";
 			const nativeIdProven = !(mode === "live" && family === "futures" && conditional);
@@ -322,7 +328,7 @@ describe("executable capability contracts", () => {
 			} else {
 				await client.cancelOrder(result.order.id, symbol);
 			}
-			if (mode === "live") {
+			if (mode === "live" && exchangeId === "binance") {
 				if (family === "spot" && type === "trailing_stop_market") {
 					expect(wire.calls).toContainEqual({
 						method: "privatePostOrder",
@@ -367,10 +373,18 @@ describe("executable capability contracts", () => {
 		},
 	);
 
-	it.each(TRADING_CAPABILITY_MATRIX.flatMap((row) => row.ocoSides.map((side) => ({ mode: row.mode, side }))))(
+	it.each(
+		TRADING_CAPABILITY_MATRIX.flatMap((row) =>
+			row.ocoSides.map((side) => ({
+				mode: row.mode,
+				side,
+				exchangeId: row.exchangeId === "*" ? "binance" : row.exchangeId,
+			})),
+		),
+	)(
 		"$mode OCO $side submits one bracket and uses native/client list lookup and cancellation",
-		async ({ mode, side }) => {
-			const { client, wire, context, planning } = fixture(mode, "spot");
+		async ({ mode, side, exchangeId }) => {
+			const { client, wire, context, planning } = fixture(mode, "spot", "one-way", exchangeId);
 			expect(getTradingCapabilities(context).oco[side].status).toBe("supported");
 			if (mode === "paper") await client.placeOrder({ symbol: spot, type: "market", side: "buy", amount: 10 });
 			const plan = await prepareOcoOrder(
@@ -394,7 +408,7 @@ describe("executable capability contracts", () => {
 			expect((await client.getOrderListByClientId("list-client")).orders).toHaveLength(2);
 			expect((await client.getOrderList(listId)).orders).toHaveLength(2);
 			await client.cancelOrderList(listId, spot);
-			if (mode === "live") {
+			if (mode === "live" && exchangeId === "binance") {
 				expect(wire.calls.find((call) => call.method === "privatePostOrderListOco")?.params).toMatchObject({
 					symbol: "BTCUSDT",
 					side: "SELL",

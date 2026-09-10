@@ -9,6 +9,7 @@ import {
 	MAX_RECOVERY_ATTEMPTS,
 } from "./execution-journal.ts";
 import type { ExchangeClient, PlaceOcoOrderResult, PlaceOrderResult } from "./types.ts";
+import { resolveLiveVenue } from "./venues/index.ts";
 
 export interface RecoveryReport {
 	examined: number;
@@ -72,7 +73,8 @@ export function executionEvidence(
 ): { evidence: ExecutionEvidence; notional: number; outcome: "commit" | "release" } {
 	const orders = "order" in result ? [result.order] : result.orders;
 	const input = entry.intent.input;
-	const nativeOco = entry.scope.mode === "paper" || entry.scope.exchange === "binance";
+	const nativeOco =
+		entry.scope.mode === "paper" || resolveLiveVenue(entry.scope.exchange).supportsNativeOrderList("spot");
 	if (orders.length !== (entry.intent.kind === "oco" && nativeOco ? 2 : 1))
 		throw new Error("Incomplete execution evidence");
 	const ids = new Set<string>();
