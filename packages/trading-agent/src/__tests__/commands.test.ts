@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
 import type { ExecutionMaintenance, ExecutionRecord, RiskNewExposurePause } from "@nikopack/ti-trading-engine";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -87,6 +88,7 @@ function registerCommands(): Map<string, RegisteredCommand> {
 
 function commandContext(idle: boolean, confirm = true, hasUI = true): ExtensionCommandContext {
 	return {
+		mode: "tui",
 		isIdle: vi.fn(() => idle),
 		waitForIdle: vi.fn(async () => {}),
 		hasUI,
@@ -95,7 +97,7 @@ function commandContext(idle: boolean, confirm = true, hasUI = true): ExtensionC
 			setStatus: vi.fn(),
 			setWidget: vi.fn(),
 			addAutocompleteProvider: vi.fn(),
-			theme: { fg: (_color: string, text: string) => text },
+			theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
 			confirm: vi.fn(async () => confirm),
 		},
 	} as unknown as ExtensionCommandContext;
@@ -116,9 +118,34 @@ describe("trading commands", () => {
 		registerCommands();
 		for (const handler of sessionStartHandlers) await handler({}, ctx);
 		expect(ctx.ui.setStatus).toHaveBeenCalledWith("trading-status", undefined);
+		expect(ctx.ui.setWidget).toHaveBeenCalledWith("trading-venue", expect.any(Function));
+		const factory = vi.mocked(ctx.ui.setWidget).mock.calls.at(-1)?.[1];
+		if (typeof factory !== "function") throw new Error("Missing venue widget factory");
+		const widget = factory(new TuiMainScreen(new ProcessTerminal()), ctx.ui.theme);
+		expect(widget.render(80).map((line) => line.trim().replace(/ {2,}/g, "  "))).toEqual([
+			"[ PAPER ]  |  OKX  |  Spot  USDT  market data: OKX public",
+		]);
+		trading.tradingEngine.risk.usage.mockClear();
+		widget.render(40);
+		widget.invalidate();
+		widget.render(80);
+		expect(trading.tradingEngine.risk.usage).not.toHaveBeenCalled();
+	});
+
+	it("keeps serializable venue text for RPC clients", async () => {
+		const ctx = { ...commandContext(true), mode: "rpc" as const };
+		registerCommands();
+		for (const handler of sessionStartHandlers) await handler({}, ctx);
 		expect(ctx.ui.setWidget).toHaveBeenCalledWith("trading-venue", [
 			"PAPER  OKX  Spot  USDT  market data: OKX public",
 		]);
+	});
+
+	it("does not install a venue component in headless mode", async () => {
+		const ctx = commandContext(true, true, false);
+		registerCommands();
+		for (const handler of sessionStartHandlers) await handler({}, ctx);
+		expect(ctx.ui.setWidget).not.toHaveBeenCalled();
 	});
 
 	it("lists execution history without lookup, mutation or confirmation", async () => {

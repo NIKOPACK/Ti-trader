@@ -37,6 +37,7 @@ import {
 } from "./prompt.ts";
 import { createTradingTools } from "./tools/index.ts";
 import { createTriggerMonitorExtension } from "./trigger-monitor.ts";
+import { TradingHeader } from "./tui.ts";
 
 function readPackageVersion(): string {
 	const pkgPath = fileURLToPath(new URL("../package.json", import.meta.url));
@@ -182,6 +183,15 @@ export async function main(argv: string[]): Promise<void> {
 						name: "ti-system",
 						hidden: true,
 						factory: (pi) => {
+							pi.on("session_start", (_event, ctx) => {
+								if (ctx.mode !== "tui" || (!parsed.verbose && runtimeSettingsManager.getQuietStartup())) return;
+								const header = new TradingHeader(VERSION, () => ({
+									language: getTrading().config.language,
+									theme: ctx.ui.theme,
+								}));
+								ctx.ui.setHeader(() => header);
+								header.setExpanded(parsed.verbose || ctx.ui.getToolsExpanded());
+							});
 							pi.on("before_agent_start", async (event) => {
 								const tools = collectTradingPromptTools({
 									selectedTools: event.systemPromptOptions.selectedTools,

@@ -4,6 +4,11 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Refined the interactive Ti header with a drawn wordmark, bilingual shortcuts, and a compact layout for narrow terminals. Existing shortcut expansion and quiet startup settings are preserved.
+- Trading venue status now separates mode and pause badges from exchange details, aligns the market-data source on wide terminals, and wraps on narrow terminals without hiding the pause state.
+
 ## [0.2.1] - 2026-09-10
 
 ### Added

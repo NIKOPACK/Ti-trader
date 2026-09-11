@@ -13,7 +13,7 @@ import {
 	type TradingMode,
 } from "./state.ts";
 import { padEndWidth, padStartWidth, renderTradingTable, type TableData, type TableLine } from "./table.ts";
-import { formatTradingVenue } from "./venue.ts";
+import { formatTradingVenue, renderTradingVenue } from "./venue.ts";
 
 function fmt(n: number | undefined, decimals = 2): string {
 	if (n === undefined || !Number.isFinite(n)) return "-";
@@ -138,28 +138,33 @@ export function createTradingExtension() {
 			pi.appendEntry<TableData>("trading:table", { title, lines, warning });
 		};
 
-		const tradingVenue = () => {
+		const tradingVenueInput = () => {
 			const trading = getTrading();
-			return formatTradingVenue({
+			return {
 				language: trading.config.language,
 				mode: trading.mode,
 				exchangeId: trading.config.exchange,
 				marketType: trading.config.marketType,
 				quoteCurrency: trading.config.quoteCurrency,
 				paused: trading.tradingEngine.risk.usage().newExposurePause !== undefined,
-			});
+			};
 		};
 
+		const tradingVenue = () => formatTradingVenue(tradingVenueInput());
+
 		const updateStatus = (ctx: ExtensionContext): void => {
-			const trading = getTrading();
-			const venue = tradingVenue();
 			ctx.ui.setStatus("trading-status", undefined);
 			if (!ctx.hasUI) return;
-			const theme = ctx.ui.theme;
-			const modeColor = trading.mode === "live" ? "error" : "accent";
-			ctx.ui.setWidget("trading-venue", [
-				`${theme.fg(modeColor, venue.identity)}  ${theme.fg("muted", venue.source)}`,
-			]);
+			const input = tradingVenueInput();
+			if (ctx.mode !== "tui") {
+				const venue = formatTradingVenue(input);
+				ctx.ui.setWidget("trading-venue", [`${venue.identity}  ${venue.source}`]);
+				return;
+			}
+			ctx.ui.setWidget("trading-venue", () => ({
+				render: (width) => renderTradingVenue(input, ctx.ui.theme, width),
+				invalidate() {},
+			}));
 		};
 
 		let autocompleteWrapped = false;
