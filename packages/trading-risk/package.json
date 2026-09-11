@@ -23,7 +23,7 @@
     "@types/node": "22.19.19",
     "shx": "0.4.0",
     "typescript": "5.9.3",
-    "vitest": "4.1.9"
+    "vitest": "5.0.0"
   },
   "engines": { "node": ">=22.19.0" },
   "license": "MIT"
