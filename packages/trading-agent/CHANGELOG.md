@@ -4,6 +4,8 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-09-11
+
 ### Changed
 
 - Refined the interactive Ti header with a drawn wordmark, bilingual shortcuts, and a compact layout for narrow terminals. Existing shortcut expansion and quiet startup settings are preserved.

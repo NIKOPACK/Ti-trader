@@ -1,6 +1,6 @@
 {
 	"name": "ti-trader",
-	"version": "0.2.1",
+	"version": "0.2.2",
 	"description": "Ti — AI trading agent CLI with native buy/sell tools, trading commands, and paper or live crypto trading",
 	"type": "module",
 	"piConfig": {
