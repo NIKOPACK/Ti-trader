@@ -17,6 +17,8 @@ export interface PaperOrder {
 	triggered?: boolean;
 	/** Unit price used to reserve quote funds for resting buy orders. */
 	reservePrice?: number;
+	/** Quote collateral locked for a resting futures opening order. */
+	reservedMargin?: number;
 	/** Last time this order's trigger was evaluated against the market. */
 	lastCheckedAt?: number;
 	/** Orders sharing an ocoGroup form a one-cancels-the-other pair with a single shared reservation. */
@@ -248,6 +250,10 @@ function parseOrder(value: unknown, path: string, label: string): PaperOrder {
 	if (reservePrice !== undefined && reservePrice <= 0)
 		throw accountError(path, `${label}.reservePrice must be positive`);
 	if (average !== undefined && average <= 0) throw accountError(path, `${label}.average must be positive`);
+	const reservedMargin =
+		value.reservedMargin === undefined
+			? undefined
+			: nonNegativeNumber(value.reservedMargin, path, `${label}.reservedMargin`);
 	return {
 		id: value.id,
 		symbol: value.symbol,
@@ -259,6 +265,7 @@ function parseOrder(value: unknown, path: string, label: string): PaperOrder {
 		trailingExtreme,
 		triggered: optionalBoolean(value.triggered, path, `${label}.triggered`),
 		reservePrice,
+		reservedMargin,
 		lastCheckedAt: optionalFinite(value.lastCheckedAt, path, `${label}.lastCheckedAt`),
 		ocoGroup: optionalString(value.ocoGroup, path, `${label}.ocoGroup`),
 		clientOrderId: optionalString(value.clientOrderId, path, `${label}.clientOrderId`),

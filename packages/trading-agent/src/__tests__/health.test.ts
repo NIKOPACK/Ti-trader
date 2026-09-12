@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { type Component, ProcessTerminal, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperationalHealthExtension, readOperationalHealth } from "../health.ts";
 import * as monitoringState from "../monitoring-state.ts";
@@ -37,7 +38,9 @@ function fixture(
 	let handler: ((args: string, ctx: ExtensionCommandContext) => Promise<void> | void) | undefined;
 	const appendEntry = vi.fn();
 	const notify = vi.fn();
+	const events = new Map<string, (event: unknown, ctx: ExtensionCommandContext) => void>();
 	const api = {
+		on: (name: string, fn: (event: unknown, ctx: ExtensionCommandContext) => void) => events.set(name, fn),
 		registerEntryRenderer: vi.fn(),
 		appendEntry,
 		registerCommand: vi.fn((_name: string, command: { handler: typeof handler }) => {
@@ -46,12 +49,59 @@ function fixture(
 	} as unknown as ExtensionAPI;
 	createOperationalHealthExtension(readHealth, getLanguage)(api);
 	if (!handler) throw new Error("Health command was not registered");
-	return { handler, appendEntry, notify, ctx: { ui: { notify } } as unknown as ExtensionCommandContext };
+	return { handler, appendEntry, notify, events, ctx: { ui: { notify } } as unknown as ExtensionCommandContext };
 }
 
 describe("health command", () => {
 	afterEach(() => {
 		vi.restoreAllMocks();
+		vi.useRealTimers();
+	});
+
+	it("refreshes local status while idle, keeps render free of reads and stops on shutdown", () => {
+		vi.useFakeTimers();
+		const readHealth = vi.fn(() => readOperationalHealth(createMemoryMonitoringStore()));
+		const f = fixture(readHealth, () => "zh-CN");
+		let widget: (Component & { dispose?(): void }) | undefined;
+		const tui = new TuiMainScreen(new ProcessTerminal());
+		vi.spyOn(tui, "requestRender").mockImplementation(() => {});
+		const ctx = {
+			mode: "tui",
+			ui: {
+				theme: { fg: (_color: string, text: string) => text },
+				setWidget: (_key: string, factory: (tui: TuiMainScreen) => Component) => {
+					widget = factory(tui);
+				},
+			},
+		} as unknown as ExtensionCommandContext;
+		f.events.get("session_start")!({}, ctx);
+		if (!widget) throw new Error("Missing status widget");
+		expect(widget.render(80).join("\n")).toContain("未知");
+		readHealth.mockClear();
+		for (const width of [20, 40, 80]) {
+			for (const line of widget.render(width)) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+		}
+		expect(readHealth).not.toHaveBeenCalled();
+		readHealth.mockReturnValue({
+			...readOperationalHealth(createMemoryMonitoringStore()),
+			entryBlocked: true,
+			blockers: ["unresolved-executions"],
+		});
+		vi.advanceTimersByTime(5_000);
+		expect(widget.render(80).join("\n")).toContain("未决执行");
+		readHealth.mockImplementation(() => {
+			throw new Error("secret fixture");
+		});
+		vi.advanceTimersByTime(5_000);
+		const failed = widget.render(80).join("\n");
+		expect(failed).toContain("/health");
+		expect(failed).not.toContain("secret fixture");
+		expect(failed).not.toContain("未决执行");
+		f.events.get("session_shutdown")!({}, ctx);
+		readHealth.mockClear();
+		vi.advanceTimersByTime(10_000);
+		expect(readHealth).not.toHaveBeenCalled();
+		widget.dispose?.();
 	});
 
 	it("reads scoped persisted observations without treating an unused trigger lane as degraded connectivity", () => {

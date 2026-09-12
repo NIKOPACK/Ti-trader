@@ -111,7 +111,7 @@ const PAPER_CAPABILITY_MATRIX = [
 		mode: "paper",
 		exchangeId: "*",
 		marketFamily: "futures",
-		orderTypes: ["market"],
+		orderTypes: ORDER_TYPES,
 		ocoSides: [],
 		limitations: PAPER_LIMITATIONS,
 		references: ["src/capabilities.test.ts", "src/paper-client.test.ts"],
@@ -173,7 +173,7 @@ export function getTradingCapabilities(context: TradingCapabilityContext) {
 	const submission = (type: PlaceOrderType): Capability => {
 		if (family === "invalid") return unavailable!;
 		if (profile && !profile.orderTypes.includes(type))
-			return contract("unsupported", `Paper futures currently accept market orders only; ${type} is unsupported`);
+			return contract("unsupported", `${profile.label} does not support ${type} orders`);
 		if (unavailable || unresolvedFamily) return (unavailable ?? unresolvedFamily)!;
 		const metadataTypes = liveVenue?.orderTypeMetadataNames(family, type) ?? [type];
 		if (orderTypeFromMarketInfo(context.marketInfo, metadataTypes) === "unsupported")

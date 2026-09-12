@@ -20,12 +20,27 @@ describe("trading prompt", () => {
 		expect(prompt).toContain("never call it for a futures symbol");
 	});
 
-	it("states the futures OCO and Paper order limitations", () => {
+	it("states the futures OCO limitation and Paper trigger evaluation", () => {
 		const prompt = promptFor({ exchange: "binance", marketType: "usdm-futures" });
 
 		expect(prompt).toContain("OCO is rejected for futures");
-		expect(prompt).toContain("Paper futures currently support market orders only");
+		expect(prompt).toContain("Paper triggers are evaluated on every account read");
 		expect(prompt).toContain("Do not call place_oco for a futures symbol");
+		expect(prompt).toContain(
+			"After a futures entry fills, use one reduce-only stop_market or trailing_stop_market with the matching positionSide. OCO is rejected for futures.",
+		);
+		expect(prompt).not.toContain("Paper futures currently support market orders only");
+	});
+
+	it("does not treat live futures conditionals as unconditionally available", () => {
+		const prompt = promptFor({ exchange: "binance", marketType: "usdm-futures", mode: "live" });
+
+		expect(prompt).toContain("OCO is rejected for futures");
+		expect(prompt).toContain("only when `get_trading_capabilities` reports that type as supported");
+		expect(prompt).toContain("Treat `unknown` as blocking");
+		expect(prompt).not.toContain(
+			"After a futures entry fills, use one reduce-only stop_market or trailing_stop_market with the matching positionSide. OCO is rejected for futures.",
+		);
 	});
 
 	it("documents the actual get_klines candle shape and finality field", () => {

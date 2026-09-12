@@ -111,7 +111,7 @@ node packages/trading-agent/dist/cli.js --mode live --exchange binance
 
 ## 止盈止损与移动止损
 
-买卖工具支持五种条件单类型；这里的 Paper 触发与懒撮合特指 Paper 现货，live 的具体支持取决于交易所，Paper futures 当前仅支持市价单：
+买卖工具支持五种条件单类型；Paper 现货和 Paper 合约都用公开行情懒撮合这些类型，live 的具体支持取决于交易所。Paper 合约不支持 OCO：
 
 - `stop` / `stop_market`：价格向不利方向触及 `stopPrice` 时触发（卖单跌到触发价 = 止损；买单涨到触发价 = 突破追入）。`stop` 触发后以 `price` 挂限价单，`stop_market` 触发即成交。
 - `take_profit` / `take_profit_market`：价格向有利方向触及 `stopPrice` 时触发（卖单涨到触发价 = 止盈）。
@@ -122,7 +122,7 @@ node packages/trading-agent/dist/cli.js --mode live --exchange binance
 
 `check_order` 是只读预检，不会预留额度或提交订单。`status` 可能为 `ok`、`ok_with_warnings`、`rejected` 或 `unknown`：`ok` 可直接执行，`ok_with_warnings` 只有在逐条审阅并接受 warnings 后才可执行，`rejected`/`unknown` 必须停止。live futures 的手续费和维护保证金数据目前由适配器明确标记为非阻断 warning，最终仍以交易所接受或拒绝为准；市场、余额或合约单位证据缺失仍是 blocking unknown。
 
-Paper 现货模式的触发在每次账户读取时懒惰撮合：所有挂单（限价/触发/移动止损）都用 1m/15m/1h K 线回填两次读取之间的最高/最低价，不会漏掉读取间隙里的价格波动。Paper futures 当前仅支持市价单。实盘通过 ccxt 统一参数（`stopLossPrice`/`takeProfitPrice`/`trailingPercent`）下发，OKX 等交易所的算法单会自动合并进 `get_open_orders`，撤单自动带 `trigger`/`trailing` 参数重试；具体类型支持以交易所为准。
+Paper 现货和 Paper 合约的触发在每次账户读取时懒惰撮合：所有挂单（限价/触发/移动止损）都用 1m/15m/1h K 线回填两次读取之间的最高/最低价，不会漏掉读取间隙里的价格波动。合约保护单须 `reduceOnly`。实盘通过 ccxt 统一参数（`stopLossPrice`/`takeProfitPrice`/`trailingPercent`）下发，OKX 等交易所的算法单会自动合并进 `get_open_orders`，撤单自动带 `trigger`/`trailing` 参数重试；具体类型支持以交易所为准。
 
 ## 后台监控与仓位守护
 
@@ -198,7 +198,7 @@ Binance USDⓈ-M 合约使用 ccxt unified symbol，例如 `BTC/USDT:USDT`，不
 
 `closePosition` 只用于平掉匹配方向的 futures 仓位：market close 会提交准确数量并带减仓方向；live Binance USDⓈ-M 的 `stop_market`/`take_profit_market` 使用交易所 close-all 语义，可能省略 quantity。此时 `requestedAmount` 是匹配仓位快照，`amountSemantics`/`exchangeQuantitySemantics` 会说明数量来源，返回 `amount: 0` 不代表没有提交订单。hedge 模式必须同时校验 `side` 与 `positionSide`；Binance live 受交易所约束省略 wire-level `reduceOnly` 并返回 `reduceOnlyApplied: false`/`exchangeConstraint`，Paper 与其他适配器保留显式 `reduceOnly`。
 
-Paper futures 当前只支持市价单，支持开仓、加仓、部分平仓、全平、反向开仓、加权均价、已实现/未实现盈亏、手续费和保证金校验；尚未模拟合约条件单、资金费率扣款或完整强平流程。实盘合约订单能力以 Binance 和 ccxt 当前支持为准。
+Paper futures 支持市价、限价、止损、止盈和移动止损，以及开仓、加仓、部分平仓、全平、反向开仓、加权均价、已实现/未实现盈亏、手续费和保证金校验；不模拟资金费率扣款、滑点、部分成交或交易所特定强平，也不接受合约 OCO。实盘合约订单能力以 Binance 和 ccxt 当前支持为准。
 
 ## 市场数据限制
 

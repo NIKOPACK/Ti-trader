@@ -4,6 +4,18 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+### Changed
+
+- Paper futures now accepts the same limit and conditional order types as Paper spot. Prompts, tool descriptions and capability output no longer describe Paper futures as market-only. Futures OCO remains unsupported.
+- Trading query cards retain labeled fields and wrap narrow layouts instead of hiding order conditions or PnL. Market charts wrap Chinese explanations and use terminal display widths for styled content.
+- Live approval is visible beside the trading venue. A local health widget refreshes entry blocks and monitor observations every five seconds without exchange requests.
+- Slash completion keeps common commands first while showing all available commands. Risk limits and allowed symbols are editable in Settings; the Agent TUI row prepares its built-in settings command in the editor.
+
+### Fixed
+
+- Settings allowed-symbol edits drop empty tokens such as a trailing comma, instead of failing validation.
+- Live futures prompts no longer treat reduce-only conditionals as unconditionally available; the model must check `get_trading_capabilities`.
+
 ## [0.2.2] - 2026-09-11
 
 ### Changed

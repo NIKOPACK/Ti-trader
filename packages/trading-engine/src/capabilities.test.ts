@@ -432,12 +432,14 @@ describe("executable capability contracts", () => {
 	);
 
 	it.each(ORDER_TYPES.filter((type) => type !== "market"))(
-		"rejects Paper futures %s at planning even without market metadata",
+		"keeps Paper futures %s unknown without market metadata and still prepares it because Paper does not require live order-type metadata",
 		async (type) => {
 			const { context, planning } = fixture("paper", "futures");
-			const expected = getTradingCapabilities({ ...context, metadataValid: false }).orderTypes[type];
-			expect(expected.status).toBe("unsupported");
-			await expect(prepareOrder("sell", intent(type, futures), planning)).rejects.toThrow(expected.reason);
+			expect(getTradingCapabilities({ ...context, metadataValid: false }).orderTypes[type].status).toBe("unknown");
+			expect(getTradingCapabilities(context).orderTypes[type].status).toBe("supported");
+			await expect(prepareOrder("sell", intent(type, futures), planning)).resolves.toMatchObject({
+				input: { type, symbol: futures },
+			});
 		},
 	);
 

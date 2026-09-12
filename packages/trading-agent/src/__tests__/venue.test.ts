@@ -65,6 +65,17 @@ describe("formatTradingVenue", () => {
 			expect(text).not.toContain("orders and market data");
 		});
 
+		it.each(["confirm", "unattended"] as const)("keeps live approval %s visible when wrapping", (orderApproval) => {
+			const text = renderTradingVenue({ ...input, orderApproval }, plainTheme, 40)
+				.join(" ")
+				.replace(/\s+/g, " ");
+			expect(text).toContain(orderApproval === "confirm" ? "Confirm each order" : "Unattended");
+			expect(text).toContain("PAUSED");
+			expect(formatTradingVenue({ ...input, orderApproval }).identity).toContain(
+				orderApproval === "confirm" ? "Confirm each order" : "Unattended",
+			);
+		});
+
 		it.each(["light", "dark"])("uses semantic colors in the %s theme without overflowing", (name) => {
 			const theme = getThemeByName(name);
 			if (!theme) throw new Error(`Missing theme: ${name}`);

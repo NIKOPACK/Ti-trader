@@ -1,4 +1,4 @@
-import { Box, type Component, truncateToWidth, visibleWidth } from "@earendil-works/pi-tui";
+import { Box, type Component, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 
 /** Minimal theme surface used by the trading table renderer. */
 export interface TableTheme {
@@ -7,7 +7,12 @@ export interface TableTheme {
 }
 
 export type TableTone = "up" | "down" | "warn" | "error" | "muted";
-export type TableLine = string | { text: string; tone?: TableTone };
+export interface TableField {
+	label: string;
+	value: string;
+}
+
+export type TableLine = string | { text: string; tone?: TableTone } | { fields: TableField[]; tone?: TableTone };
 
 export interface TableData {
 	title: string;
@@ -64,40 +69,69 @@ class TradingTableBox implements Component {
 	}
 
 	render(width: number): string[] {
+		if (width <= 0) return [];
 		if (this.cachedLines && this.cachedWidth === width) {
 			return this.cachedLines;
 		}
 		const theme = this.theme;
 		const border = (s: string): string => theme.fg("borderMuted", s);
-		const lines = this.data.lines.map((line) => (typeof line === "string" ? { text: line } : line));
+		const lines = this.data.lines.map((line) => {
+			if (typeof line === "string") return { parts: [line], tone: fallbackTone(line) };
+			if ("text" in line) return { parts: [line.text], tone: line.tone ?? fallbackTone(line.text) };
+			return {
+				parts: line.fields.map((field) => (field.label ? `${field.label}: ${field.value}` : field.value)),
+				tone: line.tone,
+			};
+		});
+		if (this.data.warning) lines.push({ parts: [this.data.warning], tone: "warn" });
 
 		// inner = columns between "│ " and " │"; total box width = inner + 4.
 		const rawTitle = ` ${this.data.title.toUpperCase()} `;
 		let inner = Math.max(
 			8,
 			visibleWidth(rawTitle) + 2,
-			...lines.map((line) => visibleWidth(line.text)),
+			...lines.map((line) => visibleWidth(line.parts.join("  "))),
 			this.data.warning ? visibleWidth(this.data.warning) : 0,
 		);
-		inner = Math.min(inner, Math.max(1, width - 4));
+		const framed = width >= 8;
+		inner = Math.min(inner, framed ? width - 4 : width);
 
 		const titleColor = this.data.warning || this.data.title === "risk" ? "warning" : "accent";
 		const title = truncateToWidth(rawTitle, inner);
 		const top =
 			border("╭─") + theme.fg(titleColor, title) + border(`${"─".repeat(inner + 1 - visibleWidth(title))}╮`);
 
-		const row = (text: string, tone?: TableTone): string => {
-			const clipped = padEndWidth(truncateToWidth(text, inner, "…"), inner);
-			const effectiveTone = tone ?? fallbackTone(text);
-			const color = effectiveTone ? TONE_COLOR[effectiveTone] : "text";
-			return `${border("│ ")}${theme.fg(color, clipped)}${border(" │")}`;
+		const rows = (parts: string[], tone?: TableTone): string[] => {
+			const content: string[] = [];
+			let current = "";
+			for (const part of parts) {
+				const candidate = current ? `${current}  ${part}` : part;
+				if (current && visibleWidth(candidate) > inner) {
+					content.push(current);
+					current = part;
+				} else {
+					current = candidate;
+				}
+			}
+			content.push(current);
+			return content
+				.flatMap((part) => wrapTextWithAnsi(part, inner))
+				.map((line) => {
+					const text = theme.fg(tone ? TONE_COLOR[tone] : "text", padEndWidth(line, inner));
+					return framed ? `${border("│ ")}${text}${border(" │")}` : text;
+				});
 		};
 
-		const result = [top, ...lines.map((line) => row(line.text, line.tone))];
-		if (this.data.warning) {
-			result.push(row(this.data.warning, "warn"));
-		}
-		result.push(border(`╰${"─".repeat(inner + 2)}╯`));
+		const result = [
+			...(framed ? [top] : wrapTextWithAnsi(this.data.title, inner)),
+			...lines.flatMap((line, index) => {
+				const rendered = rows(line.parts, line.tone);
+				return line.parts.length > 1 && rendered.length > 1 && index < lines.length - 1
+					? [...rendered, ...rows([""])]
+					: rendered;
+			}),
+			...(framed ? [border(`╰${"─".repeat(inner + 2)}╯`)] : []),
+		];
 
 		this.cachedWidth = width;
 		this.cachedLines = result;

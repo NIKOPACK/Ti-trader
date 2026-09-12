@@ -91,7 +91,7 @@ npm install -g ti-trader
 
 ## 先说清楚的边界
 
-- Paper 合约目前只有市价单。Paper 现货支持限价、止损、止盈、移动止损和 OCO。
+- Paper 合约模拟市价、限价、止损、止盈和移动止损。不支持 OCO，也不模拟资金费率、滑点、部分成交或交易所特定强平。Paper 现货另外支持 OCO。
 - `get_trading_capabilities` 会返回 `supported`、`unsupported` 或 `unknown`。`unknown` 不能当成「大概可以」。
 - 缺 bid/ask、资金费率或未平仓量时返回 `null` 加 `warnings`，不会伪装成 `0`。
 - 可选研究扩展（`web-search`、`zhihu-research`、`market-research`、`subagent`、`freqtrade`）只在对应环境变量或 `--extension` 时加载，都不能下单。

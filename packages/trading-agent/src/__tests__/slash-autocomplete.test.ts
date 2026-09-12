@@ -10,9 +10,23 @@ function item(value: string, description = `${value} desc`): AutocompleteItem {
 describe("pinSlashSuggestions", () => {
 	it("keeps the pinned order when the prefix is empty", () => {
 		const items = [item("quit"), item("balance"), item("hotkeys"), item("settings"), item("model"), item("language")];
-		expect(pinSlashSuggestions(items, "").map((entry) => entry.value)).toEqual(
-			PINNED_SLASH_COMMANDS.filter((name) => items.some((entry) => entry.value === name)),
-		);
+		expect(pinSlashSuggestions(items, "").map((entry) => entry.value)).toEqual([
+			...PINNED_SLASH_COMMANDS.filter((name) => items.some((entry) => entry.value === name)),
+			"hotkeys",
+			"language",
+		]);
+	});
+
+	it("retains health, chart and extension commands without duplicating or changing the input", () => {
+		const items = [item("chart"), item("settings"), item("health"), item("custom-extension")];
+		const original = structuredClone(items);
+		expect(pinSlashSuggestions(items, "").map((entry) => entry.value)).toEqual([
+			"settings",
+			"chart",
+			"health",
+			"custom-extension",
+		]);
+		expect(items).toEqual(original);
 	});
 
 	it("localizes known descriptions without dropping unpinned matches when typing", () => {

@@ -2188,3 +2188,307 @@ describe("paper account reset", () => {
 		expect(await freeBalance("BTC")).toBe(2);
 	});
 });
+
+describe("paper futures resting orders", () => {
+	const symbol = "BTC/USDT:USDT";
+
+	it("reserves opening margin for a limit buy and fills when the price crosses", async () => {
+		const futures = newFuturesClient("one-way");
+		const placed = await futures.placeOrder({ symbol, side: "buy", type: "limit", amount: 1, price: 90 });
+		expect(placed.order).toMatchObject({ status: "open", type: "limit", amount: 1, price: 90 });
+		expect(placed.order.clientOrderId).toBe(`paper-${placed.order.id}`);
+
+		const reserved = 90 / 5 + 90 * 0.001;
+		const balances = await futures.getBalances();
+		expect(balances[0]?.free).toBeCloseTo(10_000 - reserved, 8);
+		expect(balances[0]?.used).toBeCloseTo(reserved, 8);
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(1);
+
+		stub.last = 90;
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(0);
+		const history = await futures.getOrderHistory(symbol);
+		expect(history.find((order) => order.id === placed.order.id)).toMatchObject({
+			status: "closed",
+			type: "limit",
+			average: 90,
+			filled: 1,
+		});
+		const position = (await futures.getPositions())[0];
+		expect(position).toMatchObject({ amount: 1, avgEntryPrice: 90, margin: 18 });
+		await futures.close();
+	});
+
+	it("releases reserved margin when a resting opening order is canceled", async () => {
+		const futures = newFuturesClient("one-way");
+		const placed = await futures.placeOrder({ symbol, side: "buy", type: "limit", amount: 1, price: 90 });
+		await futures.cancelOrder(placed.order.id, symbol);
+		expect((await futures.getBalances())[0]?.free).toBeCloseTo(10_000, 8);
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(0);
+		await futures.close();
+	});
+
+	it("fills a reduce-only stop_market when the price falls to the trigger", async () => {
+		const futures = newFuturesClient();
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1, positionSide: "LONG" });
+		await futures.placeOrder({
+			symbol,
+			side: "sell",
+			type: "stop_market",
+			amount: 1,
+			stopPrice: 90,
+			positionSide: "LONG",
+			reduceOnly: true,
+		});
+
+		stub.last = 95;
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(1);
+
+		stub.last = 89;
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(0);
+		const stop = (await futures.getOrderHistory(symbol)).find((order) => order.type === "stop_market");
+		expect(stop).toMatchObject({ status: "closed", average: 90, reduceOnly: true, positionSide: "LONG" });
+		expect(await futures.getPositions()).toEqual([]);
+		await futures.close();
+	});
+
+	it("fills a reduce-only take_profit_market when the price rises to the trigger", async () => {
+		const futures = newFuturesClient();
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1, positionSide: "LONG" });
+		await futures.placeOrder({
+			symbol,
+			side: "sell",
+			type: "take_profit_market",
+			amount: 1,
+			stopPrice: 120,
+			positionSide: "LONG",
+			reduceOnly: true,
+		});
+
+		stub.last = 119;
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(1);
+		stub.last = 121;
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(0);
+		expect(
+			(await futures.getOrderHistory(symbol)).find((order) => order.type === "take_profit_market")?.average,
+		).toBe(120);
+		await futures.close();
+	});
+
+	it("trails a reduce-only sell and fills at the stop level", async () => {
+		const futures = newFuturesClient();
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1, positionSide: "LONG" });
+		await futures.placeOrder({
+			symbol,
+			side: "sell",
+			type: "trailing_stop_market",
+			amount: 1,
+			trailingPercent: 5,
+			positionSide: "LONG",
+			reduceOnly: true,
+		});
+
+		stub.last = 120;
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(1);
+		stub.last = 114;
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(0);
+		expect(
+			(await futures.getOrderHistory(symbol)).find((order) => order.type === "trailing_stop_market")?.average,
+		).toBeCloseTo(114, 8);
+		await futures.close();
+	});
+
+	it("rejects a second reduce-only that would exceed the locked position", async () => {
+		const futures = newFuturesClient();
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1, positionSide: "LONG" });
+		await futures.placeOrder({
+			symbol,
+			side: "sell",
+			type: "stop_market",
+			amount: 1,
+			stopPrice: 90,
+			positionSide: "LONG",
+			reduceOnly: true,
+		});
+		await expect(
+			futures.placeOrder({
+				symbol,
+				side: "sell",
+				type: "take_profit_market",
+				amount: 1,
+				stopPrice: 120,
+				positionSide: "LONG",
+				reduceOnly: true,
+			}),
+		).rejects.toThrow(/exceeds the open position/);
+		await futures.close();
+	});
+
+	it("cancels a reduce-only stop after liquidation removes the position", async () => {
+		const futures = newFuturesClient("one-way", 1_000);
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+		await futures.placeOrder({
+			symbol,
+			side: "sell",
+			type: "stop_market",
+			amount: 1,
+			stopPrice: 90,
+			reduceOnly: true,
+		});
+		stub.last = 50;
+		expect(await futures.getPositions()).toEqual([]);
+		const history = await futures.getOrderHistory(symbol);
+		expect(history.some((order) => order.id.startsWith("liquidation-"))).toBe(true);
+		expect(history.find((order) => order.type === "stop_market")?.status).toBe("canceled");
+		await futures.close();
+	});
+
+	it("rejects an immediately-triggering futures stop and still rejects OCO", async () => {
+		const futures = newFuturesClient("one-way");
+		await expect(
+			futures.placeOrder({ symbol, side: "sell", type: "stop_market", amount: 1, stopPrice: 100 }),
+		).rejects.toThrow(/would trigger immediately/);
+		await expect(
+			futures.placeOcoOrder({ symbol, side: "sell", amount: 1, stopLossPrice: 90, takeProfitPrice: 110 }),
+		).rejects.toThrow(/OCO orders are not supported/);
+		await futures.close();
+	});
+
+	it("rejects a futures limit when reserved margin exceeds free collateral", async () => {
+		const futures = newFuturesClient("one-way", 10);
+		await expect(futures.placeOrder({ symbol, side: "buy", type: "limit", amount: 1, price: 90 })).rejects.toThrow(
+			/Insufficient futures margin/,
+		);
+		await futures.close();
+	});
+
+	it("round-trips a resting futures order through persistence", async () => {
+		const futures = newFuturesClient("one-way");
+		const placed = await futures.placeOrder({
+			symbol,
+			side: "buy",
+			type: "limit",
+			amount: 1,
+			price: 90,
+			clientOrderId: "futures-limit-1",
+		});
+		await futures.close();
+
+		const reloaded = newFuturesClient("one-way");
+		expect((await reloaded.getOrderByClientId("futures-limit-1", symbol)).id).toBe(placed.order.id);
+		expect(await reloaded.getOpenOrders(symbol)).toHaveLength(1);
+		stub.last = 90;
+		expect((await reloaded.getOrderHistory(symbol)).find((order) => order.id === placed.order.id)?.status).toBe(
+			"closed",
+		);
+		await reloaded.close();
+	});
+
+	it("settles a both-mode futures limit independently of the spot ledger", async () => {
+		const both = new PaperExchangeClient("okx", "USDT", 10_000, 0.001, dir, "both", 5, "isolated", "one-way");
+		(both as unknown as { exchange: StubExchange }).exchange = stub;
+		(both as unknown as { futuresExchange: StubExchange }).futuresExchange = stub;
+		await both.placeOrder({ symbol: "BTC/USDT", side: "buy", type: "market", amount: 1 });
+		const placed = await both.placeOrder({ symbol, side: "buy", type: "limit", amount: 1, price: 90 });
+		expect(await both.getOpenOrders()).toEqual([expect.objectContaining({ id: placed.order.id, symbol })]);
+
+		stub.last = 90;
+		expect(await both.getOpenOrders()).toHaveLength(0);
+		expect((await both.getPositions()).find((position) => position.symbol === symbol)?.amount).toBe(1);
+		expect((await both.getPositions()).find((position) => position.symbol === "BTC/USDT")?.amount).toBe(1);
+		await both.close();
+	});
+
+	it("cancels a leftover reduce-only stop after a one-way reverse so settlement stays usable", async () => {
+		const futures = newFuturesClient("one-way");
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+		const stop = await futures.placeOrder({
+			symbol,
+			side: "sell",
+			type: "stop_market",
+			amount: 0.3,
+			stopPrice: 90,
+			reduceOnly: true,
+		});
+		await futures.placeOrder({ symbol, side: "sell", type: "market", amount: 1.5 });
+		expect((await futures.getOrderHistory(symbol)).find((order) => order.id === stop.order.id)?.status).toBe(
+			"canceled",
+		);
+		expect((await futures.getPositions())[0]).toMatchObject({ amount: 0.5, positionSide: "SHORT" });
+
+		const limit = await futures.placeOrder({ symbol, side: "buy", type: "limit", amount: 0.1, price: 80 });
+		stub.last = 89;
+		await expect(futures.getBalances()).resolves.toMatchObject([{ asset: "USDT" }]);
+		await futures.cancelOrder(limit.order.id, symbol);
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(0);
+		await futures.close();
+	});
+
+	it("cancels a reduce-only stop that no longer fits after a partial close", async () => {
+		const futures = newFuturesClient("one-way");
+		await futures.placeOrder({ symbol, side: "buy", type: "market", amount: 1 });
+		await futures.placeOrder({
+			symbol,
+			side: "sell",
+			type: "stop_market",
+			amount: 0.8,
+			stopPrice: 90,
+			reduceOnly: true,
+		});
+		await futures.placeOrder({ symbol, side: "sell", type: "market", amount: 0.5 });
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(0);
+		stub.last = 89;
+		await expect(futures.getBalances()).resolves.toMatchObject([{ asset: "USDT" }]);
+		expect((await futures.getPositions())[0]?.amount).toBeCloseTo(0.5, 8);
+		await futures.close();
+	});
+
+	it("tops up an opening sell trail as the peak rises and fills instead of canceling", async () => {
+		const futures = newFuturesClient("one-way");
+		const placed = await futures.placeOrder({
+			symbol,
+			side: "sell",
+			type: "trailing_stop_market",
+			amount: 1,
+			trailingPercent: 5,
+		});
+		expect((await futures.getBalances())[0]?.free).toBeCloseTo(10_000 - (95 / 5 + 95 * 0.001), 8);
+
+		stub.last = 120;
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(1);
+		expect((await futures.getBalances())[0]?.free).toBeCloseTo(10_000 - (114 / 5 + 114 * 0.001), 8);
+
+		stub.last = 114;
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(0);
+		expect((await futures.getOrderHistory(symbol)).find((order) => order.id === placed.order.id)).toMatchObject({
+			status: "closed",
+			type: "trailing_stop_market",
+		});
+		expect(
+			(await futures.getOrderHistory(symbol)).find((order) => order.id === placed.order.id)?.average,
+		).toBeCloseTo(114, 8);
+		expect((await futures.getPositions())[0]).toMatchObject({ amount: 1, positionSide: "SHORT" });
+		await futures.close();
+	});
+
+	it("reprices opening limit reserves when leverage falls", async () => {
+		const futures = newFuturesClient("one-way");
+		await futures.placeOrder({ symbol, side: "buy", type: "limit", amount: 1, price: 90 });
+		expect((await futures.getBalances())[0]?.free).toBeCloseTo(10_000 - (90 / 5 + 90 * 0.001), 8);
+		await futures.setLeverage(symbol, 2);
+		expect((await futures.getBalances())[0]?.free).toBeCloseTo(10_000 - (90 / 2 + 90 * 0.001), 8);
+		stub.last = 90;
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(0);
+		expect((await futures.getPositions())[0]).toMatchObject({ leverage: 2, margin: 45, avgEntryPrice: 90 });
+		await futures.close();
+	});
+
+	it("rejects a leverage drop that cannot re-reserve a resting opening order", async () => {
+		const futures = newFuturesClient("one-way", 30);
+		await futures.placeOrder({ symbol, side: "buy", type: "limit", amount: 1, price: 90 });
+		await expect(futures.setLeverage(symbol, 2)).rejects.toThrow(/Insufficient futures margin/);
+		expect(futures.getEffectiveLeverage(symbol)).toBe(5);
+		expect(await futures.getOpenOrders(symbol)).toHaveLength(1);
+		expect((await futures.getBalances())[0]?.free).toBeCloseTo(30 - (90 / 5 + 90 * 0.001), 8);
+		await futures.close();
+	});
+});

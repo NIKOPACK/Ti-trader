@@ -4,6 +4,15 @@ All notable changes to `@nikopack/ti-trading-engine` are documented in this file
 
 ## [Unreleased]
 
+### Added
+
+- Paper futures now simulates limit, stop, take-profit and trailing orders with the same lazy kline-backfill matching as Paper spot. Reduce-only and closePosition orders lock the matching position; opening orders reserve quote margin. OCO, funding payments, slippage and exchange-specific liquidation remain out of scope.
+
+### Fixed
+
+- Paper futures now cancels leftover reduce-only orders after a one-way reverse or a partial close that no longer fits, instead of leaving a stop that can deadlock settlement.
+- Opening trailing sells top up reserved margin as the peak rises, and a leverage drop re-reserves resting opening orders. A working opening order stays open when a fill cannot be margined.
+
 ## [0.3.3] - 2026-09-10
 
 ### Changed

@@ -1,7 +1,9 @@
+import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
-import { ProcessTerminal, TuiMainScreen } from "@earendil-works/pi-tui";
+import { ProcessTerminal, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
 import type { ExecutionMaintenance, ExecutionRecord, RiskNewExposurePause } from "@nikopack/ti-trading-engine";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { renderTradingTable, type TableData } from "../table.ts";
 
 const trading = vi.hoisted(() => ({
 	mode: "paper" as const,
@@ -21,6 +23,43 @@ const trading = vi.hoisted(() => ({
 	recoverExecutions: vi.fn(async () => ({ examined: 1, reconciled: 0, unresolved: 1, issues: [] })),
 	listAuditEvents: vi.fn(() => []),
 	tradingEngine: {
+		getBalances: vi.fn(async () => [{ asset: "USDT", free: 1200, used: 100, total: 1300, quoteValue: 1300 }]),
+		getPositions: vi.fn(async () => [
+			{
+				symbol: "BTC/USDT",
+				amount: 0.01234567,
+				quoteValue: 1234.56,
+				avgEntryPrice: 100000,
+				unrealizedPnl: 12.34,
+				unrealizedPnlPct: 1,
+			},
+		]),
+		getOpenOrders: vi.fn(async () => [
+			{
+				id: "order-12345678901234567890",
+				symbol: "BTC/USDT",
+				side: "sell",
+				type: "stop",
+				remaining: 0.01234567,
+				price: 94000,
+				stopPrice: 95000,
+				timestamp: 1,
+			},
+		]),
+		getOrderHistory: vi.fn(async () => [
+			{
+				id: "order-12345678901234567890",
+				symbol: "BTC/USDT",
+				side: "buy",
+				filled: 0.01234567,
+				average: 100000,
+				status: "closed",
+				timestamp: 1,
+			},
+		]),
+		getTopMarkets: vi.fn(async () => [
+			{ symbol: "BTC/USDT", last: 100000, changePct24h: 2.34, quoteVolume24h: 1000000 },
+		]),
 		listExecutions: vi.fn(() => [] as ExecutionRecord[]),
 		getExecutionStatus: vi.fn(() => ({ maintenance: undefined as ExecutionMaintenance | undefined })),
 		risk: {
@@ -53,11 +92,6 @@ const settingsMenu = vi.hoisted(() => ({
 }));
 
 vi.mock("../context.ts", () => ({ getTrading: () => trading }));
-vi.mock("../table.ts", () => ({
-	padEndWidth: (value: string) => value,
-	padStartWidth: (value: string) => value,
-	renderTradingTable: vi.fn(),
-}));
 vi.mock("../settings-menu.ts", () => settingsMenu);
 
 import { createTradingExtension } from "../commands.ts";
@@ -130,6 +164,31 @@ describe("trading commands", () => {
 		widget.invalidate();
 		widget.render(80);
 		expect(trading.tradingEngine.risk.usage).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["balance", "Available:1,200", "Locked:100"],
+		["positions", "PnL:+12.34USDT(1.00%)", "Entry:100,000.000000"],
+		["orders", "Trigger:95,000.000000", "OrderID:order-12345678901234567890"],
+		["trades", "Filled:0.01234567", "Status:closed"],
+		["markets", "24hchange:+2.34%", "24hvolume:1,000,000"],
+	])("keeps %s query fields readable at 40 and 80 columns", async (command, first, last) => {
+		await registerCommands().get(command)!.handler("", commandContext(true));
+		const data: TableData = appendEntry.mock.calls.at(-1)?.[1];
+		expect(data.lines.some((line) => typeof line !== "string" && "fields" in line)).toBe(true);
+		for (const width of [40, 80]) {
+			const lines = renderTradingTable(data, { fg: (_color, text) => text, bg: (_color, text) => text })
+				.render(width)
+				.map(stripVTControlCharacters);
+			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			const text = lines
+				.slice(1, -1)
+				.map((line) => line.trim().slice(1, -1))
+				.join("")
+				.replaceAll(" ", "");
+			expect(text).toContain(first);
+			expect(text).toContain(last);
+		}
 	});
 
 	it("keeps serializable venue text for RPC clients", async () => {

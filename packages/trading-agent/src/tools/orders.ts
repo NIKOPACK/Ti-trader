@@ -448,7 +448,7 @@ export function createBuyTool(tradingProvider: TradingProvider = getTrading): To
 		label: "buy",
 		description:
 			"Place a buy order (spot or Binance USDⓈ-M futures). Use quoteAmount for an estimated quote value (converted at the reference price; not a fixed final spend), or amount for " +
-			"base units. Paper spot supports simulated take-profit/stop-loss (stop, stop_market, take_profit, take_profit_market with stopPrice) and trailing stops (trailing_stop_market with trailingPercent); Paper futures currently accept market orders only. " +
+			"base units. Paper spot and Paper futures simulate take-profit/stop-loss (stop, stop_market, take_profit, take_profit_market with stopPrice) and trailing stops (trailing_stop_market with trailingPercent); Paper futures OCO is not supported. " +
 			"Live conditional and trailing support depends on the ccxt adapter and exchange capability. Futures additionally support reduceOnly, positionSide and closePosition.",
 		parameters: orderSchema,
 		async execute(_id, params, signal, _onUpdate, ctx) {
@@ -463,8 +463,8 @@ export function createSellTool(tradingProvider: TradingProvider = getTrading): T
 		label: "sell",
 		description:
 			"Place a sell order (spot or Binance USDⓈ-M futures). Use get_positions first to check holdings; quoteAmount is converted at a reference price and is not a fixed final value. " +
-			"In Paper spot, protect positions with stop_market (stop-loss, triggers when price falls to stopPrice), " +
-			"take_profit_market (triggers when price rises to stopPrice) or trailing_stop_market (trailingPercent pullback from the peak); Paper futures currently accept market orders only. " +
+			"In Paper, protect positions with stop_market (stop-loss, triggers when price falls to stopPrice), " +
+			"take_profit_market (triggers when price rises to stopPrice) or trailing_stop_market (trailingPercent pullback from the peak); futures protection must be reduceOnly, and OCO is spot-only. " +
 			"Live conditional and trailing support depends on the ccxt adapter and exchange capability.",
 		parameters: orderSchema,
 		async execute(_id, params, signal, _onUpdate, ctx) {

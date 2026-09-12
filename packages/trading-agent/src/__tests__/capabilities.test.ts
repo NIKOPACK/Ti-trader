@@ -181,7 +181,7 @@ describe("shared capability output and preflight", () => {
 		});
 	});
 
-	it("rejects Paper futures conditional orders equally in preview and the engine planner", async () => {
+	it("prepares Paper futures conditional orders equally in preview and the engine planner", async () => {
 		const { provider, symbol, engine, placeOrder } = fixture({ futures: true });
 		const params = { symbol, type: "stop_market" as const, amount: 1, stopPrice: 90 };
 		const check = await createCheckOrderTool(provider).execute(
@@ -191,12 +191,12 @@ describe("shared capability output and preflight", () => {
 			undefined,
 			uiContext,
 		);
-		expect(check.details).toMatchObject({ status: "rejected", reason: expect.stringMatching(/market orders only/) });
-		await expect(engine.prepareOrder("sell", params)).rejects.toThrow(/market orders only/);
-		await expect(createSellTool(provider).execute("sell", params, undefined, undefined, uiContext)).rejects.toThrow(
-			/market orders only/,
-		);
-		expect(placeOrder).not.toHaveBeenCalled();
+		expect(check.details).toMatchObject({ status: "ok" });
+		await expect(engine.prepareOrder("sell", params)).resolves.toMatchObject({
+			input: { type: "stop_market", symbol },
+		});
+		await createSellTool(provider).execute("sell", params, undefined, undefined, uiContext);
+		expect(placeOrder).toHaveBeenCalled();
 	});
 
 	it("uses the same exact metadata denial at preview and final admission", async () => {

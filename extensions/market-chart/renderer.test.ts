@@ -1,3 +1,5 @@
+import { stripVTControlCharacters } from "node:util";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { distanceFrom, formatDistance, type MarketViewData, renderMarketChart } from "./renderer.ts";
 
@@ -53,5 +55,28 @@ describe("market chart renderer", () => {
 		expect(lines.join("\n")).toContain("Target 1");
 		expect(lines.some((line) => line.includes("█") || line.includes("▓"))).toBe(true);
 		expect(Math.max(...lines.map((line) => [...line].length))).toBeLessThanOrEqual(80);
+	});
+
+	it.each([20, 40, 80, 140])("preserves Chinese explanations and ANSI styles at %i columns", (width) => {
+		const rationale = "等待价格回落后确认支撑是否有效，再判断是否入场。".repeat(3);
+		const coloredTheme = { fg: (_color: string, text: string) => `\x1b[31m${text}\x1b[0m` };
+		for (const expanded of [false, true]) {
+			const lines = renderMarketChart({ ...data, rationale }, width, coloredTheme, expanded);
+			for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+			const content = lines
+				.map(stripVTControlCharacters)
+				.map((line) => line.replace(/^[│┌└][─ ]?\s?/, "").trim())
+				.join("");
+			expect(content).toContain(rationale);
+			expect(content).toContain("Invalidation: 92");
+			expect(content).not.toContain("\x1b");
+		}
+	});
+
+	it("only advertises manual view keys in a manual view", () => {
+		expect(renderMarketChart(data, 100, theme, true, "manual").join("\n")).toContain("Esc / q: close");
+		expect(renderMarketChart(data, 100, theme, false, "manual").join("\n")).toContain("e / Space: expand");
+		expect(renderMarketChart(data, 100, theme, true).join("\n")).not.toContain("Esc");
+		expect(renderMarketChart(data, 0, theme, true)).toEqual([]);
 	});
 });

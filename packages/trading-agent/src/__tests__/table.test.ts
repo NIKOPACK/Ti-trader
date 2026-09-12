@@ -1,3 +1,4 @@
+import { stripVTControlCharacters } from "node:util";
 import { visibleWidth } from "@earendil-works/pi-tui";
 import { describe, expect, it } from "vitest";
 import { padEndWidth, padStartWidth, renderTradingTable, type TableTheme } from "../table.ts";
@@ -32,11 +33,34 @@ describe("trading table renderer", () => {
 		}
 	});
 
-	it("clamps the box to the terminal width and truncates overflow", () => {
+	it("wraps long content without discarding it", () => {
 		const lines = renderTradingTable({ title: "markets", lines: ["x".repeat(200)] }, identityTheme).render(40);
 		for (const line of lines) {
 			expect(visibleWidth(line)).toBeLessThanOrEqual(40);
 		}
+		expect(lines.join("").match(/x/g)).toHaveLength(200);
+	});
+
+	it.each([20, 40, 80, 140])("preserves labeled order fields and warnings at %i columns", (width) => {
+		const fields = [
+			{ label: "交易对", value: "BTC/USDT" },
+			{ label: "盈亏", value: "+12.34 (1.00%)" },
+			{ label: "触发价", value: "95,000.000000" },
+			{ label: "订单编号", value: "order-12345678901234567890" },
+		];
+		const warning = "请核对订单状态，不要重复提交。";
+		const box = renderTradingTable({ title: "订单", lines: [{ fields, tone: "up" }], warning }, identityTheme);
+		const lines = box.render(width).map(stripVTControlCharacters);
+		const content = lines
+			.slice(1, -1)
+			.map((line) => line.trim().slice(1, -1).trim())
+			.join("")
+			.replaceAll(" ", "");
+		for (const field of fields) expect(content).toContain(`${field.label}:${field.value}`.replaceAll(" ", ""));
+		expect(content).toContain(warning);
+		for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
+		box.invalidate();
+		expect(box.render(width).map(stripVTControlCharacters)).toEqual(lines);
 	});
 
 	it("renders the warning row inside the box", () => {

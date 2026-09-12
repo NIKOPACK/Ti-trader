@@ -81,7 +81,7 @@ Implemented in `packages/trading-engine/src/capabilities.ts` and consumed by cap
 | Profile | Submission scope | Recovery/cancellation boundary |
 | --- | --- | --- |
 | Paper spot | Market, limit, conditional, trailing and buy/sell OCO | Local correlated ID lookup and cancellation |
-| Paper futures | Market only; one-way and hedge | Local order lookup; no futures OCO |
+| Paper futures | Market, limit, conditional, trailing; one-way and hedge | Local order lookup; no futures OCO |
 | Binance live spot | Ordinary/conditional/trailing and sell OCO | Native/client order IDs and list IDs with offline contract coverage |
 | Binance live USD-M | Ordinary/conditional/trailing; one-way and hedge | Correlated client-ID recovery; conditional native-ID lookup/cancellation remains unknown |
 | Other live venues | Experimental, metadata-dependent | Unknown capabilities stay unknown; existing experimental paths are not silently removed |

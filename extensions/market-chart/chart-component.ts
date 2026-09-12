@@ -19,7 +19,7 @@ export class MarketChartComponent implements Component {
 	}
 
 	render(width: number): string[] {
-		return renderMarketChart(this.data, width, this.theme, this.expanded);
+		return renderMarketChart(this.data, width, this.theme, this.expanded, "manual");
 	}
 
 	handleInput(data: string): void {

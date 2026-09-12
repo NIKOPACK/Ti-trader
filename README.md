@@ -91,7 +91,7 @@ State is `~/.ti-trader/agent/` (`trading.json`, `keys.json`, sessions). Ti does 
 
 ## Honest limits
 
-- Paper futures is market-only. Spot paper supports limit, stop, take-profit, trailing and OCO.
+- Paper futures simulates market, limit, stop, take-profit and trailing orders. It does not support OCO and does not simulate funding, slippage, partial fills, or exchange-specific liquidation. Spot paper also supports OCO.
 - `get_trading_capabilities` returns `supported`, `unsupported` or `unknown`. `unknown` is not “probably fine”.
 - Missing bid/ask, funding, or open interest comes back as `null` plus `warnings`, never as `0`.
 - Optional research extensions (`web-search`, `zhihu-research`, `market-research`, `subagent`, `freqtrade`) load only when their env is set or you pass `--extension`. They cannot submit orders.

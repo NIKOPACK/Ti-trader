@@ -379,8 +379,6 @@ class DeterministicExchange implements ExchangeClient {
 
 	async placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResult> {
 		this.ensureEnabled(input.symbol);
-		if (this.mode === "paper" && this.isFutures(input.symbol) && input.type !== "market")
-			throw new Error("Paper futures currently accept market orders only");
 		const order: Order = {
 			id: "placed-order",
 			clientOrderId: input.clientOrderId,
@@ -939,22 +937,24 @@ describe("deterministic default-tool availability", () => {
 	it.each([
 		["buy", { symbol: FUTURES_SYMBOL, type: "limit", amount: 1, price: 100 }],
 		["sell", { symbol: FUTURES_SYMBOL, type: "stop_market", amount: 1, stopPrice: 90 }],
-	] as const)("rejects Paper futures %s non-market orders at the tool boundary", async (name, params) => {
+	] as const)("places Paper futures %s non-market orders at the tool boundary", async (name, params) => {
 		const { runtime } = createAvailabilityRuntime({ exchange: "binance", marketType: "usdm-futures" });
-		await expect(
-			registeredTool(name, runtime).execute(`unsupported-${name}`, params, undefined, undefined, context),
-		).rejects.toThrow(/Paper futures currently accept market orders only/);
+		const details = await executeWithDetails(registeredTool(name, runtime), params, `paper-futures-${name}`);
+		expect(details).toMatchObject({
+			status: "ok",
+			mode: "paper",
+			order: { symbol: FUTURES_SYMBOL, type: params.type, status: "open" },
+		});
 	});
 
-	it("reports Paper futures non-market preflight as rejected with a capability reason", async () => {
+	it("reports Paper futures non-market preflight as ok", async () => {
 		const { runtime } = createAvailabilityRuntime({ exchange: "binance", marketType: "usdm-futures" });
 		const details = await executeWithDetails(
 			registeredTool("check_order", runtime),
 			{ side: "buy", symbol: FUTURES_SYMBOL, type: "limit", amount: 1, price: 100 },
-			"unsupported-check",
+			"paper-futures-check",
 		);
-		expect(details).toMatchObject({ status: "rejected", phase: "preflight" });
-		expect(details.reason).toMatch(/Paper futures currently accept market orders only/);
+		expect(details).toMatchObject({ status: "ok" });
 	});
 
 	it("executes a Paper futures market order through the injected runtime", async () => {

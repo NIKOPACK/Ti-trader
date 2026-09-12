@@ -1,6 +1,15 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { getSelectListTheme, getSettingsListTheme } from "@earendil-works/pi-coding-agent";
-import { type Component, type SelectItem, SelectList, type SettingItem, SettingsList } from "@earendil-works/pi-tui";
+import {
+	type Component,
+	Input,
+	type SelectItem,
+	SelectList,
+	type SettingItem,
+	SettingsList,
+	truncateToWidth,
+	wrapTextWithAnsi,
+} from "@earendil-works/pi-tui";
 import { resolveLiveVenue } from "@nikopack/ti-trading-engine";
 import { AccountSwitchConfirmationRequired, getTrading } from "./context.ts";
 import { exchangeLabel, isSupportedExchangeId, SUPPORTED_EXCHANGES } from "./exchanges.ts";
@@ -15,7 +24,7 @@ import {
 } from "./state.ts";
 import { formatTradingVenue } from "./venue.ts";
 
-export type TradingSettingsResult = { type: "closed" } | { type: "login"; exchange: string };
+export type TradingSettingsResult = { type: "closed" } | { type: "login"; exchange: string } | { type: "tui-settings" };
 
 function lang(): TradingLanguage {
 	try {
@@ -59,12 +68,15 @@ class TitledSelect implements Component {
 	}
 
 	render(width: number): string[] {
+		if (width <= 0) return [];
 		const lines = [this.theme.bold(this.theme.fg("accent", this.title))];
 		if (this.description) {
 			lines.push(this.theme.fg("muted", this.description));
 		}
 		lines.push("");
-		return [...lines, ...this.list.render(width)];
+		return [...lines.flatMap((line) => wrapTextWithAnsi(line, width)), ...this.list.render(width)].map((line) =>
+			truncateToWidth(line, width),
+		);
 	}
 
 	handleInput(data: string): void {
@@ -222,6 +234,10 @@ export class TradingSettingsPanel implements Component {
 		this.applying = true;
 		const language = lang();
 		try {
+			if (id === "tui-settings") {
+				this.done({ type: "tui-settings" });
+				return;
+			}
 			if (id === "api-keys") {
 				this.done({ type: "login", exchange: value });
 				return;
@@ -285,6 +301,22 @@ export class TradingSettingsPanel implements Component {
 					break;
 				case "risk-reset":
 					trading.tradingEngine.risk.reset();
+					break;
+				case "risk-max-order":
+					await trading.patchConfig({ risk: { maxOrderNotional: Number(value) } });
+					break;
+				case "risk-max-notional":
+					await trading.patchConfig({ risk: { maxDailyNotional: Number(value) } });
+					break;
+				case "risk-allowed":
+					await trading.patchConfig({
+						risk: {
+							allowedSymbols: value
+								.split(",")
+								.map((symbol) => symbol.trim())
+								.filter(Boolean),
+						},
+					});
 					break;
 				case "paper-reset": {
 					if (trading.mode !== "paper") {
@@ -546,6 +578,7 @@ export class TradingSettingsPanel implements Component {
 			label: t(language, "tuiSettings"),
 			description: t(language, "tuiSettingsDesc"),
 			currentValue: "/tui-settings",
+			values: ["/tui-settings"],
 		});
 		return items;
 	}
@@ -574,7 +607,7 @@ export class TradingSettingsPanel implements Component {
 			[
 				{
 					id: "risk-entries",
-					label: t(language, "riskEntries"),
+					label: `${t(language, "riskEntries")} (${t(language, "settingsReadOnly")})`,
 					description: t(language, "riskPauseControls"),
 					currentValue: usage.newExposurePause
 						? `${t(language, "riskEntriesPaused")}: ${usage.newExposurePause.reason}`
@@ -584,21 +617,42 @@ export class TradingSettingsPanel implements Component {
 					id: "risk-max-order",
 					label: t(language, "riskMaxOrder"),
 					currentValue: `${cfg.risk.maxOrderNotional} ${cfg.quoteCurrency}`,
+					submenu: (_current, innerDone) =>
+						this.riskInput(
+							t(language, "riskMaxOrder"),
+							String(cfg.risk.maxOrderNotional),
+							t(language, "riskEditValue"),
+							innerDone,
+						),
 				},
 				{
 					id: "risk-max-notional",
 					label: t(language, "riskMaxNotional"),
 					currentValue: `${cfg.risk.maxDailyNotional} ${cfg.quoteCurrency}`,
+					submenu: (_current, innerDone) =>
+						this.riskInput(
+							t(language, "riskMaxNotional"),
+							String(cfg.risk.maxDailyNotional),
+							t(language, "riskEditValue"),
+							innerDone,
+						),
 				},
 				{
 					id: "risk-used",
-					label: t(language, "riskUsed"),
+					label: `${t(language, "riskUsed")} (${t(language, "settingsReadOnly")})`,
 					currentValue: `${usage.used} ${cfg.quoteCurrency}`,
 				},
 				{
 					id: "risk-allowed",
 					label: t(language, "riskAllowed"),
 					currentValue: allowed,
+					submenu: (_current, innerDone) =>
+						this.riskInput(
+							t(language, "riskAllowed"),
+							cfg.risk.allowedSymbols.join(", "),
+							t(language, "riskEditSymbols"),
+							innerDone,
+						),
 				},
 				{
 					id: "risk-reset",
@@ -625,6 +679,26 @@ export class TradingSettingsPanel implements Component {
 			],
 			done,
 		);
+	}
+
+	private riskInput(title: string, value: string, description: string, done: (value?: string) => void): Component {
+		const input = new Input();
+		input.setValue(value);
+		input.onSubmit = done;
+		input.onEscape = () => done();
+		return {
+			render: (width) =>
+				width <= 0
+					? []
+					: [
+							...wrapTextWithAnsi(this.theme.bold(this.theme.fg("accent", title)), width),
+							...wrapTextWithAnsi(description, width),
+							"",
+							...input.render(width),
+						].map((line) => truncateToWidth(line, width)),
+			handleInput: (data) => input.handleInput(data),
+			invalidate: () => input.invalidate(),
+		};
 	}
 
 	private paperSubmenu(done: (selectedValue?: string) => void): SettingsList {
@@ -772,6 +846,7 @@ export class TradingSettingsPanel implements Component {
 	}
 
 	render(width: number): string[] {
+		if (width <= 0) return [];
 		const trading = getTrading();
 		const language = trading.config.language;
 		const title = this.theme.bold(this.theme.fg("accent", t(language, "settingsTitle")));
@@ -783,7 +858,12 @@ export class TradingSettingsPanel implements Component {
 			quoteCurrency: trading.config.quoteCurrency,
 		});
 		const status = this.theme.fg("dim", `${venue.identity}  ·  ${venue.source}`);
-		return [title, status, "", ...this.list.render(width)];
+		return [
+			...wrapTextWithAnsi(title, width),
+			...wrapTextWithAnsi(status, width),
+			"",
+			...this.list.render(width),
+		].map((line) => truncateToWidth(line, width));
 	}
 
 	handleInput(data: string): void {
@@ -863,6 +943,10 @@ export async function openTradingSettings(ctx: ExtensionCommandContext, onStatus
 			(_tui, theme, _keybindings, done) => new TradingSettingsPanel(theme, done, ctx, onStatus),
 		);
 		if (!result || result.type === "closed") return;
+		if (result.type === "tui-settings") {
+			ctx.ui.setEditorText("/tui-settings");
+			return;
+		}
 		if (result.type === "login") {
 			const exchange = result.exchange;
 			if (!isSupportedExchangeId(exchange)) {

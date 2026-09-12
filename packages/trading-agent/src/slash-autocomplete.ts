@@ -29,7 +29,10 @@ export function pinSlashSuggestions(items: AutocompleteItem[], prefix: string): 
 	const pinned = PINNED_SLASH_COMMANDS.map((name) => byValue.get(name)).filter(
 		(item): item is AutocompleteItem => item !== undefined,
 	);
-	return pinned.map((item) => localizeSlashItem(item, language));
+	const pinnedValues = new Set(pinned.map((item) => item.value));
+	return [...pinned, ...items.filter((item) => !pinnedValues.has(item.value))].map((item) =>
+		localizeSlashItem(item, language),
+	);
 }
 
 function isSlashCommandNameQuery(

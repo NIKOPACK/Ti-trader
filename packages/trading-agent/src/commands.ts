@@ -12,7 +12,7 @@ import {
 	type TradingLanguage,
 	type TradingMode,
 } from "./state.ts";
-import { padEndWidth, padStartWidth, renderTradingTable, type TableData, type TableLine } from "./table.ts";
+import { renderTradingTable, type TableData, type TableLine } from "./table.ts";
 import { formatTradingVenue, renderTradingVenue } from "./venue.ts";
 
 function fmt(n: number | undefined, decimals = 2): string {
@@ -147,6 +147,7 @@ export function createTradingExtension() {
 				marketType: trading.config.marketType,
 				quoteCurrency: trading.config.quoteCurrency,
 				paused: trading.tradingEngine.risk.usage().newExposurePause !== undefined,
+				orderApproval: trading.config.orderApproval,
 			};
 		};
 
@@ -228,13 +229,18 @@ export function createTradingExtension() {
 					venue.identity,
 					{ text: venue.source, tone: "muted" },
 					"",
-					{
-						text: `${padEndWidth(t(language, "colAsset"), 8)} ${padStartWidth(t(language, "colAvailable"), 16)}  ${padStartWidth(t(language, "colLocked"), 14)}  ${padStartWidth(t(language, "colValuation"), 16)}`,
-						tone: "muted",
-					},
 					...balances.map(
-						(b) =>
-							`${padEndWidth(b.asset, 8)} ${padStartWidth(fmtAmount(b.free), 16)}  ${padStartWidth(fmtAmount(b.used), 14)}  ${padStartWidth(`${fmt(b.quoteValue)} ${trading.config.quoteCurrency}`, 16)}`,
+						(b): TableLine => ({
+							fields: [
+								{ label: t(language, "colAsset"), value: b.asset },
+								{ label: t(language, "colAvailable"), value: fmtAmount(b.free) },
+								{ label: t(language, "colLocked"), value: fmtAmount(b.used) },
+								{
+									label: t(language, "colValuation"),
+									value: `${fmt(b.quoteValue)} ${trading.config.quoteCurrency}`,
+								},
+							],
+						}),
 					),
 					"",
 					`${t(language, "totalValuation")} ≈ ${totalLabel}`,
@@ -265,23 +271,30 @@ export function createTradingExtension() {
 				}
 				show(t(language, "titlePositions"), [
 					...header,
-					...positions.map((p): TableLine => {
-						const pnl =
-							p.unrealizedPnl !== undefined
-								? `  PnL ${p.unrealizedPnl >= 0 ? "+" : ""}${fmt(p.unrealizedPnl)} (${fmt(p.unrealizedPnlPct)}%)`
-								: "";
-						const entry = p.avgEntryPrice !== undefined ? `  entry ${fmt(p.avgEntryPrice, 6)}` : "";
-						const basis =
-							p.costBasisStatus && p.costBasisStatus !== "complete" ? `  basis ${p.costBasisStatus}` : "";
-						const valuation =
-							p.quoteValue !== undefined && Number.isFinite(p.quoteValue)
-								? `≈ ${fmt(p.quoteValue)}`
-								: `≈ - (valuation unavailable${p.valuationReason ? `: ${p.valuationReason}` : ""})`;
-						return {
-							text: `${padEndWidth(p.symbol, 12)} ${padStartWidth(fmtAmount(p.amount), 16)}  ${valuation}${entry}${basis}${pnl}`,
+					...positions.map(
+						(p): TableLine => ({
+							fields: [
+								{ label: t(language, "colSymbol"), value: p.symbol },
+								{ label: t(language, "colAmount"), value: fmtAmount(p.amount) },
+								{
+									label: t(language, "colPnl"),
+									value:
+										p.unrealizedPnl === undefined
+											? "-"
+											: `${p.unrealizedPnl >= 0 ? "+" : ""}${fmt(p.unrealizedPnl)} ${trading.config.quoteCurrency} (${fmt(p.unrealizedPnlPct)}%)`,
+								},
+								{
+									label: t(language, "colValuation"),
+									value: `${fmt(p.quoteValue)} ${trading.config.quoteCurrency}${p.valuationReason ? ` (${p.valuationReason})` : ""}`,
+								},
+								{ label: t(language, "colEntry"), value: fmt(p.avgEntryPrice, 6) },
+								...(p.costBasisStatus && p.costBasisStatus !== "complete"
+									? [{ label: t(language, "colBasis"), value: p.costBasisStatus }]
+									: []),
+							],
 							tone: p.unrealizedPnl === undefined ? undefined : p.unrealizedPnl >= 0 ? "up" : "down",
-						};
-					}),
+						}),
+					),
 				]);
 				ctx.ui.notify(translate(language, "notifyPositions", { count: positions.length }), "info");
 			},
@@ -301,20 +314,27 @@ export function createTradingExtension() {
 				}
 				show(t(language, "titleOrders"), [
 					...header,
-					...orders.map((o): TableLine => {
-						const level =
-							o.price !== undefined
-								? `@ ${fmt(o.price, 6)}${o.stopPrice !== undefined ? ` trigger ${fmt(o.stopPrice, 6)}` : ""}`
-								: o.stopPrice !== undefined
-									? `trigger ${fmt(o.stopPrice, 6)}`
-									: o.trailingPercent !== undefined
-										? `trail ${fmt(o.trailingPercent, 2)}%`
-										: "@ market";
-						return {
-							text: `#${o.id} ${padEndWidth(o.side, 4)} ${padEndWidth(o.type, 6)} ${padEndWidth(o.symbol, 12)} ${fmtAmount(o.remaining)} ${level}${o.ocoGroup ? ` [${o.ocoGroup}]` : ""}  (${new Date(o.timestamp).toLocaleTimeString()})`,
+					...orders.map(
+						(o): TableLine => ({
+							fields: [
+								{ label: t(language, "colSymbol"), value: o.symbol },
+								{ label: t(language, "colSide"), value: o.side },
+								{ label: t(language, "colType"), value: o.type },
+								{ label: t(language, "colRemaining"), value: fmtAmount(o.remaining) },
+								{ label: t(language, "colPrice"), value: fmt(o.price, 6) },
+								...(o.stopPrice === undefined
+									? []
+									: [{ label: t(language, "colTrigger"), value: fmt(o.stopPrice, 6) }]),
+								...(o.trailingPercent === undefined
+									? []
+									: [{ label: t(language, "colTrailing"), value: `${fmt(o.trailingPercent)}%` }]),
+								{ label: t(language, "colOrderId"), value: o.id },
+								...(o.ocoGroup ? [{ label: "OCO", value: o.ocoGroup }] : []),
+								{ label: t(language, "colTime"), value: new Date(o.timestamp).toLocaleString(language) },
+							],
 							tone: o.side === "buy" ? "up" : "down",
-						};
-					}),
+						}),
+					),
 				]);
 				ctx.ui.notify(translate(language, "notifyOrders", { count: orders.length }), "info");
 			},
@@ -336,7 +356,15 @@ export function createTradingExtension() {
 					...header,
 					...orders.map(
 						(o): TableLine => ({
-							text: `#${o.id} ${padEndWidth(o.side, 4)} ${padEndWidth(o.symbol, 12)} ${fmtAmount(o.filled)} @ ${fmt(o.average, 6)}  ${o.status}  (${new Date(o.timestamp).toLocaleString()})`,
+							fields: [
+								{ label: t(language, "colSymbol"), value: o.symbol },
+								{ label: t(language, "colSide"), value: o.side },
+								{ label: t(language, "colFilled"), value: fmtAmount(o.filled) },
+								{ label: t(language, "colPrice"), value: fmt(o.average, 6) },
+								{ label: t(language, "colStatus"), value: o.status },
+								{ label: t(language, "colOrderId"), value: o.id },
+								{ label: t(language, "colTime"), value: new Date(o.timestamp).toLocaleString(language) },
+							],
 							tone: o.side === "buy" ? "up" : "down",
 						}),
 					),
@@ -357,9 +385,20 @@ export function createTradingExtension() {
 					{ text: venue.source, tone: "muted" },
 					"",
 					...tickers.map(
-						(t, i): TableLine => ({
-							text: `${String(i + 1).padStart(2)}. ${padEndWidth(t.symbol, 14)} ${padStartWidth(fmt(t.last, 6), 14)}  ${(t.changePct24h ?? 0) >= 0 ? "+" : ""}${fmt(t.changePct24h)}%  vol ${fmt(t.quoteVolume24h, 0)}`,
-							tone: (t.changePct24h ?? 0) >= 0 ? "up" : "down",
+						(ticker, i): TableLine => ({
+							fields: [
+								{ label: "", value: `${i + 1}. ${ticker.symbol}` },
+								{ label: t(language, "colPrice"), value: fmt(ticker.last, 6) },
+								{
+									label: t(language, "colChange"),
+									value:
+										ticker.changePct24h === undefined
+											? "-"
+											: `${ticker.changePct24h >= 0 ? "+" : ""}${fmt(ticker.changePct24h)}%`,
+								},
+								{ label: t(language, "colVolume"), value: fmt(ticker.quoteVolume24h, 0) },
+							],
+							tone: ticker.changePct24h === undefined ? undefined : ticker.changePct24h >= 0 ? "up" : "down",
 						}),
 					),
 				]);
@@ -463,6 +502,7 @@ export function createTradingExtension() {
 					await waitForIdleBeforeMutation(ctx);
 					if (getTrading() !== trading) throw new Error(t(language, "riskRuntimeChanged"));
 					await trading.setOrderApproval(target, { confirmUnattendedTrading: target === "unattended" });
+					updateStatus(ctx);
 					const state = orderApprovalLabel(language, target);
 					show(t(language, "titleApproval"), [
 						{

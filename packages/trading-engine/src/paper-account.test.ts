@@ -92,6 +92,9 @@ describe("parsePaperAccount", () => {
 		expect(() => parsePaperAccount(validAccount({ orders: [{ ...baseOrder, filled: 2 }] }), path)).toThrow(
 			"orders[0].filled cannot exceed amount",
 		);
+		expect(() => parsePaperAccount(validAccount({ orders: [{ ...baseOrder, reservedMargin: -1 }] }), path)).toThrow(
+			"orders[0].reservedMargin must be non-negative",
+		);
 	});
 
 	it("rejects negative persisted trade economics and inconsistent futures lots", () => {

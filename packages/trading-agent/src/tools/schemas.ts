@@ -76,7 +76,7 @@ const orderFields = {
 				"(sell: falls to stopPrice — a stop-loss; buy: rises to stopPrice). take_profit/take_profit_market " +
 				"trigger when the price moves in your favor (sell: rises to stopPrice; buy: falls to stopPrice). " +
 				"stop/take_profit rest as limit orders at `price` after triggering; the _market variants fill immediately. " +
-				"trailing_stop_market trails the best price by trailingPercent and fires on the pullback. Paper spot simulates these conditional orders; Paper futures currently accept market orders only. " +
+				"trailing_stop_market trails the best price by trailingPercent and fires on the pullback. Paper spot and Paper futures simulate these conditional orders; Paper futures does not support OCO. " +
 				"Live conditional and trailing support depends on the ccxt adapter and exchange capability. On Binance Spot this uses native trailingDelta (BIPS); it is not limited to USDⓈ-M futures.",
 		},
 	),

@@ -1,7 +1,7 @@
 # Ti 功能设计文档
 
 > 版本：0.1.11（当前开发工作区版本，未声明已发布）　·　基于 pi agent harness（`@earendil-works/pi-coding-agent` 0.84.3）二开
-> 最后更新：2026-09-08
+> 最后更新：2026-09-11
 
 ---
 
@@ -253,7 +253,7 @@ interface ExchangeClient {
 
 - **初始资金**：`paper.startQuote`（默认 10,000 quote）。
 - **市价单**：以最新成交价立即成交，扣手续费 `feeRate`（默认 0.1%，买卖双向）。
-- **限价单**：下单时预冻结资金/持仓（防止并发超支）；**懒撮合**——每次账户读取操作（balance/positions/orders）检查最新价是否穿越限价，穿越即以限价成交。
+- **限价单**：下单时预冻结资金/持仓（防止并发超支）；**懒撮合**——每次账户读取操作（balance/positions/orders）检查最新价是否穿越限价，穿越即以限价成交。Paper 合约挂单走同一套路径，开仓冻结保证金，减仓锁仓位。
 - **成本与盈亏**：买入按"数量+费用"计入加权平均成本；卖出按先进成本计算已实现盈亏（累计 `realizedPnl`），持仓显示浮动盈亏。
 - **持久化**：`~/.ti-trader/agent/paper/<exchange>-<QUOTE>.json`，进程重启不丢失。
 - **余额校验**：不足时抛出与真实交易所语义一致的错误（`Insufficient USDT: need X, have Y (paper account)`），让 agent 在模拟中就能学会处理资金约束。
@@ -360,7 +360,7 @@ npm --prefix packages/trading-agent run smoke   # 运行时检查 + 模拟盘 E2
 两个 smoke 脚本：
 
 - `scripts/runtime-check.mjs`（无头）：验证装配正确性——工具表精确匹配（无编码工具泄漏）、交易提示词生效、交易命令注册、风控拦截/放行逻辑、默认 paper。
-- `scripts/paper-smoke.mjs`（E2E）：真实行情下完整走一遍 Paper spot 买入→持仓 PnL→限价单挂/撤→卖出→热门市场，并校验费用核算；Paper futures 目前仅支持市价单。
+- `scripts/paper-smoke.mjs`（E2E）：真实行情下完整走一遍 Paper spot 买入→持仓 PnL→限价单挂/撤→卖出→热门市场，并校验费用核算；Paper futures 同样模拟限价和条件单，但不接受 OCO。
 
 **已知上游问题**：根构建链中 coding-agent 的 esbuild 打包步骤在本机报 `<runtime>` external 错误（上游环境问题，与二开无关）；`build:unbundled` 产物即本包全部所需。
 
@@ -386,7 +386,7 @@ npm --prefix packages/trading-agent run smoke   # 运行时检查 + 模拟盘 E2
 ### 支持参数
 
 - 配置：`leverage`（1–125）、`marginType`（`isolated`/`cross`）、`positionMode`（`one-way`/`hedge`）。
-- 下单：Paper futures 仅支持 market 订单。live futures 的 market、limit 和 conditional-order 支持取决于 Binance/ccxt 适配器及交易所能力；`amount`/`quoteAmount` 只是通用输入字段的语义说明，不表示 Paper futures 接受 limit 或 conditional orders。futures-only 参数包括 `reduceOnly`、`positionSide`（`BOTH`/`LONG`/`SHORT`）和 `closePosition`。第 13.5 节的条件单类型属于现货与支持这些类型的 live 市场，不代表 Paper futures 支持条件单。
+- 下单：Paper futures 支持 market、limit 和与 Paper spot 相同的条件单类型（`stop` / `stop_market` / `take_profit` / `take_profit_market` / `trailing_stop_market`），不支持 OCO。live futures 的具体类型支持取决于 Binance/ccxt 适配器及交易所能力。futures-only 参数包括 `reduceOnly`、`positionSide`（`BOTH`/`LONG`/`SHORT`）和 `closePosition`。
 - 默认工具：统一的 `get_positions`、`get_contract_stats`、`get_funding_rate_history`，以及 `set_leverage`、`set_margin_mode`、`set_multi_assets_mode`；`get_funding_rate` 与 `get_futures_positions` 仅保留为非默认 factory。
 - 仓位：合约数量、方向、杠杆、保证金模式、标记价格、强平价格、初始保证金、未实现 PnL。agent-facing 数量始终是 base 资产数量，交易所数量和数量限制是 contracts。
 
@@ -394,7 +394,7 @@ npm --prefix packages/trading-agent run smoke   # 运行时检查 + 模拟盘 E2
 
 ccxt client 仅在 Binance USDⓈ-M 模式设置 `options.defaultType = "swap"`，并使用 ccxt `fetchPositions`、`fetchFundingRate`、`setLeverage`、`setMarginMode` 和 `createOrder` 参数映射 Binance 的 `/fapi/v1/order`、`/fapi/v1/leverage`、`/fapi/v1/marginType` 等接口。
 
-Paper client 使用独立的 futures 账户和报价币保证金，不把现货余额伪装成合约保证金；当前只撮合市价单，不模拟条件单、资金费率扣款或完整强平流程。
+Paper client 使用独立的 futures 账户和报价币保证金，不把现货余额伪装成合约保证金；限价和条件单与 Paper spot 一样按公开行情懒撮合，不模拟资金费率扣款、滑点、部分成交或交易所特定强平。
 
 ### 安全边界
 
@@ -407,11 +407,11 @@ Paper client 使用独立的 futures 账户和报价币保证金，不把现货�
 
 ## 13.5 止盈止损与移动止损
 
-条件单能力按市场模式区分：Paper spot 支持五种条件单类型；live spot/futures 是否支持这些类型取决于 ccxt 适配器及具体交易所；Paper futures 目前仅支持市价单，不支持条件单。五种类型为：`stop`、`stop_market`（止损：价格向不利方向触及 `stopPrice`）、`take_profit`、`take_profit_market`（止盈：价格向有利方向触及 `stopPrice`）、`trailing_stop_market`（`trailingPercent` 百分比回撤移动止损）。带 `_market` 后缀的类型触发即按触发价成交；`stop`/`take_profit` 触发后转为 `price` 限价单继续挂单。下单时触发条件已满足会被拒绝（对齐交易所「would immediately trigger」行为）。
+条件单能力按市场模式区分：Paper spot 与 Paper futures 支持五种条件单类型；live spot/futures 是否支持这些类型取决于 ccxt 适配器及具体交易所。五种类型为：`stop`、`stop_market`（止损：价格向不利方向触及 `stopPrice`）、`take_profit`、`take_profit_market`（止盈：价格向有利方向触及 `stopPrice`）、`trailing_stop_market`（`trailingPercent` 百分比回撤移动止损）。带 `_market` 后缀的类型触发即按触发价成交；`stop`/`take_profit` 触发后转为 `price` 限价单继续挂单。下单时触发条件已满足会被拒绝（对齐交易所「would immediately trigger」行为）。Paper futures 不支持 OCO，保护单应使用 `reduceOnly`。
 
-**Paper spot 撮合**：Paper spot 的所有现货挂单在每次账户读取时懒惰结算。Paper futures 仅支持市价单，不支持条件单或 OCO。
+**Paper 撮合**：Paper 现货和合约的所有挂单在每次账户读取时懒惰结算。
 
-Paper spot 触发单按触发价成交、限价单按限价成交（与真实滑点相比略乐观，但确定性强且与资金预留一致）。资金预留按最坏成交价计算：买入触发单按 `stopPrice`（或限价）冻结含手续费的报价币；移动止损买单按下单时刻的止损位（trough 只会下移，故为上界）冻结。移动止损用 `trailingExtreme` 持久化跟踪峰值/谷值：每次结算先用 ticker 采样；两次读取间隔超过 2 分钟时按间隔选择 1m/15m/1h K 线回填，逐根 K 线「先用之前的极值判定触发、再用本根 K 线更新极值」，避免同根 K 线先创高后触发的次序歧义。`lastCheckedAt` 每次结算推进，保证回填窗口不重叠、不会用乱序数据误触发。
+Paper 触发单按触发价成交、限价单按限价成交（与真实滑点相比略乐观，但确定性强且与资金预留一致）。现货资金预留按最坏成交价计算：买入触发单按 `stopPrice`（或限价）冻结含手续费的报价币；移动止损买单按下单时刻的止损位（trough 只会下移，故为上界）冻结。合约开仓挂单按预留价冻结保证金加手续费；`reduceOnly`/`closePosition` 不额外冻结保证金，但会锁住对应仓位数量，仓位被市价平掉或强平后自动撤销。移动止损用 `trailingExtreme` 持久化跟踪峰值/谷值：每次结算先用 ticker 采样；两次读取间隔超过 2 分钟时按间隔选择 1m/15m/1h K 线回填，逐根 K 线「先用之前的极值判定触发、再用本根 K 线更新极值」，避免同根 K 线先创高后触发的次序歧义。`lastCheckedAt` 每次结算推进，保证回填窗口不重叠、不会用乱序数据误触发。
 
 **Live 映射**：不把 Binance 风格类型名直接传给交易所，而是映射到 ccxt 统一契约——执行类型 market/limit + `stopLossPrice`/`takeProfitPrice`/`trailingPercent`（可选 `trailingTriggerPrice` 激活价），由 ccxt 翻译为各交易所参数（Binance `STOP_LOSS`/`TRAILING_STOP_MARKET`/callbackRate，OKX 条件单/`move_order_stop`/callbackRatio 等）。OKX 类交易所把算法单放在独立端点：`getOpenOrders` 会 best-effort 追加 `{trigger: true}`、`{trailing: true}` 查询并按订单 id 去重合并；`cancelOrder` 失败时自动带同样参数重试。交易所不支持的类型会以其原始错误拒单。
 
@@ -452,4 +452,4 @@ Paper spot 触发单按触发价成交、限价单按限价成交（与真实滑
 2. **定时/自主运行**：cron 包装 `--print`，或包内实现调度循环。
 3. **回测模式**：`BacktestExchangeClient` 实现同一接口，喂历史 K 线。
 4. **策略 skills**：利用 pi 的 skill 机制把交易策略做成可加载文件（需重新启用 `noSkills` 并补一个受控的内容读取通道）。
-5. **合约增强**：完善 Paper futures 条件单/资金费率/强平模拟、Binance 用户数据 WebSocket、账户模式查询/切换；live 条件单映射已实现，但具体支持取决于 ccxt 适配器及交易所能力，后续可补算法单历史查询。
+5. **合约增强**：完善 Paper futures 资金费率、滑点/部分成交、交易所差异化强平模拟、Binance 用户数据 WebSocket、账户模式查询/切换；live 条件单映射已实现，但具体支持取决于 ccxt 适配器及交易所能力，后续可补算法单历史查询。

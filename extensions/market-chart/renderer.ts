@@ -1,3 +1,4 @@
+import { truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import type { Kline, Order, Position, Ticker } from "@nikopack/ti-trading-engine";
 
 export type Bias = "long" | "short" | "neutral";
@@ -63,34 +64,44 @@ export function renderMarketChart(
 	width: number,
 	theme: { fg(color: string, text: string): string },
 	expanded: boolean,
+	view: "entry" | "manual" = "entry",
 ): string[] {
+	if (width <= 0) return [];
+	const wrap = (text: string, prefix = "│ "): string[] => {
+		const linePrefix = width > visibleWidth(prefix) ? prefix : "";
+		return wrapTextWithAnsi(text, width - visibleWidth(linePrefix)).map((line) =>
+			truncateToWidth(`${linePrefix}${line}`, width, "…"),
+		);
+	};
+	const footer = (): string[] =>
+		wrap(
+			view === "manual"
+				? `e / Space: ${expanded ? "collapse" : "expand"} · Esc / q: close`
+				: "Snapshot · call show_market_view again to change timeframe",
+			"└─ ",
+		).map((line) => theme.fg("borderMuted", line));
 	const last = data.ticker.last;
 	if (last === undefined || !Number.isFinite(last))
-		return [theme.fg("error", "Market snapshot has no valid last price")];
-	const clip = (text: string, maxWidth: number): string =>
-		text.length > maxWidth ? `${text.slice(0, Math.max(0, maxWidth - 1))}…` : text;
-	const title = clip(
-		`${data.symbol} · ${data.timeframe} · ${data.mode.toUpperCase()} · ${data.exchange}`,
-		Math.max(12, width - 5),
-	);
+		return wrap("Market snapshot has no valid last price").map((line) => theme.fg("error", line));
 	const lines: string[] = [
-		theme.fg(data.mode === "live" ? "error" : "accent", clip(`┌─ ${title} ─`, width)),
-		clip(
-			`│ Bias: ${data.bias.toUpperCase()}   Last: ${formatPrice(last)}   24h: ${data.ticker.changePct24h === undefined ? "-" : `${data.ticker.changePct24h >= 0 ? "+" : ""}${data.ticker.changePct24h.toFixed(2)}%`}`,
-			width,
+		...wrap(`${data.symbol} · ${data.timeframe} · ${data.mode.toUpperCase()} · ${data.exchange}`, "┌─ ").map((line) =>
+			theme.fg(data.mode === "live" ? "error" : "accent", line),
+		),
+		...wrap(
+			`Bias: ${data.bias.toUpperCase()}   Last: ${formatPrice(last)}   24h: ${data.ticker.changePct24h === undefined ? "-" : `${data.ticker.changePct24h >= 0 ? "+" : ""}${data.ticker.changePct24h.toFixed(2)}%`}`,
 		),
 	];
 	const rr = riskReward(data);
-	if (rr) lines.push(clip(`│ ${rr}`, width));
+	if (rr) lines.push(...wrap(rr));
 	if (!expanded) {
-		for (const level of data.levels)
-			lines.push(clip(`│ ${level.label}: ${formatDistance(last, level.price)}`, width));
-		if (data.rationale) lines.push(clip(`│ Why: ${data.rationale}`, width));
-		lines.push(theme.fg("borderMuted", clip("└─ press expand to view candles and scenario map ─", width)));
+		for (const level of data.levels) lines.push(...wrap(`${level.label}: ${formatDistance(last, level.price)}`));
+		if (data.rationale) lines.push(...wrap(`Why: ${data.rationale}`));
+		lines.push(...footer());
 		return lines;
 	}
 
-	const plotWidth = Math.max(20, Math.min(72, width - 42));
+	// Reserve room for inline level labels only when the plot can retain at least 20 candles.
+	const plotWidth = Math.max(1, Math.min(72, width - (width >= 62 ? 42 : 2)));
 	const visible = data.candles.slice(-plotWidth);
 	const values = visible.flatMap((candle) => [candle.low, candle.high]);
 	for (const level of data.levels) values.push(level.price);
@@ -124,19 +135,14 @@ export function renderMarketChart(
 			levels.length > 0
 				? `  ${levels.map((level) => theme.fg(levelColor(level.kind), `${level.label} ${formatPrice(level.price)}`)).join(" · ")}`
 				: "";
-		lines.push(clip(`│ ${grid[row].join("")}${suffix}`, width));
+		lines.push(truncateToWidth(`│ ${grid[row].join("")}${suffix}`, width, ""));
 	}
-	lines.push(clip(`│ range ${formatPrice(min)} — ${formatPrice(max)}   candles ${visible.length}`, width));
-	for (const level of data.levels) lines.push(clip(`│ ${level.label}: ${formatDistance(last, level.price)}`, width));
-	if (data.rationale) lines.push(clip(`│ Why: ${data.rationale}`, width));
+	lines.push(...wrap(`range ${formatPrice(min)} — ${formatPrice(max)}   candles ${visible.length}`));
+	for (const level of data.levels) lines.push(...wrap(`${level.label}: ${formatDistance(last, level.price)}`));
+	if (data.rationale) lines.push(...wrap(`Why: ${data.rationale}`));
 	const positionText =
 		data.positions.length === 0 ? "none" : data.positions.map((p) => `${p.symbol} ${p.amount}`).join(", ");
-	lines.push(clip(`│ Positions: ${positionText}   Orders: ${data.orders.length}`, width));
-	lines.push(
-		theme.fg(
-			"borderMuted",
-			clip("└─ ↑↓ timeframe hint: call show_market_view again · Esc closes manual view ─", width),
-		),
-	);
+	lines.push(...wrap(`Positions: ${positionText}   Orders: ${data.orders.length}`));
+	lines.push(...footer());
 	return lines;
 }

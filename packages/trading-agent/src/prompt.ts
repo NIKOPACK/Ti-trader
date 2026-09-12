@@ -126,21 +126,19 @@ export function buildTradingPrompt(config: ReadonlyTradingConfig, options?: Trad
 		config.marketType === "spot"
 			? "After a spot entry fills, protect it with place_oco (stop-loss + take-profit in one bracket) or at least one sell stop_market at the invalidation level; consider a trailing stop to lock in gains."
 			: config.marketType === "usdm-futures"
-				? "After a futures entry fills, use one reduce-only stop_market or trailing_stop_market with the matching positionSide when conditional futures orders are supported. OCO is rejected for futures."
-				: "Protect spot entries with place_oco or one sell stop_market. For futures, never use OCO; use one reduce-only protective order with the matching positionSide when supported.";
+				? config.mode === "paper"
+					? "After a futures entry fills, use one reduce-only stop_market or trailing_stop_market with the matching positionSide. OCO is rejected for futures."
+					: "After a futures entry fills, use one reduce-only stop_market or trailing_stop_market with the matching positionSide only when `get_trading_capabilities` reports that type as supported. Treat `unknown` as blocking. OCO is rejected for futures."
+				: config.mode === "paper"
+					? "Protect spot entries with place_oco or one sell stop_market. For futures, never use OCO; use one reduce-only protective order with the matching positionSide."
+					: "Protect spot entries with place_oco or one sell stop_market. For futures, never use OCO; use one reduce-only protective order with the matching positionSide only when `get_trading_capabilities` reports that type as supported.";
 	const executionRule =
-		config.mode === "paper" && config.marketType === "usdm-futures"
-			? "Paper futures currently support market orders only; do not claim that a limit or conditional order was placed."
-			: config.marketType === "both"
-				? "Prefer limit orders for spot when books are thin or volatile. Paper futures currently support market orders only."
-				: "Prefer limit orders when books are thin or the asset is volatile; use market orders only when immediacy matters.";
+		config.marketType === "both"
+			? "Prefer limit orders for spot when books are thin or volatile. Paper futures simulate the same limit and conditional order types as Paper spot; OCO remains spot-only."
+			: "Prefer limit orders when books are thin or the asset is volatile; use market orders only when immediacy matters.";
 	const trailingStopNote =
 		config.mode === "paper"
-			? config.marketType === "spot"
-				? "Paper spot triggers are evaluated on every account read and by the background monitor, with gaps backfilled from klines."
-				: config.marketType === "both"
-					? "Paper spot triggers are evaluated on account reads and by the monitor; Paper futures currently support market orders only."
-					: "Paper futures currently support market orders only, so trailing stops cannot be simulated."
+			? "Paper triggers are evaluated on every account read and by the background monitor, with gaps backfilled from klines. Paper trailing stops accept trailingPercent only, not activation stopPrice."
 			: config.marketType === "usdm-futures"
 				? "On Binance USDⓈ-M futures this uses the native futures trailing-stop order type."
 				: "On Binance Spot this uses native trailingDelta (trailingPercent converted to BIPS); other exchanges may reject it if unsupported.";
