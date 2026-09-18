@@ -50,6 +50,7 @@ todo.md
 plans/
 !/packages/trading-agent/src/plans/
 .ti-local/
+/.serena/
 .pi/hf-sessions/
 .pi/hf-sessions-backup/
 collect.sh
