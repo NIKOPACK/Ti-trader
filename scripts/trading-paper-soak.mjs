@@ -1,5 +1,6 @@
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { createHash } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { MAXIMUM_SAMPLE_GAP_MS } from "./trading-release-gate.mjs";
@@ -20,16 +21,23 @@ function writeJson(path, value) {
 	writeFileSync(path, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
 }
 
-export function createSoakReport(revision, startedAt = new Date().toISOString()) {
+export function dataDirIdentity(dataDir) {
+	return `sha256:${createHash("sha256").update(realpathSync(dataDir)).digest("hex")}`;
+}
+
+export function createSoakReport(revision, dataDirIdentity, startedAt = new Date().toISOString()) {
+	if (!text(dataDirIdentity)) throw new Error("soak report requires a data directory identity");
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		kind: "paper-soak",
 		revision,
 		mode: "paper",
+		dataDirIdentity,
 		startedAt,
 		restartCount: 0,
 		samples: [],
 		collector: { unresolvedIds: [] },
+		activity: { attempts: 0, successes: 0, failures: 0, lastSuccessAt: null },
 	};
 }
 
@@ -96,9 +104,9 @@ export function countLostUnresolvedRecords(previousIds, records) {
 	return previousIds.filter((id) => !current.has(id)).length;
 }
 
-export function loadSoakSnapshot(dataDir) {
+export function loadSoakSnapshot(dataDir, modeOverride) {
 	const agent = join(dataDir, "agent");
-	const config = readJson(join(agent, "trading.json")) ?? {};
+	const config = readJson(join(agent, "trading.json")) ?? (modeOverride ? { mode: modeOverride } : {});
 	const state = readJson(join(agent, "trading-state.json")) ?? {};
 	const paperDir = join(agent, "paper");
 	const paperAccounts = [];
@@ -112,17 +120,26 @@ export function loadSoakSnapshot(dataDir) {
 	return { config, state, paperAccounts };
 }
 
-export function inspectSoakSnapshot(snapshot, previousIds = [], now = Date.now(), expectedFault = false) {
+export function inspectSoakSnapshot(
+	snapshot,
+	previousIds = [],
+	now = Date.now(),
+	expectedFault = false,
+	activity,
+) {
 	if (!record(snapshot) || !record(snapshot.config) || !record(snapshot.state)) {
 		throw new Error("soak snapshot must include config and state objects");
 	}
-	if (snapshot.config.mode === "live") throw new Error("Paper soak collector refuses live mode data directories");
+	if (activity !== undefined && activity !== "succeeded" && activity !== "failed") {
+		throw new Error("soak activity result must be succeeded or failed");
+	}
+	if (snapshot.config.mode !== "paper") throw new Error("Paper soak collector requires a Paper mode data directory");
 	const records = Array.isArray(snapshot.state.executions?.records) ? snapshot.state.executions.records : [];
 	const paperOrders = paperOrdersFromAccounts(snapshot.paperAccounts ?? []);
 	const duplicateSubmissions = countDuplicateSubmissions(records, paperOrders);
 	const lostUnresolvedRecords = countLostUnresolvedRecords(previousIds, records);
 	const unresolvedIds = unresolvedExecutionIds(records);
-	const healthy = duplicateSubmissions === 0 && lostUnresolvedRecords === 0;
+	const healthy = duplicateSubmissions === 0 && lostUnresolvedRecords === 0 && activity !== "failed";
 	return {
 		sample: {
 			at: new Date(now).toISOString(),
@@ -130,6 +147,7 @@ export function inspectSoakSnapshot(snapshot, previousIds = [], now = Date.now()
 			lostUnresolvedRecords,
 			unresolvedExecutions: unresolvedIds.length,
 			healthy: expectedFault ? false : healthy,
+			...(activity ? { activity } : {}),
 			...(expectedFault ? { expectedFault: true } : {}),
 		},
 		unresolvedIds,
@@ -165,6 +183,20 @@ export function noteRestart(report) {
 	return report.restartCount;
 }
 
+export function recordActivityResult(report, succeeded, at = new Date().toISOString()) {
+	if (!record(report?.activity)) throw new Error("soak report activity counters are missing");
+	if (typeof succeeded !== "boolean" || !Number.isFinite(Date.parse(at))) {
+		throw new Error("soak activity result is invalid");
+	}
+	report.activity.attempts += 1;
+	if (succeeded) {
+		report.activity.successes += 1;
+		report.activity.lastSuccessAt = at;
+	} else {
+		report.activity.failures += 1;
+	}
+}
+
 export async function placePaperRoundTrip(initTrading) {
 	const trading = await initTrading({ mode: "paper" });
 	try {
@@ -189,13 +221,17 @@ export async function placePaperRoundTrip(initTrading) {
 	}
 }
 
-function loadReport(path, revision) {
-	if (!existsSync(path)) return createSoakReport(revision);
+export function loadReport(path, revision, identity) {
+	if (!existsSync(path)) return createSoakReport(revision, identity);
 	const report = readJson(path);
 	if (!record(report) || report.kind !== "paper-soak" || report.revision !== revision) {
 		throw new Error("existing soak report does not match this candidate revision");
 	}
+	if (report.schemaVersion !== 2 || report.dataDirIdentity !== identity) {
+		throw new Error("existing soak report does not match this data directory");
+	}
 	if (!record(report.collector)) report.collector = { unresolvedIds: [] };
+	if (!record(report.activity)) throw new Error("existing soak report is missing activity counters");
 	return report;
 }
 
@@ -256,14 +292,22 @@ function parseArgs(args) {
 	return options;
 }
 
-function sampleReport(report, dataDir, expectedFault, now = Date.now()) {
-	const inspected = inspectSoakSnapshot(loadSoakSnapshot(dataDir), report.collector.unresolvedIds, now, expectedFault);
+function sampleReport(report, dataDir, expectedFault, activity, now = Date.now(), modeOverride) {
+	const inspected = inspectSoakSnapshot(
+		loadSoakSnapshot(dataDir, modeOverride),
+		report.collector.unresolvedIds,
+		now,
+		expectedFault,
+		activity,
+	);
 	appendSoakSample(report, inspected.sample);
 	report.collector.unresolvedIds = inspected.unresolvedIds;
 	return inspected.sample;
 }
 
-async function loadInstalledInit(installDir) {
+export async function loadInstalledInit(installDir, dataDir) {
+	mkdirSync(dataDir, { recursive: true });
+	process.env.TI_DATA_DIR = realpathSync(dataDir);
 	const module = await import(pathToFileURL(join(installDir, "node_modules", "ti-trader", "dist", "context.js")).href);
 	if (typeof module.initTrading !== "function") throw new Error("installed ti-trader does not export initTrading");
 	return module.initTrading;
@@ -288,17 +332,48 @@ async function main(args) {
 	const options = parseArgs(args);
 	const repo = fileURLToPath(new URL("../", import.meta.url));
 	const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+	mkdirSync(options.dataDir, { recursive: true });
+	const canonicalDataDir = realpathSync(options.dataDir);
+	const identity = dataDirIdentity(canonicalDataDir);
+	const configured = readJson(join(canonicalDataDir, "agent", "trading.json"));
+	if (options.activity && configured !== undefined && configured.mode !== "paper") {
+		throw new Error("Paper soak activity requires the candidate data directory to be configured for Paper mode");
+	}
 	const existing = existsSync(options.reportPath);
-	const report = loadReport(options.reportPath, revision);
+	const report = loadReport(options.reportPath, revision, identity);
 	if (options.noteRestart || (options.run && existing)) noteRestart(report);
 	const persist = () => writeJson(options.reportPath, report);
-	const sample = () => {
-		const result = sampleReport(report, options.dataDir, options.expectedFault);
+	const sample = (activity, now) => {
+		const result = sampleReport(
+			report,
+			canonicalDataDir,
+			options.expectedFault,
+			activity,
+			now,
+			options.activity ? "paper" : undefined,
+		);
 		persist();
 		return result;
 	};
+	const initTrading = options.activity ? await loadInstalledInit(options.installDir, canonicalDataDir) : undefined;
+	const runIteration = async () => {
+		if (!initTrading) return sample();
+		let activity = "succeeded";
+		let activityError;
+		try {
+			await placePaperRoundTrip((overrides) => initTrading(overrides));
+		} catch (error) {
+			activity = "failed";
+			activityError = error;
+		}
+		const at = new Date().toISOString();
+		recordActivityResult(report, activity === "succeeded", at);
+		const result = sample(activity, Date.parse(at));
+		if (activityError) console.error(activityError instanceof Error ? activityError.message : "soak activity failed");
+		return result;
+	};
 	if (!options.run) {
-		const result = sample();
+		const result = await runIteration();
 		if (options.complete) report.completedAt = new Date().toISOString();
 		persist();
 		console.log(JSON.stringify(result));
@@ -308,18 +383,9 @@ async function main(args) {
 	const stop = () => controller.abort();
 	process.once("SIGINT", stop);
 	process.once("SIGTERM", stop);
-	const initTrading = options.activity ? await loadInstalledInit(options.installDir) : undefined;
 	try {
 		while (!controller.signal.aborted) {
-			sample();
-			if (options.activity && initTrading) {
-				try {
-					await placePaperRoundTrip((overrides) => initTrading(overrides));
-					sample();
-				} catch (error) {
-					console.error(error instanceof Error ? error.message : "soak activity failed");
-				}
-			}
+			await runIteration();
 			if (options.complete) break;
 			try {
 				await delay(options.intervalMs, controller.signal);
