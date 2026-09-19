@@ -1,8 +1,15 @@
+import { mkdtempSync, readFileSync, rmSync, statSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { InMemoryModelsStore } from "@earendil-works/pi-ai";
 import { describe, expect, test, vi } from "vitest";
 import { parseArgs } from "../src/cli/args.ts";
 import { AuthCommandError, isAuthCommandHelp, parseAuthCommand } from "../src/cli/auth-command.ts";
-import { resolveCredentialForPrint } from "../src/cli/credential-print.ts";
+import {
+	assertCredentialOutputAllowed,
+	resolveCredentialForPrint,
+	writeCredentialToFile,
+} from "../src/cli/credential-print.ts";
 import { AuthStorage } from "../src/core/auth-storage.ts";
 import { ModelRuntime } from "../src/core/model-runtime.ts";
 import { main } from "../src/main.ts";
@@ -75,7 +82,7 @@ describe("credential print commands", () => {
 			const stderr = errorSpy.mock.calls.map(([message]) => String(message)).join("\n");
 			expect(stderr).toContain('Unknown option --credentails for "auth check".');
 			expect(stderr).toContain(
-				'Use "pi --help" or "pi auth check --provider <provider> [--json] [--credentials] [--no-refresh]".',
+				'Use "pi --help" or "pi auth check --provider <provider> [--json] [--credentials] [--no-refresh] [--raw | --output-file <path>]".',
 			);
 			expect(process.exitCode).toBe(1);
 		} finally {
@@ -126,5 +133,46 @@ describe("credential print commands", () => {
 		await expect(
 			resolveCredentialForPrint(parseArgs(["--provider", "openai-codex"]), runtime, "api_key"),
 		).rejects.toThrow("configured with OAuth");
+	});
+
+	test("requires explicit authorization for TTY output and writes mode-600 files", () => {
+		expect(() => assertCredentialOutputAllowed(true, false, undefined)).toThrow(
+			"Refusing to print credentials to a terminal",
+		);
+		expect(() => assertCredentialOutputAllowed(true, true, undefined)).not.toThrow();
+		expect(() => assertCredentialOutputAllowed(true, false, "/tmp/credential.txt")).not.toThrow();
+		expect(() => assertCredentialOutputAllowed(false, false, undefined)).not.toThrow();
+
+		const directory = mkdtempSync(join(tmpdir(), "pi-credential-print-"));
+		const path = join(directory, "credential.txt");
+		try {
+			writeCredentialToFile(path, "secret-value");
+			expect(readFileSync(path, "utf8")).toBe("secret-value\n");
+			expect(statSync(path).mode & 0o777).toBe(0o600);
+			expect(() => writeCredentialToFile(path, "replacement")).toThrow();
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	test("parses explicit credential output permissions", () => {
+		expect(parseAuthCommand(["auth", "print-api-key", "--provider", "openai", "--raw"])).toMatchObject({
+			kind: "api_key",
+			raw: true,
+		});
+		expect(
+			parseAuthCommand(["auth", "print-api-key", "--provider", "openai", "--output-file", "secret.txt"]),
+		).toMatchObject({ kind: "api_key", outputFile: "secret.txt" });
+		expect(() =>
+			parseAuthCommand(["auth", "print-api-key", "--provider", "openai", "--raw", "--output-file", "secret.txt"]),
+		).toThrow("cannot be used together");
+		expect(() => parseAuthCommand(["auth", "check", "--provider", "openai", "--raw"])).toThrow(
+			"require --credentials",
+		);
+		expect(parseAuthCommand(["auth", "check", "--provider", "openai", "--credentials", "--raw"])).toMatchObject({
+			kind: "check",
+			credentials: true,
+			raw: true,
+		});
 	});
 });

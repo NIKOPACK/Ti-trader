@@ -1,3 +1,4 @@
+import { writeFileSync } from "node:fs";
 import type { Api, CredentialInfo, Model } from "@earendil-works/pi-ai";
 import { resolveCliModel } from "../core/model-resolver.ts";
 import type { ModelRuntime } from "../core/model-runtime.ts";
@@ -7,6 +8,20 @@ import { AuthCommandError, type AuthCommandKind, getAuthCredential, validateAuth
 const DEFAULT_BEARER_TOKEN_MIN_EXPIRY_MS = 30 * 60_000;
 
 type CredentialPrintKind = Exclude<AuthCommandKind, "check">;
+
+export function assertCredentialOutputAllowed(
+	stdoutIsTTY: boolean,
+	raw: boolean,
+	outputFile: string | undefined,
+): void {
+	if (stdoutIsTTY && !raw && !outputFile) {
+		throw new AuthCommandError("Refusing to print credentials to a terminal. Use --raw or --output-file <path>.");
+	}
+}
+
+export function writeCredentialToFile(path: string, value: string): void {
+	writeFileSync(path, `${value}\n`, { encoding: "utf8", flag: "wx", mode: 0o600 });
+}
 
 /**
  * Resolve one configured provider credential.

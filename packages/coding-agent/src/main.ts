@@ -25,7 +25,11 @@ import {
 	printAuthCommandHelp,
 	validateAuthCommandArgs,
 } from "./cli/auth-command.ts";
-import { resolveCredentialForPrint } from "./cli/credential-print.ts";
+import {
+	assertCredentialOutputAllowed,
+	resolveCredentialForPrint,
+	writeCredentialToFile,
+} from "./cli/credential-print.ts";
 import { processFileArguments } from "./cli/file-processor.ts";
 import { buildInitialMessage } from "./cli/initial-message.ts";
 import { listModels } from "./cli/list-models.ts";
@@ -157,6 +161,7 @@ async function runAuthCommand(args: string[]): Promise<boolean> {
 			throw new AuthCommandError(parsed.diagnostics.map((diagnostic) => diagnostic.message).join("\n"));
 		}
 		if (command.kind !== "check") {
+			assertCredentialOutputAllowed(process.stdout.isTTY === true, command.raw === true, command.outputFile);
 			const signal = AbortSignal.timeout(15_000);
 			const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false, signal });
 			const credential = await resolveCredentialForPrint(
@@ -166,11 +171,15 @@ async function runAuthCommand(args: string[]): Promise<boolean> {
 				command.minExpiryMs,
 				signal,
 			);
-			process.stdout.write(`${credential}\n`);
+			if (command.outputFile) writeCredentialToFile(command.outputFile, credential);
+			else process.stdout.write(`${credential}\n`);
 			return true;
 		}
 
 		const requestedAuth = validateAuthCommandArgs(parsed, command.kind);
+		if (command.credentials) {
+			assertCredentialOutputAllowed(process.stdout.isTTY === true, command.raw === true, command.outputFile);
+		}
 		let result: AuthCheckResult;
 		let credential: string | undefined;
 		try {
@@ -195,7 +204,8 @@ async function runAuthCommand(args: string[]): Promise<boolean> {
 		const output = command.json
 			? JSON.stringify({ ...result, ...(credential ? { credentials: credential } : {}) })
 			: (credential ?? result.status);
-		process.stdout.write(`${output}\n`);
+		if (command.outputFile) writeCredentialToFile(command.outputFile, output);
+		else process.stdout.write(`${output}\n`);
 		process.exitCode = result.status === "ready" ? 0 : result.status === "not_ready" ? 1 : 2;
 	} catch (error) {
 		const message = error instanceof AuthCommandError ? error.message : "Failed to resolve credential";

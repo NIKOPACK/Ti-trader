@@ -11,14 +11,16 @@ export interface AuthCommand {
 	credentials: boolean;
 	noRefresh: boolean;
 	minExpiryMs?: number;
+	raw?: true;
+	outputFile?: string;
 }
 
 export class AuthCommandError extends Error {}
 
 const AUTH_COMMAND_USAGE: Record<AuthCommandKind, string> = {
-	check: `${APP_NAME} auth check --provider <provider> [--json] [--credentials] [--no-refresh]`,
-	api_key: `${APP_NAME} auth print-api-key --provider <provider> [--model <model>]`,
-	bearer_token: `${APP_NAME} auth print-bearer-token --provider <provider> [--model <model>] [--min-expiry <duration>]`,
+	check: `${APP_NAME} auth check --provider <provider> [--json] [--credentials] [--no-refresh] [--raw | --output-file <path>]`,
+	api_key: `${APP_NAME} auth print-api-key --provider <provider> [--model <model>] [--raw | --output-file <path>]`,
+	bearer_token: `${APP_NAME} auth print-bearer-token --provider <provider> [--model <model>] [--min-expiry <duration>] [--raw | --output-file <path>]`,
 };
 
 export function getAuthCommandName(kind: AuthCommandKind): string {
@@ -38,11 +40,11 @@ export function isAuthCommandHelp(args: string[]): boolean {
 
 export function printAuthCommandHelp(): void {
 	console.log(`Usage:
-  pi auth print-api-key [--provider <provider>] [--model <model>]
-  pi auth print-bearer-token [--provider <provider>] [--model <model>] [--min-expiry <duration>]
-  pi auth check [--provider <provider>] [--model <model>] [--json] [--credentials] [--no-refresh]
+  pi auth print-api-key [--provider <provider>] [--model <model>] [--raw | --output-file <path>]
+  pi auth print-bearer-token [--provider <provider>] [--model <model>] [--min-expiry <duration>] [--raw | --output-file <path>]
+  pi auth check [--provider <provider>] [--model <model>] [--json] [--credentials] [--no-refresh] [--raw | --output-file <path>]
 
-Auth commands require at least one of --provider or --model. Checks refresh expired OAuth credentials by default; --no-refresh prevents this. --credentials emits the credential, or includes it in JSON output.`);
+Auth commands require at least one of --provider or --model. Checks refresh expired OAuth credentials by default; --no-refresh prevents this. Credential output to a terminal requires --raw; --output-file creates a new mode-600 file.`);
 }
 
 export function parseAuthCommand(args: string[]): AuthCommand | undefined {
@@ -66,6 +68,8 @@ export function parseAuthCommand(args: string[]): AuthCommand | undefined {
 	let json = false;
 	let credentials = false;
 	let noRefresh = false;
+	let raw = false;
+	let outputFile: string | undefined;
 	let minExpiryMs: number | undefined;
 	for (let index = 2; index < args.length; index++) {
 		const arg = args[index];
@@ -87,12 +91,32 @@ export function parseAuthCommand(args: string[]): AuthCommand | undefined {
 			else noRefresh = true;
 			continue;
 		}
+		if (arg === "--raw") {
+			raw = true;
+			continue;
+		}
+		if (arg === "--output-file") {
+			outputFile = args[++index]?.trim();
+			if (!outputFile) throw new AuthCommandError("--output-file requires a path");
+			continue;
+		}
 		commandArgs.push(arg);
 	}
+	if (raw && outputFile) throw new AuthCommandError("--raw and --output-file cannot be used together");
+	if (kind === "check" && (raw || outputFile) && !credentials) {
+		throw new AuthCommandError("--raw and --output-file require --credentials with auth check");
+	}
 
-	return minExpiryMs === undefined
-		? { kind, args: commandArgs, json, credentials, noRefresh }
-		: { kind, args: commandArgs, json, credentials, noRefresh, minExpiryMs };
+	return {
+		kind,
+		args: commandArgs,
+		json,
+		credentials,
+		noRefresh,
+		...(minExpiryMs === undefined ? {} : { minExpiryMs }),
+		...(raw ? { raw: true as const } : {}),
+		...(outputFile ? { outputFile } : {}),
+	};
 }
 
 export function validateAuthCommandArgs(args: Args, kind: AuthCommandKind): { provider?: string; model?: string } {
