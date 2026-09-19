@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
+import { DurableWriteError } from "@nikopack/ti-trading-engine";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as config from "../config.ts";
 import {
@@ -141,7 +142,7 @@ describe("durable monitoring state", () => {
 		expect(readFileSync(path, "utf8")).toBe('{"version":1,"scopes":[{}]}');
 		rmSync(path);
 		seed(store);
-		vi.spyOn(config, "writeJsonFile").mockImplementation(() => {
+		vi.spyOn(config, "writeJsonFileDurable").mockImplementation(() => {
 			throw new Error("disk full");
 		});
 		expect(() => enqueue(store)).toThrow("disk full");
@@ -274,7 +275,7 @@ describe("durable monitoring outbox", () => {
 		const { store } = fileStore();
 		enqueue(store);
 		const deliver = vi.fn(() => true);
-		vi.spyOn(config, "writeJsonFile").mockImplementation(() => {
+		vi.spyOn(config, "writeJsonFileDurable").mockImplementation(() => {
 			throw new Error("claim failed");
 		});
 		expect(() =>
@@ -291,12 +292,58 @@ describe("durable monitoring outbox", () => {
 		expect(store.read().scopes[0].notifications[0].status).toBe("pending");
 	});
 
+	it("treats a directory-sync failure as a possibly published claim", () => {
+		const { store, path } = fileStore();
+		const id = enqueue(store);
+		const deliver = vi.fn(() => true);
+		const originalWrite = config.writeJsonFileDurable;
+		const write = vi.spyOn(config, "writeJsonFileDurable").mockImplementation((...args) => {
+			originalWrite(...args);
+			throw new DurableWriteError(args[0], "directory-fsync", "possibly-published", new Error("sync failed"));
+		});
+		let failure: unknown;
+		try {
+			deliverMonitoringNotifications(
+				store,
+				SCOPE,
+				"triggers",
+				deliver,
+				() => true,
+				() => NOW,
+			);
+		} catch (error) {
+			failure = error;
+		}
+		expect(failure).toMatchObject({
+			name: "DurableWriteError",
+			phase: "directory-fsync",
+			publication: "possibly-published",
+		});
+		expect(deliver).not.toHaveBeenCalled();
+		expect(createFileMonitoringStore(path).read().scopes[0].notifications[0]).toMatchObject({
+			id,
+			status: "delivering",
+			attempts: 1,
+		});
+
+		write.mockRestore();
+		deliverMonitoringNotifications(
+			createFileMonitoringStore(path),
+			SCOPE,
+			"triggers",
+			deliver,
+			() => true,
+			() => NOW + MONITORING_LEASE_MS + 1,
+		);
+		expect(deliver).toHaveBeenCalledOnce();
+	});
+
 	it("retries the same identity after send-before-ack failure, never during an unexpired lease", () => {
 		const { store, path } = fileStore();
 		const id = enqueue(store);
-		const originalWrite = config.writeJsonFile;
+		const originalWrite = config.writeJsonFileDurable;
 		let writes = 0;
-		vi.spyOn(config, "writeJsonFile").mockImplementation((...args) => {
+		vi.spyOn(config, "writeJsonFileDurable").mockImplementation((...args) => {
 			writes++;
 			if (writes === 2) throw new Error("ack failed");
 			originalWrite(...args);
@@ -472,9 +519,9 @@ describe("durable monitoring outbox", () => {
 	it("still throws if persisting callback failure and retry state fails", () => {
 		const { store } = fileStore();
 		enqueue(store);
-		const originalWrite = config.writeJsonFile;
+		const originalWrite = config.writeJsonFileDurable;
 		let writes = 0;
-		vi.spyOn(config, "writeJsonFile").mockImplementation((...args) => {
+		vi.spyOn(config, "writeJsonFileDurable").mockImplementation((...args) => {
 			if (++writes === 2) throw new Error("retry persistence failed");
 			originalWrite(...args);
 		});

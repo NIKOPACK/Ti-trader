@@ -20,7 +20,7 @@ vi.mock("node:fs", async (importOriginal) => {
 			return fd;
 		},
 		fsyncSync: (fd: number) => {
-			const path = faults.handles.get(fd)!;
+			const path = faults.handles.get(fd)!.replace(/\.\d+\.\d+\.tmp$/, "");
 			faults.events.push(`sync:${path}`);
 			if (faults.fail?.(path)) throw new Error("injected durable sync failure");
 			fs.fsyncSync(fd);
@@ -94,12 +94,13 @@ describe("durable Paper transaction protocol", () => {
 					? path === resolve(directory) && !existsSync(marker)
 					: path === { marker, spot, futures }[boundary];
 			await expect(client.resetAccount(2000)).rejects.toThrow(/injected durable sync failure/);
-			expect(existsSync(marker)).toBe(boundary !== "removal");
+			expect(existsSync(marker)).toBe(boundary !== "marker" && boundary !== "removal");
 			faults.fail = undefined;
 			await client.close();
 			const recovered = createClient();
-			expect(readJsonFile(spot)).toMatchObject({ balances: { USDT: 2000 } });
-			expect(readJsonFile(futures)).toMatchObject({ balances: { USDT: 2000 } });
+			const balance = boundary === "marker" ? 1000 : 2000;
+			expect(readJsonFile(spot)).toMatchObject({ balances: { USDT: balance } });
+			expect(readJsonFile(futures)).toMatchObject({ balances: { USDT: balance } });
 			expect(existsSync(marker)).toBe(false);
 			await recovered.close();
 		},

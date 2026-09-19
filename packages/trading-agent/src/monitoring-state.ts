@@ -9,8 +9,7 @@ import {
 	validateTriggerDefinition,
 } from "@nikopack/ti-triggers";
 import { type AutonomousState, validateAutonomousState } from "./autonomous/state.ts";
-import { readJsonFile, TRADING_STATE_PATH, writeJsonFile } from "./config.ts";
-import { syncTradingStateFile } from "./state-durability.ts";
+import { readJsonFile, TRADING_STATE_PATH, writeJsonFileDurable } from "./config.ts";
 
 export const MONITORING_MAX_AGE_MS = 5 * 60_000;
 export const MONITORING_LEASE_MS = 30_000;
@@ -480,8 +479,7 @@ export function createFileMonitoringStore(
 					const result = operation(state);
 					if (result instanceof Promise) throw new Error("Monitoring transactions must be synchronous");
 					validateMonitoringState(state);
-					writeJsonFile(path, state);
-					syncTradingStateFile(path);
+					writeJsonFileDurable(path, state);
 					return structuredClone(result);
 				},
 				{ staleMs: Number.POSITIVE_INFINITY, reclaimDeadOwner: true },

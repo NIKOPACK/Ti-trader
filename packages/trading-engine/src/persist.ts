@@ -37,6 +37,26 @@ export interface FileLockOptions {
 	timeoutMessage?: (path: string) => string;
 }
 
+export type DurableWritePhase = "directory" | "write" | "file-fsync" | "rename" | "directory-fsync";
+export type DurableWritePublication = "not-published" | "possibly-published";
+
+export class DurableWriteError extends Error {
+	readonly path: string;
+	readonly phase: DurableWritePhase;
+	readonly publication: DurableWritePublication;
+
+	constructor(path: string, phase: DurableWritePhase, publication: DurableWritePublication, cause: unknown) {
+		super(
+			`Durable write failed during ${phase}; target is ${publication}: ${cause instanceof Error ? cause.message : String(cause)}`,
+			{ cause },
+		);
+		this.name = "DurableWriteError";
+		this.path = path;
+		this.phase = phase;
+		this.publication = publication;
+	}
+}
+
 function fsErrorCode(error: unknown): string | undefined {
 	if (typeof error !== "object" || error === null) return undefined;
 	const code = (error as { code?: unknown }).code;
@@ -94,9 +114,57 @@ export function syncFileAndDirectory(path: string): void {
 }
 
 export function writeJsonFileDurable(path: string, data: unknown, mode?: number): void {
-	ensureDirectoryDurable(dirname(path));
-	writeJsonFile(path, data, mode);
-	syncFileAndDirectory(path);
+	try {
+		ensureDirectoryDurable(dirname(path));
+	} catch (error) {
+		throw new DurableWriteError(path, "directory", "not-published", error);
+	}
+
+	const temporaryPath = `${path}.${process.pid}.${Date.now()}.tmp`;
+	const body = `${JSON.stringify(data, null, "\t")}\n`;
+	try {
+		if (mode === undefined) writeFileSync(temporaryPath, body);
+		else {
+			writeFileSync(temporaryPath, body, { encoding: "utf8", mode });
+			chmodSync(temporaryPath, mode);
+		}
+	} catch (error) {
+		try {
+			unlinkSync(temporaryPath);
+		} catch {
+			// Preserve the write failure that determines publication status.
+		}
+		throw new DurableWriteError(path, "write", "not-published", error);
+	}
+
+	try {
+		syncPath(temporaryPath);
+	} catch (error) {
+		try {
+			unlinkSync(temporaryPath);
+		} catch {
+			// Preserve the fsync failure that determines publication status.
+		}
+		throw new DurableWriteError(path, "file-fsync", "not-published", error);
+	}
+
+	try {
+		renameSync(temporaryPath, path);
+	} catch (error) {
+		try {
+			unlinkSync(temporaryPath);
+		} catch {
+			// Preserve the rename failure that determines publication status.
+		}
+		throw new DurableWriteError(path, "rename", "not-published", error);
+	}
+
+	try {
+		// Syncing all ancestors also repairs directories left unflushed by an earlier failed creation.
+		syncDirectoryTree(dirname(path));
+	} catch (error) {
+		throw new DurableWriteError(path, "directory-fsync", "possibly-published", error);
+	}
 }
 
 export function removeFileDurable(path: string): void {

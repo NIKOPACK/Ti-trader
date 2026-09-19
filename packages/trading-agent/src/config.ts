@@ -1,7 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
-import { readJsonFile as readPersistedJson, writeJsonFile as writePersistedJson } from "@nikopack/ti-trading-engine";
+import {
+	readJsonFile as readPersistedJson,
+	writeJsonFile as writePersistedJson,
+	writeJsonFileDurable as writePersistedJsonDurable,
+} from "@nikopack/ti-trading-engine";
 
 export const APP_NAME = "ti";
 /** Ti owns a separate home from pi so both applications can be installed together. */
@@ -60,4 +64,8 @@ export function readJsonFile<T>(path: string): T | undefined {
 
 export function writeJsonFile(path: string, data: unknown, mode?: number): void {
 	writePersistedJson(path, data, mode ?? 0o600);
+}
+
+export function writeJsonFileDurable(path: string, data: unknown, mode?: number): void {
+	writePersistedJsonDurable(path, data, mode ?? 0o600);
 }
