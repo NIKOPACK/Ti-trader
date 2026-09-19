@@ -6,8 +6,16 @@
 import { execSync, spawnSync } from "child_process";
 import { getShellConfig } from "../utils/shell.ts";
 
+type CommandResult =
+	| { status: "resolved"; value: string }
+	| {
+			status: "failed";
+			kind: "empty output" | "execution error" | "non-zero exit" | "timeout";
+			exitCode?: number;
+	  };
+
 // Cache for shell command results (persists for process lifetime)
-const commandResultCache = new Map<string, string | undefined>();
+const commandResultCache = new Map<string, CommandResult>();
 const ENV_VAR_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const ENV_VAR_NAME_PREFIX_RE = /^[A-Za-z_][A-Za-z0-9_]*/;
 
@@ -145,12 +153,26 @@ export function isConfigValueConfigured(config: string, env?: Record<string, str
 export function resolveConfigValue(config: string, env?: Record<string, string>): string | undefined {
 	const reference = parseConfigValueReference(config);
 	if (reference.type === "command") {
-		return executeCommand(reference.config);
+		return commandValue(executeCommand(reference.config));
 	}
 	return resolveTemplate(reference.parts, env);
 }
 
-function executeWithConfiguredShell(command: string): { executed: boolean; value: string | undefined } {
+function failedCommand(error: unknown): CommandResult {
+	const commandError = error as { code?: string; status?: number };
+	if (commandError.code === "ETIMEDOUT") return { status: "failed", kind: "timeout" };
+	if (typeof commandError.status === "number") {
+		return { status: "failed", kind: "non-zero exit", exitCode: commandError.status };
+	}
+	return { status: "failed", kind: "execution error" };
+}
+
+function resolvedCommand(output: string): CommandResult {
+	const value = output.trim();
+	return value ? { status: "resolved", value } : { status: "failed", kind: "empty output" };
+}
+
+function executeWithConfiguredShell(command: string): { executed: boolean; result: CommandResult } {
 	try {
 		const { shell, args, commandTransport } = getShellConfig();
 		const commandFromStdin = commandTransport === "stdin";
@@ -166,53 +188,62 @@ function executeWithConfiguredShell(command: string): { executed: boolean; value
 		if (result.error) {
 			const error = result.error as NodeJS.ErrnoException;
 			if (error.code === "ENOENT") {
-				return { executed: false, value: undefined };
+				return { executed: false, result: failedCommand(error) };
 			}
-			return { executed: true, value: undefined };
+			return { executed: true, result: failedCommand(error) };
 		}
 
 		if (result.status !== 0) {
-			return { executed: true, value: undefined };
+			return {
+				executed: true,
+				result: {
+					status: "failed",
+					kind: "non-zero exit",
+					...(typeof result.status === "number" ? { exitCode: result.status } : {}),
+				},
+			};
 		}
 
-		const value = (result.stdout ?? "").trim();
-		return { executed: true, value: value || undefined };
-	} catch {
-		return { executed: false, value: undefined };
+		return { executed: true, result: resolvedCommand(result.stdout ?? "") };
+	} catch (error) {
+		return { executed: false, result: failedCommand(error) };
 	}
 }
 
-function executeWithDefaultShell(command: string): string | undefined {
+function executeWithDefaultShell(command: string): CommandResult {
 	try {
 		const output = execSync(command, {
 			encoding: "utf-8",
 			timeout: 10000,
 			stdio: ["ignore", "pipe", "ignore"],
 		});
-		return output.trim() || undefined;
-	} catch {
-		return undefined;
+		return resolvedCommand(output);
+	} catch (error) {
+		return failedCommand(error);
 	}
 }
 
-function executeCommandUncached(commandConfig: string): string | undefined {
+function executeCommandUncached(commandConfig: string): CommandResult {
 	const command = commandConfig.slice(1);
 	return process.platform === "win32"
 		? (() => {
 				const configuredResult = executeWithConfiguredShell(command);
-				return configuredResult.executed ? configuredResult.value : executeWithDefaultShell(command);
+				return configuredResult.executed ? configuredResult.result : executeWithDefaultShell(command);
 			})()
 		: executeWithDefaultShell(command);
 }
 
-function executeCommand(commandConfig: string): string | undefined {
-	if (commandResultCache.has(commandConfig)) {
-		return commandResultCache.get(commandConfig);
-	}
+function executeCommand(commandConfig: string): CommandResult {
+	const cached = commandResultCache.get(commandConfig);
+	if (cached) return cached;
 
 	const result = executeCommandUncached(commandConfig);
 	commandResultCache.set(commandConfig, result);
 	return result;
+}
+
+function commandValue(result: CommandResult): string | undefined {
+	return result.status === "resolved" ? result.value : undefined;
 }
 
 /**
@@ -221,30 +252,28 @@ function executeCommand(commandConfig: string): string | undefined {
 export function resolveConfigValueUncached(config: string, env?: Record<string, string>): string | undefined {
 	const reference = parseConfigValueReference(config);
 	if (reference.type === "command") {
-		return executeCommandUncached(reference.config);
+		return commandValue(executeCommandUncached(reference.config));
 	}
 	return resolveTemplate(reference.parts, env);
 }
 
 export function resolveConfigValueOrThrow(config: string, description: string, env?: Record<string, string>): string {
-	const resolvedValue = resolveConfigValueUncached(config, env);
-	if (resolvedValue !== undefined) {
-		return resolvedValue;
-	}
-
 	const reference = parseConfigValueReference(config);
 	if (reference.type === "command") {
-		throw new Error(`Failed to resolve ${description} from shell command: ${reference.config.slice(1)}`);
+		const result = executeCommandUncached(reference.config);
+		if (result.status === "resolved") return result.value;
+		const exitCode = result.exitCode === undefined ? "" : `; exit code ${result.exitCode}`;
+		throw new Error(`Failed to resolve ${description} from shell command (${result.kind}${exitCode})`);
 	}
 
-	if (reference.type === "template") {
-		const missingEnvVars = getMissingConfigValueEnvVarNames(config, env);
-		if (missingEnvVars.length === 1) {
-			throw new Error(`Failed to resolve ${description} from environment variable: ${missingEnvVars[0]}`);
-		}
-		if (missingEnvVars.length > 1) {
-			throw new Error(`Failed to resolve ${description} from environment variables: ${missingEnvVars.join(", ")}`);
-		}
+	const resolvedValue = resolveTemplate(reference.parts, env);
+	if (resolvedValue !== undefined) return resolvedValue;
+	const missingEnvVars = getMissingConfigValueEnvVarNames(config, env);
+	if (missingEnvVars.length === 1) {
+		throw new Error(`Failed to resolve ${description} from environment variable: ${missingEnvVars[0]}`);
+	}
+	if (missingEnvVars.length > 1) {
+		throw new Error(`Failed to resolve ${description} from environment variables: ${missingEnvVars.join(", ")}`);
 	}
 
 	throw new Error(`Failed to resolve ${description}`);

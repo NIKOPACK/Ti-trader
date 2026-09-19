@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import {
 	clearConfigValueCache,
 	resolveConfigValue,
+	resolveConfigValueOrThrow,
 	resolveConfigValueUncached,
 } from "../src/core/resolve-config-value.ts";
 import * as shellModule from "../src/utils/shell.ts";
@@ -60,6 +61,34 @@ describe("resolveConfigValue", () => {
 			expect(resolveConfigValue(command)).toBeUndefined();
 		},
 	);
+
+	test("reports command failures without exposing command data", () => {
+		process.env.TEST_CONFIG_SECRET = "environment-secret";
+		try {
+			const command = `!printf 'stdout-secret'; printf 'stderr-secret' >&2; printf "$TEST_CONFIG_SECRET"; exit 23`;
+			expect(() => resolveConfigValueOrThrow(command, 'API key for provider "test"')).toThrowError(
+				'Failed to resolve API key for provider "test" from shell command (non-zero exit; exit code 23)',
+			);
+
+			try {
+				resolveConfigValueOrThrow(command, 'API key for provider "test"');
+			} catch (error) {
+				const message = error instanceof Error ? error.message : String(error);
+				for (const secret of [command, "stdout-secret", "stderr-secret", "environment-secret"]) {
+					expect(message).not.toContain(secret);
+				}
+			}
+		} finally {
+			delete process.env.TEST_CONFIG_SECRET;
+		}
+	});
+
+	test("classifies empty command output without echoing the command", () => {
+		const command = "!printf '' # hidden-command";
+		expect(() => resolveConfigValueOrThrow(command, "test header")).toThrowError(
+			"Failed to resolve test header from shell command (empty output)",
+		);
+	});
 
 	test("caches successful and failed commands until explicitly cleared", () => {
 		const counterFile = join(tempDir, "counter");
