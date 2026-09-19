@@ -85,6 +85,8 @@ ti --autonomous status      # 显式启用的 Paper 自主运行时（需独立�
 - `get_trading_capabilities` 会返回 `supported`、`unsupported` 或 `unknown`。`unknown` 不能当成「大概可以」。
 - 缺 bid/ask、资金费率或未平仓量时返回 `null` 加 `warnings`，不会伪装成 `0`。
 - 可选研究扩展（`web-search`、`zhihu-research`、`market-research`、`subagent`、`freqtrade`）只在对应环境变量或 `--extension` 时加载，都不能下单。
+- Ti 不提供远程交易服务。仓库里的 CBOR protocol、`PiClient` 和 `RemoteSession` 只是实验性库组件，`ti` 没有装配生产 server；Pi 的 JSONL RPC 是另一条本地进程集成链。未来若开放远程 Ti，必须另行审计认证、授权、传输安全、会话租约和交易工具权限。
+- 已发布 CLI 不等于生产验收完成。七天 Paper 长跑和任何实盘试点都要单独留证据。
 
 运维手册：[docs/trading-operations.md](docs/trading-operations.md)。自主 Paper：[docs/autonomous-trading.md](docs/autonomous-trading.md)。设计：[packages/trading-agent/DESIGN.md](packages/trading-agent/DESIGN.md)。引擎契约：[packages/trading-engine/README.md](packages/trading-engine/README.md)。
 

@@ -85,6 +85,8 @@ State lives in `~/.ti-trader/agent/` (`trading.json`, `keys.json`, sessions); Pi
 - `get_trading_capabilities` returns `supported`, `unsupported` or `unknown`. `unknown` is not “probably fine”.
 - Missing bid/ask, funding, or open interest comes back as `null` plus `warnings`, never as `0`.
 - Optional research extensions (`web-search`, `zhihu-research`, `market-research`, `subagent`, `freqtrade`) load only when their env is set or you pass `--extension`. They cannot submit orders.
+- Ti does not expose a remote trading service. The workspace CBOR protocol, `PiClient`, and `RemoteSession` are experimental library components with no production server wired into `ti`; Pi's JSONL RPC mode is a separate local process-integration path. A future remote Ti service must separately audit authentication, authorization, transport security, session leases, and trading-tool permissions.
+- A published CLI is not a production-acceptance claim. A seven-day Paper soak and any live pilot still need their own evidence.
 
 Operator runbook: [docs/trading-operations.md](docs/trading-operations.md). Autonomous Paper: [docs/autonomous-trading.md](docs/autonomous-trading.md). Design: [packages/trading-agent/DESIGN.md](packages/trading-agent/DESIGN.md). Engine contract: [packages/trading-engine/README.md](packages/trading-engine/README.md).
 

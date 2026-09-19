@@ -477,6 +477,12 @@ For advanced multi-session runtime replacement, use `createAgentSessionRuntime()
 
 See [docs/sdk.md](docs/sdk.md) and [examples/sdk/](examples/sdk/).
 
+### Remote Sessions (Experimental)
+
+The workspace contains the transport-neutral `@earendil-works/pi-protocol` and `@earendil-works/pi-client` packages plus a `RemoteSession` client helper. These are library building blocks, not a production service: the standard Pi and Ti startup paths do not assemble a CBOR server, and Ti does not expose remote trading through them.
+
+A future server must supply authentication, authorization, encrypted or equivalently protected transport, lease enforcement, and an explicit tool-permission policy. In particular, exposing a session that can reach trading tools requires a separate security review; client and protocol tests do not establish that boundary.
+
 ### RPC Mode
 
 For non-Node.js integrations, use RPC mode over stdin/stdout:
@@ -486,6 +492,8 @@ pi --mode rpc
 ```
 
 RPC mode uses strict LF-delimited JSONL framing. Clients must split records on `\n` only. Do not use generic line readers like Node `readline`, which also split on Unicode separators inside JSON payloads.
+
+This stdin/stdout JSONL mode is process integration for a locally launched Pi instance. It is not the framed-CBOR protocol used by `PiClient`, and it does not make Ti a remote trading service.
 
 See [docs/rpc.md](docs/rpc.md) for the protocol.
 

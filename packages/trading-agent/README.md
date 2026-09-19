@@ -66,6 +66,12 @@ Unreleased 源码中，`subagent` 支持筛选、技术、事件、衍生品、�
 
 `market_research` 复用同一运行时，通过 `sessionId` + `question` 继续，或 `listSessions: true` 列表发现，但不允许订单提案。两种入口在 Ti 内都使用父会话的同源行情；旧报告不是最新账户事实。存储、预算、工具边界和示例见 [Subagent](../../extensions/subagent/README.md)。
 
+## 远程访问边界
+
+`ti-trader` 当前只提供本机 CLI/TUI 和一次性 print 模式，不提供远程交易 server。工作区中的 `@earendil-works/pi-protocol`、`@earendil-works/pi-client` 与 coding-agent `RemoteSession` 是实验性库组件，没有接入 `ti` 启动链；Pi 的 `--mode rpc` 使用 stdin/stdout JSONL，是另一套本地进程集成协议，不是 CBOR 远程服务。
+
+未来若把 Ti 暴露到 Unix socket 或网络，不能把现有库测试当成生产准入证据。启用前必须设计并审计身份认证、按会话与交易账户授权、TLS 或等价传输保护、租约所有权、交易工具 allowlist、逐单确认语义以及撤销和审计路径。
+
 ## 从源码运行
 
 ```bash

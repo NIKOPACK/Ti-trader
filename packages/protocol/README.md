@@ -2,6 +2,8 @@
 
 Runtime-neutral schemas, types, CBOR encoding, and byte-stream framing for the experimental pi protocol.
 
+> **Status:** This package defines a wire contract only. It does not provide, launch, authenticate, or authorize a server. Neither the standard `ti` startup path nor its trading runtime exposes this CBOR protocol. Pi's stdin/stdout JSONL RPC mode is separate. Any future remote Ti service must add and audit authentication, authorization, transport security, session leases, and trading-tool permissions before accepting protocol bytes.
+
 Protocol version `1` uses binary messages with this wire layout:
 
 1. A four-byte unsigned big-endian payload length.

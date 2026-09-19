@@ -2,6 +2,8 @@
 
 Transport-neutral client for remote pi sessions. `PiClient` exchanges length-prefixed CBOR messages through a small `ByteTransport` interface. The package has no Node-specific imports.
 
+> **Status:** This is an experimental client library, not a hosted service. It supplies transport, lease, and snapshot primitives but no server implementation. Ti does not wire it into the `ti` CLI, and Pi's stdin/stdout JSONL RPC mode is a separate protocol. Before using these primitives for remote trading, provide and audit authentication, authorization, encrypted transport, lease ownership, and trading-tool permissions on the server side.
+
 ```ts
 import { PiClient, type ByteTransportFactory } from "@earendil-works/pi-client";
 
