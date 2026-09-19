@@ -308,6 +308,8 @@ describe("executable capability contracts", () => {
 					preflightOrder(plan, {
 						getMarketInfo: (value) => client.getMarketInfo(value),
 						getBalances: () => client.getBalances(),
+						getTicker: (value) => client.getTicker(value),
+						getPositions: () => client.getPositions(),
 						quoteCurrency: "USDT",
 						marketType: planning.config.marketType,
 						getEffectiveLeverage: () => 1,
@@ -449,6 +451,8 @@ describe("executable capability contracts", () => {
 		const dependencies = {
 			getMarketInfo: (symbol: string) => client.getMarketInfo(symbol),
 			getBalances: async () => [{ asset: "USDT", free: 18.05, used: 0, total: 18.05 }],
+			getTicker: (symbol: string) => client.getTicker(symbol),
+			getPositions: () => client.getPositions(),
 			quoteCurrency: "USDT",
 			marketType: "usdm-futures" as const,
 			getEffectiveLeverage: () => 5,
@@ -656,6 +660,8 @@ describe("capability evidence and metadata", () => {
 		const preflight = await preflightOrder(plan, {
 			getMarketInfo: async () => info,
 			getBalances: async () => [{ asset: "BTC", free: 10, used: 0, total: 10 }],
+			getTicker: (value) => planning.exchange.getTicker(value),
+			getPositions: () => planning.exchange.getPositions(),
 			quoteCurrency: "USDT",
 			marketType: "spot",
 			getEffectiveLeverage: () => 1,
@@ -676,6 +682,8 @@ describe("capability evidence and metadata", () => {
 		const dependencies = {
 			getMarketInfo: async () => ({ ...info, orderTypes: ["MARKET", "LIMIT", "STOP_LOSS", "TAKE_PROFIT"] }),
 			getBalances: async () => [{ asset: "BTC", free: 10, used: 0, total: 10 }],
+			getTicker: (value: string) => planning.exchange.getTicker(value),
+			getPositions: () => planning.exchange.getPositions(),
 			quoteCurrency: "USDT",
 			marketType: "spot" as const,
 			getEffectiveLeverage: () => 1,

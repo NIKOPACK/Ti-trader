@@ -72,7 +72,7 @@ function client(overrides: Partial<ExchangeClient> = {}): ExchangeClient {
 		id: "binance",
 		mode: "paper",
 		quoteCurrency: "USDT",
-		getTicker: async () => ticker,
+		getTicker: async (symbol) => ({ ...ticker, symbol }),
 		getOrderBook: async () => ({ symbol: "BTC/USDT", timestamp: 1, bids: [], asks: [], bidDepth: 0, askDepth: 0 }),
 		getMarketInfo: async () => ({
 			symbol: "BTC/USDT",
@@ -483,6 +483,423 @@ describe("TradingEngine identity and reservations", () => {
 			errors: [cancelled, expect.objectContaining({ message: "disk unavailable" })],
 		});
 		expect(placeOrder).not.toHaveBeenCalled();
+		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 100 });
+		await expect(trading.placeOrder(plan)).rejects.toBeInstanceOf(PreparedPlanError);
+	});
+
+	it.each(["order", "oco"] as const)("revalidates %s balances after confirmation", async (kind) => {
+		let freeQuote = 100_000;
+		const exchange = client({
+			getBalances: async () => [
+				{ asset: "USDT", free: freeQuote, used: 0, total: freeQuote },
+				{ asset: "BTC", free: 100, used: 0, total: 100 },
+			],
+		});
+		const placeOrder = vi.spyOn(exchange, "placeOrder");
+		const placeOco = vi.spyOn(exchange, "placeOcoOrder");
+		const trading = new TradingEngine(config, exchange, stateStore());
+		const plan =
+			kind === "order"
+				? await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 })
+				: await trading.prepareOcoOrder({
+						symbol: "BTC/USDT",
+						side: "buy",
+						amount: 1,
+						stopLossPrice: 110,
+						takeProfitPrice: 90,
+					});
+		const confirm = async () => {
+			freeQuote = 0;
+			return true;
+		};
+
+		await expect(
+			"side" in plan ? trading.placeOrder(plan, { confirm }) : trading.placeOco(plan, { confirm }),
+		).rejects.toThrow(/Insufficient available USDT/);
+		expect(placeOrder).not.toHaveBeenCalled();
+		expect(placeOco).not.toHaveBeenCalled();
+		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
+	});
+
+	it("revalidates market activity after confirmation", async () => {
+		let active = true;
+		const exchange = client({
+			getMarketInfo: async () => ({
+				symbol: "BTC/USDT",
+				base: "BTC",
+				quote: "USDT",
+				marketType: "spot",
+				contract: false,
+				active,
+			}),
+		});
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine(config, exchange, stateStore());
+		const plan = await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
+
+		await expect(
+			trading.placeOrder(plan, {
+				confirm: async () => {
+					active = false;
+					return true;
+				},
+			}),
+		).rejects.toThrow(/inactive/);
+		expect(submit).not.toHaveBeenCalled();
+		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
+	});
+
+	it("revalidates order capabilities after confirmation", async () => {
+		let orderTypes: string[] | undefined;
+		const exchange = client({
+			getMarketInfo: async () => ({
+				symbol: "BTC/USDT",
+				base: "BTC",
+				quote: "USDT",
+				marketType: "spot",
+				contract: false,
+				active: true,
+				orderTypes,
+			}),
+		});
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine(config, exchange, stateStore());
+		const plan = await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
+
+		await expect(
+			trading.placeOrder(plan, {
+				confirm: async () => {
+					orderTypes = ["limit"];
+					return true;
+				},
+			}),
+		).rejects.toThrow(/does not support market orders/);
+		expect(submit).not.toHaveBeenCalled();
+		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
+	});
+
+	it("releases the prepared execution when a reducing position disappears during confirmation", async () => {
+		const symbol = "BTC/USDT:USDT";
+		let positionOpen = true;
+		const exchange = client({
+			getTicker: async () => ({ symbol, timestamp: 1, last: 100 }),
+			getMarketInfo: async () => ({
+				symbol,
+				base: "BTC",
+				quote: "USDT",
+				settle: "USDT",
+				marketType: "swap",
+				contract: true,
+				linear: true,
+				contractSize: 1,
+				active: true,
+			}),
+			getPositions: async () =>
+				positionOpen ? [{ symbol, asset: "BTC", amount: 1, positionSide: "BOTH", quoteValue: 100 }] : [],
+		});
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine(futuresConfig, exchange, stateStore());
+		const plan = await trading.prepareOrder("sell", { symbol, type: "market", closePosition: true });
+
+		await expect(
+			trading.placeOrder(plan, {
+				confirm: async () => {
+					positionOpen = false;
+					return true;
+				},
+			}),
+		).rejects.toThrow(/reducing position.*no longer uniquely available/);
+		expect(submit).not.toHaveBeenCalled();
+		expect(trading.listExecutions()).toEqual([
+			expect.objectContaining({
+				status: "definite-rejection",
+				settlement: { outcome: "release", notional: 0 },
+			}),
+		]);
+	});
+
+	it.each([
+		{
+			name: "shrinks below a fixed reduction",
+			intent: { symbol: "BTC/USDT:USDT", type: "market", amount: 0.75, reduceOnly: true } as const,
+			nextAmount: 0.5,
+			error: /no longer covers the confirmed reduction/,
+		},
+		{
+			name: "grows before a close-all submission",
+			intent: { symbol: "BTC/USDT:USDT", type: "market", closePosition: true } as const,
+			nextAmount: 2,
+			error: /close-position amount changed/,
+		},
+		{
+			name: "reverses direction",
+			intent: { symbol: "BTC/USDT:USDT", type: "market", amount: 0.5, reduceOnly: true } as const,
+			nextAmount: -1,
+			error: /no longer uniquely available/,
+		},
+	])("rejects when a one-way position $name during confirmation", async ({ intent, nextAmount, error }) => {
+		let amount = 1;
+		const exchange = client({
+			getTicker: async () => ({ symbol: intent.symbol, timestamp: 1, last: 100 }),
+			getMarketInfo: async () => ({
+				symbol: intent.symbol,
+				base: "BTC",
+				quote: "USDT",
+				settle: "USDT",
+				marketType: "swap",
+				contract: true,
+				linear: true,
+				contractSize: 1,
+				active: true,
+			}),
+			getPositions: async () => [
+				{ symbol: intent.symbol, asset: "BTC", amount, positionSide: "BOTH", quoteValue: Math.abs(amount) * 100 },
+			],
+		});
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine(futuresConfig, exchange, stateStore());
+		const plan = await trading.prepareOrder("sell", intent);
+
+		await expect(
+			trading.placeOrder(plan, {
+				confirm: async () => {
+					amount = nextAmount;
+					return true;
+				},
+			}),
+		).rejects.toThrow(error);
+		expect(submit).not.toHaveBeenCalled();
+	});
+
+	it.each([
+		["LONG", "sell", 1],
+		["SHORT", "buy", -1],
+	] as const)("revalidates hedge %s reductions after confirmation", async (positionSide, side, initialAmount) => {
+		const symbol = "BTC/USDT:USDT";
+		let amount = initialAmount;
+		const exchange = client({
+			getTicker: async () => ({ symbol, timestamp: 1, last: 100 }),
+			getMarketInfo: async () => ({
+				symbol,
+				base: "BTC",
+				quote: "USDT",
+				settle: "USDT",
+				marketType: "swap",
+				contract: true,
+				linear: true,
+				contractSize: 1,
+				active: true,
+			}),
+			getPositions: async () => [{ symbol, asset: "BTC", amount, positionSide, quoteValue: Math.abs(amount) * 100 }],
+		});
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine({ ...futuresConfig, positionMode: "hedge" }, exchange, stateStore());
+		const plan = await trading.prepareOrder(side, {
+			symbol,
+			type: "market",
+			amount: 0.75,
+			reduceOnly: true,
+			positionSide,
+		});
+
+		await expect(
+			trading.placeOrder(plan, {
+				confirm: async () => {
+					amount = initialAmount / 2;
+					return true;
+				},
+			}),
+		).rejects.toThrow(/no longer covers the confirmed reduction/);
+		expect(submit).not.toHaveBeenCalled();
+	});
+
+	it.each(["order", "oco"] as const)(
+		"rejects %s risk estimates changed by price during confirmation",
+		async (kind) => {
+			let price = 100;
+			const exchange = client({
+				getTicker: async () => ({ symbol: "BTC/USDT", timestamp: 1, last: price }),
+			});
+			const placeOrder = vi.spyOn(exchange, "placeOrder");
+			const placeOco = vi.spyOn(exchange, "placeOcoOrder");
+			const trading = new TradingEngine(config, exchange, stateStore());
+			const plan =
+				kind === "order"
+					? await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 })
+					: await trading.prepareOcoOrder({
+							symbol: "BTC/USDT",
+							side: "buy",
+							amount: 1,
+							stopLossPrice: 110,
+							takeProfitPrice: 90,
+						});
+
+			await expect(
+				"side" in plan
+					? trading.placeOrder(plan, {
+							confirm: async () => {
+								price = 105;
+								return true;
+							},
+						})
+					: trading.placeOco(plan, {
+							confirm: async () => {
+								price = 105;
+								return true;
+							},
+						}),
+			).rejects.toThrow(/reference price materially changed.*prepare and confirm a new order/i);
+			expect(placeOrder).not.toHaveBeenCalled();
+			expect(placeOco).not.toHaveBeenCalled();
+			expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
+		},
+	);
+
+	it.each([
+		["order", 100.99],
+		["order", 101],
+		["oco", 100.99],
+		["oco", 101],
+	] as const)("allows %s price drift to %s within the confirmed materiality threshold", async (kind, nextPrice) => {
+		let price = 100;
+		const exchange = client({
+			getTicker: async () => ({ symbol: "BTC/USDT", timestamp: 1, last: price }),
+		});
+		const placeOrder = vi.spyOn(exchange, "placeOrder");
+		const placeOco = vi.spyOn(exchange, "placeOcoOrder");
+		const trading = new TradingEngine(config, exchange, stateStore());
+		const plan =
+			kind === "order"
+				? await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 })
+				: await trading.prepareOcoOrder({
+						symbol: "BTC/USDT",
+						side: "buy",
+						amount: 1,
+						stopLossPrice: 110,
+						takeProfitPrice: 90,
+					});
+		const confirm = async () => {
+			price = nextPrice;
+			return true;
+		};
+
+		await expect(
+			"side" in plan ? trading.placeOrder(plan, { confirm }) : trading.placeOco(plan, { confirm }),
+		).resolves.toBeDefined();
+		expect(placeOrder.mock.calls.length + placeOco.mock.calls.length).toBe(1);
+	});
+
+	it.each([
+		["stop_market", 90],
+		["take_profit_market", 110],
+	] as const)("rejects a sell %s whose trigger boundary is reached during confirmation", async (type, nextPrice) => {
+		let price = 100;
+		const exchange = client({
+			getTicker: async () => ({ symbol: "BTC/USDT", timestamp: 1, last: price }),
+		});
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine(config, exchange, stateStore());
+		const plan = await trading.prepareOrder("sell", {
+			symbol: "BTC/USDT",
+			type,
+			amount: 1,
+			stopPrice: nextPrice,
+		});
+
+		await expect(
+			trading.placeOrder(plan, {
+				confirm: async () => {
+					price = nextPrice;
+					return true;
+				},
+			}),
+		).rejects.toThrow(/invalidates the confirmed/);
+		expect(submit).not.toHaveBeenCalled();
+	});
+
+	it("rejects OCO when the current price reaches a confirmed boundary", async () => {
+		let price = 100;
+		const exchange = client({
+			getTicker: async () => ({ symbol: "BTC/USDT", timestamp: 1, last: price }),
+		});
+		const submit = vi.spyOn(exchange, "placeOcoOrder");
+		const trading = new TradingEngine(config, exchange, stateStore());
+		const plan = await trading.prepareOcoOrder({
+			symbol: "BTC/USDT",
+			side: "buy",
+			amount: 1,
+			stopLossPrice: 110,
+			takeProfitPrice: 90,
+		});
+
+		await expect(
+			trading.placeOco(plan, {
+				confirm: async () => {
+					price = 110;
+					return true;
+				},
+			}),
+		).rejects.toThrow(/invalidates the confirmed OCO price range/);
+		expect(submit).not.toHaveBeenCalled();
+	});
+
+	it("releases the reservation when post-confirmation preflight I/O fails", async () => {
+		let balancesAvailable = true;
+		const exchange = client({
+			getBalances: async () => {
+				if (!balancesAvailable) throw new Error("wallet offline");
+				return [
+					{ asset: "USDT", free: 100_000, used: 0, total: 100_000 },
+					{ asset: "BTC", free: 100, used: 0, total: 100 },
+				];
+			},
+		});
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine(config, exchange, stateStore());
+		const plan = await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
+
+		await expect(
+			trading.placeOrder(plan, {
+				confirm: async () => {
+					balancesAvailable = false;
+					return true;
+				},
+			}),
+		).rejects.toThrow(/Balances unavailable during order preflight: wallet offline/);
+		expect(submit).not.toHaveBeenCalled();
+		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
+	});
+
+	it("retains the reservation when post-confirmation preflight release fails", async () => {
+		let freeQuote = 100_000;
+		const store = stateStore();
+		const exchange = client({
+			getBalances: async () => [
+				{ asset: "USDT", free: freeQuote, used: 0, total: freeQuote },
+				{ asset: "BTC", free: 100, used: 0, total: 100 },
+			],
+		});
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine(config, exchange, store);
+		const plan = await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
+		const failure = trading.placeOrder(plan, {
+			confirm: async () => {
+				freeQuote = 0;
+				vi.spyOn(store, "transact").mockImplementationOnce(() => {
+					throw new Error("disk unavailable");
+				});
+				return true;
+			},
+		});
+
+		await expect(failure).rejects.toMatchObject({
+			name: "AggregateError",
+			errors: [
+				expect.objectContaining({ message: expect.stringMatching(/Insufficient available USDT/) }),
+				expect.objectContaining({ message: "disk unavailable" }),
+			],
+		});
+		expect(submit).not.toHaveBeenCalled();
 		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 100 });
 		await expect(trading.placeOrder(plan)).rejects.toBeInstanceOf(PreparedPlanError);
 	});

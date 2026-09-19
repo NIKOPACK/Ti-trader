@@ -1,7 +1,9 @@
 import { evaluateOrderCapability, getTradingCapabilities } from "./capabilities.ts";
 import type { MarketType } from "./client-types.ts";
+import { futuresAmountsEqual } from "./contract-size.ts";
 import { futuresAmountStep, isFuturesSymbol, type PreparedOco, type PreparedOrder } from "./order-plan.ts";
-import type { Balance, MarketInfo } from "./types.ts";
+import { reduceSide } from "./protection.ts";
+import type { Balance, MarketInfo, Position, Ticker } from "./types.ts";
 
 export class OrderPreflightError extends Error {
 	readonly code = "ORDER_PREFLIGHT_REJECTED" as const;
@@ -142,11 +144,172 @@ function checkBalance(
 		reject(`Insufficient available ${asset}: need ${required}, have ${balance.free}`);
 }
 
+async function loadTicker(symbol: string, getTicker: (symbol: string) => Promise<Ticker>): Promise<Ticker> {
+	let ticker: Ticker;
+	try {
+		ticker = await getTicker(symbol);
+	} catch (error) {
+		reject(
+			`Ticker unavailable during order preflight: ${error instanceof Error ? error.message : String(error)}`,
+			true,
+		);
+	}
+	if (ticker.symbol !== symbol) reject(`Ticker returned ${ticker.symbol} while revalidating ${symbol}`, true);
+	return ticker;
+}
+
+function finitePrice(value: number | undefined, name: string): number {
+	if (value === undefined || !Number.isFinite(value) || value <= 0) {
+		reject(`${name} is unavailable during order preflight`, true);
+	}
+	return value;
+}
+
+const MAX_CONFIRMED_PRICE_DRIFT_RATIO = 0.01;
+
+function priceStep(market: MarketInfo): number {
+	const precision = market.pricePrecision;
+	if (precision === undefined || !Number.isFinite(precision) || precision < 0) return 0;
+	if (Number.isInteger(precision)) return 10 ** -precision;
+	return precision;
+}
+
+function materiallyChangedPrice(prepared: number, current: number, market: MarketInfo): boolean {
+	const tolerance = Math.max(prepared * MAX_CONFIRMED_PRICE_DRIFT_RATIO, priceStep(market));
+	return Math.abs(current - prepared) > tolerance;
+}
+
+function materiallyChangedNotional(prepared: number, current: number): boolean {
+	return Math.abs(current - prepared) > prepared * MAX_CONFIRMED_PRICE_DRIFT_RATIO;
+}
+
+function currentReferencePrice(plan: PreparedOrder, ticker: Ticker): number | undefined {
+	switch (plan.referencePriceSource) {
+		case "ask":
+			return ticker.ask;
+		case "bid":
+			return ticker.bid;
+		case "last":
+			return ticker.last;
+		default:
+			return undefined;
+	}
+}
+
+function validateTrigger(plan: PreparedOrder, ticker: Ticker): void {
+	const type = plan.input.type;
+	if (!["stop", "stop_market", "take_profit", "take_profit_market"].includes(type)) {
+		if (type !== "trailing_stop_market" || plan.input.stopPrice === undefined) return;
+	}
+	const currentPrice = finitePrice(ticker.last, "Current last price");
+	const stopPrice = plan.input.stopPrice;
+	if (stopPrice === undefined) reject(`${type} stop price is unavailable during order preflight`, true);
+	if (type === "trailing_stop_market") {
+		const valid = plan.side === "sell" ? stopPrice > currentPrice : stopPrice < currentPrice;
+		if (!valid) reject(`Current price ${currentPrice} invalidates the confirmed trailing stop ${stopPrice}`);
+		return;
+	}
+	const fallsToTrigger = type.startsWith("stop") ? plan.side === "sell" : plan.side === "buy";
+	const valid = fallsToTrigger ? stopPrice < currentPrice : stopPrice > currentPrice;
+	if (!valid) reject(`Current price ${currentPrice} invalidates the confirmed ${type} trigger ${stopPrice}`);
+}
+
+async function revalidateOrderPrice(
+	plan: PreparedOrder,
+	market: MarketInfo,
+	getTicker: (symbol: string) => Promise<Ticker>,
+): Promise<void> {
+	const dynamicReference = ["ask", "bid", "last"].includes(plan.referencePriceSource);
+	const triggerOrder =
+		["stop", "stop_market", "take_profit", "take_profit_market"].includes(plan.input.type) ||
+		(plan.input.type === "trailing_stop_market" && plan.input.stopPrice !== undefined);
+	if (!dynamicReference && !triggerOrder) return;
+
+	const ticker = await loadTicker(plan.input.symbol, getTicker);
+	validateTrigger(plan, ticker);
+	if (!dynamicReference) return;
+	const referencePrice = finitePrice(
+		currentReferencePrice(plan, ticker),
+		`Current ${plan.referencePriceSource} price`,
+	);
+	if (materiallyChangedPrice(plan.referencePrice, referencePrice, market)) {
+		reject(
+			`Reference price materially changed from ${plan.referencePrice} to ${referencePrice}; prepare and confirm a new order`,
+		);
+	}
+}
+
+async function revalidateReducingPosition(plan: PreparedOrder, getPositions: () => Promise<Position[]>): Promise<void> {
+	const prepared = plan.reducingPosition;
+	if (!prepared) return;
+
+	let positions: Position[];
+	try {
+		positions = await getPositions();
+	} catch (error) {
+		reject(
+			`Positions unavailable during order preflight: ${error instanceof Error ? error.message : String(error)}`,
+			true,
+		);
+	}
+	const matches = positions.filter(
+		(position) =>
+			position.symbol === prepared.symbol &&
+			Math.abs(position.amount) > 0 &&
+			position.positionSide === prepared.positionSide &&
+			reduceSide(position) === plan.side,
+	);
+	if (matches.length !== 1) {
+		reject(`The confirmed reducing position on ${plan.input.symbol} is no longer uniquely available`);
+	}
+	const current = matches[0];
+	const currentAmount = Math.abs(current.amount);
+	if (currentAmount < plan.amount && !futuresAmountsEqual(currentAmount, plan.amount)) {
+		reject(`The current position amount ${currentAmount} no longer covers the confirmed reduction ${plan.amount}`);
+	}
+	if (!plan.closePosition) return;
+	if (!futuresAmountsEqual(currentAmount, plan.amount)) {
+		reject(
+			`The close-position amount changed from ${plan.amount} to ${currentAmount}; prepare and confirm a new order`,
+		);
+	}
+	const currentNotional =
+		current.quoteValue !== undefined && Number.isFinite(current.quoteValue) && current.quoteValue > 0
+			? current.quoteValue
+			: currentAmount * plan.referencePrice;
+	if (materiallyChangedNotional(plan.notional, currentNotional)) {
+		reject(
+			`The close-position risk notional changed from ${plan.notional} to ${currentNotional}; prepare and confirm a new order`,
+		);
+	}
+}
+
+async function revalidateOcoPrice(
+	plan: PreparedOco,
+	market: MarketInfo,
+	getTicker: (symbol: string) => Promise<Ticker>,
+): Promise<void> {
+	const ticker = await loadTicker(plan.input.symbol, getTicker);
+	const currentPrice = finitePrice(ticker.last, "Current last price");
+	const valid =
+		plan.input.side === "sell"
+			? plan.input.stopLossPrice < currentPrice && currentPrice < plan.input.takeProfitPrice
+			: plan.input.takeProfitPrice < currentPrice && currentPrice < plan.input.stopLossPrice;
+	if (!valid) reject(`Current price ${currentPrice} invalidates the confirmed OCO price range`);
+	if (materiallyChangedPrice(plan.referencePrice, currentPrice, market)) {
+		reject(
+			`OCO reference price materially changed from ${plan.referencePrice} to ${currentPrice}; prepare and confirm a new order`,
+		);
+	}
+}
+
 export async function preflightOrder(
 	plan: PreparedOrder,
 	dependencies: {
 		getMarketInfo(symbol: string): Promise<MarketInfo>;
 		getBalances(): Promise<Balance[]>;
+		getTicker(symbol: string): Promise<Ticker>;
+		getPositions(): Promise<Position[]>;
 		quoteCurrency: string;
 		marketType: MarketType;
 		getEffectiveLeverage(symbol: string): number;
@@ -164,6 +327,8 @@ export async function preflightOrder(
 		);
 	}
 	checkMarketLimits(plan, market, futures);
+	await revalidateOrderPrice(plan, market, dependencies.getTicker);
+	await revalidateReducingPosition(plan, dependencies.getPositions);
 	let balances: Balance[];
 	try {
 		balances = await dependencies.getBalances();
@@ -191,6 +356,7 @@ export async function preflightOco(
 	dependencies: {
 		getMarketInfo(symbol: string): Promise<MarketInfo>;
 		getBalances(): Promise<Balance[]>;
+		getTicker?(symbol: string): Promise<Ticker>;
 		quoteCurrency: string;
 		feeRate?: number;
 	},
@@ -208,6 +374,7 @@ export async function preflightOco(
 	if (!marketMatches(market, plan.input.symbol, dependencies.quoteCurrency, false)) {
 		reject("Returned market metadata does not match the requested OCO spot symbol or quote currency", true);
 	}
+	if (dependencies.getTicker) await revalidateOcoPrice(plan, market, dependencies.getTicker);
 	const ocoCapability = getTradingCapabilities({ ...plan.capabilityContext, marketInfo: market }).oco[plan.input.side];
 	if (ocoCapability.status === "unsupported") reject(ocoCapability.reason);
 	const minAmount = market.minAmount ?? market.limits?.amount?.min;

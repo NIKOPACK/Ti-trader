@@ -36,7 +36,7 @@ import {
 	prepareOcoOrder,
 	prepareOrder,
 } from "./order-plan.ts";
-import { preflightOco, preflightOrder } from "./order-preflight.ts";
+import { type OrderPreflightResult, preflightOco, preflightOrder } from "./order-preflight.ts";
 import {
 	type Balance,
 	createMarketDataView,
@@ -450,6 +450,8 @@ export class TradingEngine {
 		const input = prepared.input;
 		const result = await preflightOrder(prepared, {
 			getMarketInfo: (symbol) => this.marketDataClient.getMarketInfo(symbol),
+			getTicker: (symbol) => this.marketDataClient.getTicker(symbol),
+			getPositions: () => this.marketDataClient.getPositions(),
 			getBalances: async () => {
 				const balances = await this.marketDataClient.getBalances();
 				if (!replacementIds || input.symbol.includes(":")) return balances;
@@ -536,6 +538,7 @@ export class TradingEngine {
 				const result = await preflightOco(prepared, {
 					getMarketInfo: (symbol) => this.marketDataClient.getMarketInfo(symbol),
 					getBalances: () => this.marketDataClient.getBalances(),
+					getTicker: (symbol) => this.marketDataClient.getTicker(symbol),
 					quoteCurrency: this.quoteCurrency,
 				});
 				if (!prepared.countTowardsDailyLimit)
@@ -555,7 +558,7 @@ export class TradingEngine {
 		summary: string,
 		intent: ExecutionRecord["intent"],
 		submit: () => Promise<T>,
-		preflight: () => Promise<unknown>,
+		preflight: () => Promise<OrderPreflightResult>,
 		policy: TradingEngineSubmissionPolicy,
 		signal?: AbortSignal,
 	): Promise<T> {
@@ -572,8 +575,9 @@ export class TradingEngine {
 		}
 		if (countTowardsDailyLimit) this.risk.assertNewExposureAllowed();
 		this.inFlightPlans.add(plan);
+		let confirmedPreflight: OrderPreflightResult;
 		try {
-			await preflight();
+			confirmedPreflight = await preflight();
 		} catch (error) {
 			this.inFlightPlans.delete(plan);
 			throw error;
@@ -648,7 +652,16 @@ export class TradingEngine {
 		}
 		try {
 			throwIfAborted();
-			await preflight();
+			const currentPreflight = await preflight();
+			if (
+				policy.confirm &&
+				(currentPreflight.warnings.length !== confirmedPreflight.warnings.length ||
+					currentPreflight.warnings.some((warning, index) => warning !== confirmedPreflight.warnings[index]))
+			) {
+				throw new Error(
+					`${label} capability warnings changed during confirmation; prepare and confirm a new order`,
+				);
+			}
 			let riskRevision: number | undefined;
 			if (this.accountRisk?.state()) {
 				const input =
