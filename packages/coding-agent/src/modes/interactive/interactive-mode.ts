@@ -144,6 +144,7 @@ import { TreeSelectorComponent } from "./components/tree-selector.ts";
 import { TrustSelectorComponent } from "./components/trust-selector.ts";
 import { UserMessageComponent } from "./components/user-message.ts";
 import { UserMessageSelectorComponent } from "./components/user-message-selector.ts";
+import { formatDebugLog, writePrivateDebugLog } from "./debug-log.ts";
 import { editInExternalEditor } from "./external-editor.ts";
 import { refreshModelCatalogs } from "./model-catalog-refresh.ts";
 import { getModelSearchText } from "./model-search.ts";
@@ -6519,29 +6520,23 @@ export class InteractiveMode {
 		const allLines = this.ui.render(width);
 
 		const debugLogPath = path.join(this.runtimeHost.services.agentDir, `${this.appName}-debug.log`);
-		const debugData = [
-			`Debug output at ${new Date().toISOString()}`,
-			`Terminal: ${width}x${height}`,
-			`Total lines: ${allLines.length}`,
-			"",
-			"=== All rendered lines with visible widths ===",
-			...allLines.map((line, idx) => {
-				const vw = visibleWidth(line);
-				const escaped = JSON.stringify(line);
-				return `[${idx}] (w=${vw}) ${escaped}`;
-			}),
-			"",
-			"=== Agent messages (JSONL) ===",
-			...this.session.messages.map((msg) => JSON.stringify(msg)),
-			"",
-		].join("\n");
+		const debugData = formatDebugLog({
+			timestamp: new Date(),
+			width,
+			height,
+			renderedLines: allLines.map((text) => ({ text, visibleWidth: visibleWidth(text) })),
+			messages: this.session.messages,
+		});
 
-		fs.mkdirSync(path.dirname(debugLogPath), { recursive: true });
-		fs.writeFileSync(debugLogPath, debugData);
+		writePrivateDebugLog(debugLogPath, debugData);
 
 		this.chatContainer.addChild(new Spacer(1));
 		this.chatContainer.addChild(
-			new Text(`${theme.fg("accent", "✓ Debug log written")}\n${theme.fg("muted", debugLogPath)}`, 1, 1),
+			new Text(
+				`${theme.fg("accent", "✓ Debug log written")}\n${theme.fg("muted", debugLogPath)}\n${theme.fg("warning", "Warning: debug logs may still contain user content")}`,
+				1,
+				1,
+			),
 		);
 		this.ui.requestRender();
 	}
