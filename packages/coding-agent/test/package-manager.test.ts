@@ -25,6 +25,15 @@ class MockSpawnedProcess extends EventEmitter {
 	}
 }
 
+type TestNpmSource = {
+	type: "npm";
+	spec: string;
+	name: string;
+	version?: string;
+	range?: string;
+	pinned: boolean;
+};
+
 interface PackageManagerInternals {
 	runCommand(command: string, args: string[], options?: { cwd?: string }): Promise<void>;
 	runCommandCapture(
@@ -36,17 +45,15 @@ interface PackageManagerInternals {
 	parseSource(
 		source: string,
 	):
-		| { type: "npm"; spec: string; name: string; pinned: boolean }
+		| TestNpmSource
 		| { type: "git"; repo: string; host: string; path: string; pinned: boolean; ref?: string }
 		| { type: "local"; path: string };
-	getNpmInstallPath(
-		source: { type: "npm"; spec: string; name: string; pinned: boolean },
-		scope: "user" | "project" | "temporary",
-	): string;
+	getNpmInstallPath(source: TestNpmSource, scope: "user" | "project" | "temporary"): string;
 	getGitInstallPath(
 		source: { type: "git"; repo: string; host: string; path: string; pinned: boolean; ref?: string },
 		scope: "user" | "project" | "temporary",
 	): string;
+	updateNpmBatch(sources: Array<{ source: string; parsed: TestNpmSource }>, scope: "user" | "project"): Promise<void>;
 }
 
 // Helper to check if a resource is enabled
@@ -741,7 +748,178 @@ Content`,
 	});
 
 	describe("npmCommand", () => {
-		it("should use npmCommand argv for npm installs", async () => {
+		it("should enable lifecycle scripts for an exact global npm identity", async () => {
+			settingsManager = SettingsManager.inMemory({
+				packageLifecycleScriptAllowlist: ["npm:@scope/pkg"],
+			});
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+			});
+
+			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.install("npm:@scope/pkg@1.2.3");
+
+			expect(runCommandSpy).toHaveBeenCalledWith(
+				"npm",
+				["install", "@scope/pkg@1.2.3", "--prefix", join(agentDir, "npm"), "--legacy-peer-deps"],
+				undefined,
+			);
+		});
+
+		it("should not treat wildcard entries as lifecycle script allowlist entries", async () => {
+			settingsManager = SettingsManager.inMemory({
+				packageLifecycleScriptAllowlist: ["npm:@scope/*"],
+			});
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+			});
+
+			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.install("npm:@scope/pkg");
+
+			expect(runCommandSpy).toHaveBeenCalledWith(
+				"npm",
+				["install", "@scope/pkg", "--prefix", join(agentDir, "npm"), "--legacy-peer-deps", "--ignore-scripts"],
+				undefined,
+			);
+		});
+
+		it("should not inherit the global lifecycle script allowlist in project scope", async () => {
+			settingsManager = SettingsManager.inMemory({
+				packageLifecycleScriptAllowlist: ["npm:@scope/pkg"],
+			});
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+			});
+
+			const runCommandSpy = vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.install("npm:@scope/pkg", { local: true });
+
+			expect(runCommandSpy).toHaveBeenCalledWith(
+				"npm",
+				[
+					"install",
+					"@scope/pkg",
+					"--prefix",
+					join(tempDir, ".pi", "npm"),
+					"--legacy-peer-deps",
+					"--ignore-scripts",
+				],
+				undefined,
+			);
+		});
+
+		it("should report the exact identity and global repair entry when scripts are disabled", async () => {
+			const events: ProgressEvent[] = [];
+			packageManager.setProgressCallback((event) => events.push(event));
+			vi.spyOn(packageManager as any, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.install("npm:@scope/pkg");
+
+			expect(events[0]?.message).toContain("npm:@scope/pkg");
+			expect(events[0]?.message).toContain("packageLifecycleScriptAllowlist");
+			expect(events[0]?.message).toContain("pi allow-scripts npm:@scope/pkg");
+		});
+
+		it("should keep temporary packages outside the global lifecycle script allowlist", async () => {
+			settingsManager = SettingsManager.inMemory({
+				packageLifecycleScriptAllowlist: ["npm:@scope/pkg"],
+			});
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+			});
+			const events: ProgressEvent[] = [];
+			packageManager.setProgressCallback((event) => events.push(event));
+			const managerWithInternals = packageManager as unknown as PackageManagerInternals;
+			const runCommandSpy = vi.spyOn(managerWithInternals, "runCommand").mockResolvedValue(undefined);
+
+			await packageManager.resolveExtensionSources(["npm:@scope/pkg"], { temporary: true });
+
+			expect(runCommandSpy).toHaveBeenCalledTimes(1);
+			const call = runCommandSpy.mock.calls[0];
+			if (!call) throw new Error("Expected one npm install call");
+			const [command, args, options] = call;
+			expect(command).toBe("npm");
+			expect(args.slice(0, 3)).toEqual(["install", "@scope/pkg", "--prefix"]);
+			expect(args[3]).toContain(join(agentDir, "tmp", "extensions", "npm"));
+			expect(args.slice(4)).toEqual(["--legacy-peer-deps", "--ignore-scripts"]);
+			expect(options).toBeUndefined();
+			expect(events[0]?.message).toContain("temporary scope never inherits the global allowlist");
+			expect(events[0]?.message).not.toContain("allow-scripts");
+		});
+
+		it("should separate allowed and blocked npm updates", async () => {
+			settingsManager = SettingsManager.inMemory({
+				packageLifecycleScriptAllowlist: ["npm:allowed"],
+			});
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+			});
+			const managerWithInternals = packageManager as unknown as PackageManagerInternals;
+			const runCommandSpy = vi.spyOn(managerWithInternals, "runCommand").mockResolvedValue(undefined);
+
+			await managerWithInternals.updateNpmBatch(
+				[
+					{ source: "npm:blocked", parsed: { type: "npm", spec: "blocked", name: "blocked", pinned: false } },
+					{ source: "npm:allowed", parsed: { type: "npm", spec: "allowed", name: "allowed", pinned: false } },
+				],
+				"user",
+			);
+
+			expect(runCommandSpy).toHaveBeenNthCalledWith(
+				1,
+				"npm",
+				["install", "blocked@latest", "--prefix", join(agentDir, "npm"), "--legacy-peer-deps", "--ignore-scripts"],
+				undefined,
+			);
+			expect(runCommandSpy).toHaveBeenNthCalledWith(
+				2,
+				"npm",
+				["install", "allowed@latest", "--prefix", join(agentDir, "npm"), "--legacy-peer-deps"],
+				undefined,
+			);
+		});
+
+		it("should enable lifecycle scripts for an exact global git identity", async () => {
+			settingsManager = SettingsManager.inMemory({
+				packageLifecycleScriptAllowlist: ["git:github.com/user/repo"],
+			});
+			packageManager = new DefaultPackageManager({
+				cwd: tempDir,
+				agentDir,
+				settingsManager,
+			});
+
+			const source = "git:github.com/user/repo";
+			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+			const runCommandSpy = vi
+				.spyOn(packageManager as any, "runCommand")
+				.mockImplementation(async (...callArgs: unknown[]) => {
+					const [command, args] = callArgs as [string, string[]];
+					if (command === "git" && args[0] === "clone") {
+						mkdirSync(targetDir, { recursive: true });
+						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+					}
+				});
+
+			await packageManager.install(source);
+
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+		});
+		it("should disable lifecycle scripts for npm installs", async () => {
 			settingsManager = SettingsManager.inMemory({
 				npmCommand: ["mise", "exec", "node@20", "--", "npm"],
 			});
@@ -767,6 +945,7 @@ Content`,
 					"--prefix",
 					join(agentDir, "npm"),
 					"--legacy-peer-deps",
+					"--ignore-scripts",
 				],
 				undefined,
 			);
@@ -785,7 +964,7 @@ Content`,
 			);
 		});
 
-		it("should use bun --cwd for npm package installs", async () => {
+		it("should disable lifecycle scripts for bun package installs", async () => {
 			settingsManager = SettingsManager.inMemory({
 				npmCommand: ["mise", "exec", "bun@1", "--", "bun"],
 			});
@@ -801,12 +980,23 @@ Content`,
 
 			expect(runCommandSpy).toHaveBeenCalledWith(
 				"mise",
-				["exec", "bun@1", "--", "bun", "install", "@scope/pkg", "--cwd", join(agentDir, "npm"), "--omit=peer"],
+				[
+					"exec",
+					"bun@1",
+					"--",
+					"bun",
+					"install",
+					"@scope/pkg",
+					"--cwd",
+					join(agentDir, "npm"),
+					"--omit=peer",
+					"--ignore-scripts",
+				],
 				undefined,
 			);
 		});
 
-		it("should install git package dependencies with --omit=dev", async () => {
+		it("should install git package dependencies without lifecycle scripts", async () => {
 			const source = "git:github.com/user/repo";
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const runCommandSpy = vi
@@ -821,7 +1011,9 @@ Content`,
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--ignore-scripts"], {
+				cwd: targetDir,
+			});
 		});
 
 		it("should remove a newly created checkout when git clone fails", async () => {
@@ -885,7 +1077,9 @@ Content`,
 				cwd: targetDir,
 			});
 			expect(runCommandSpy).toHaveBeenCalledWith("git", ["clean", "-fdx"], { cwd: targetDir });
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--ignore-scripts"], {
+				cwd: targetDir,
+			});
 		});
 
 		it("should reconcile an existing git checkout to its update target when installing without a ref", async () => {
@@ -920,7 +1114,7 @@ Content`,
 			expect(runCommandSpy).toHaveBeenCalledWith("git", ["clean", "-fdx"], { cwd: targetDir });
 		});
 
-		it("should use plain install for git package dependencies when npmCommand is configured", async () => {
+		it("should disable lifecycle scripts for configured git dependency installs", async () => {
 			settingsManager = SettingsManager.inMemory({
 				npmCommand: ["pnpm"],
 			});
@@ -944,10 +1138,10 @@ Content`,
 
 			await packageManager.install(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("pnpm", ["install"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("pnpm", ["install", "--ignore-scripts"], { cwd: targetDir });
 		});
 
-		it("should update git package dependencies with --omit=dev", async () => {
+		it("should update git package dependencies without lifecycle scripts", async () => {
 			const source = "git:github.com/user/repo";
 			const targetDir = join(tempDir, ".pi", "git", "github.com", "user", "repo");
 			mkdirSync(targetDir, { recursive: true });
@@ -971,7 +1165,9 @@ Content`,
 
 			await packageManager.update(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--ignore-scripts"], {
+				cwd: targetDir,
+			});
 		});
 
 		it("should repair missing git package dependencies when the checkout is already current", async () => {
@@ -996,7 +1192,9 @@ Content`,
 
 			await packageManager.update(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--ignore-scripts"], {
+				cwd: targetDir,
+			});
 			expect(runCommandSpy).not.toHaveBeenCalledWith("git", ["clean", "-fdx"], { cwd: targetDir });
 		});
 
@@ -1028,10 +1226,12 @@ Content`,
 
 			await expect(packageManager.update(source)).rejects.toThrow("simulated clean failure");
 
-			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev"], { cwd: targetDir });
+			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--ignore-scripts"], {
+				cwd: targetDir,
+			});
 		});
 
-		it("should use plain install through npmCommand argv when updating git package dependencies", async () => {
+		it("should disable lifecycle scripts through npmCommand argv when updating git dependencies", async () => {
 			settingsManager = SettingsManager.inMemory({
 				npmCommand: ["mise", "exec", "node@20", "--", "pnpm"],
 			});
@@ -1064,9 +1264,13 @@ Content`,
 
 			await packageManager.update(source);
 
-			expect(runCommandSpy).toHaveBeenCalledWith("mise", ["exec", "node@20", "--", "pnpm", "install"], {
-				cwd: targetDir,
-			});
+			expect(runCommandSpy).toHaveBeenCalledWith(
+				"mise",
+				["exec", "node@20", "--", "pnpm", "install", "--ignore-scripts"],
+				{
+					cwd: targetDir,
+				},
+			);
 		});
 
 		it("should use npmCommand argv for npm root lookup and invalidate cached root when npmCommand changes", () => {
@@ -1136,6 +1340,7 @@ Content`,
 						"--config.auto-install-peers=false",
 						"--config.strict-peer-dependencies=false",
 						"--config.strict-dep-builds=false",
+						"--ignore-scripts",
 					]);
 					mkdirSync(join(packagePath, "extensions"), { recursive: true });
 					writeFileSync(join(packagePath, "package.json"), JSON.stringify({ name: "pnpm-pkg", version: "1.0.0" }));
@@ -2322,7 +2527,14 @@ export default function(api) { api.registerTool({ name: "test", description: "te
 			);
 			expect(runCommandSpy).toHaveBeenCalledWith(
 				"npm",
-				["install", "example@^1.0.0", "--prefix", join(tempDir, ".pi", "npm"), "--legacy-peer-deps"],
+				[
+					"install",
+					"example@^1.0.0",
+					"--prefix",
+					join(tempDir, ".pi", "npm"),
+					"--legacy-peer-deps",
+					"--ignore-scripts",
+				],
 				undefined,
 			);
 		});
@@ -2388,6 +2600,7 @@ export default function(api) { api.registerTool({ name: "test", description: "te
 						"--prefix",
 						join(agentDir, "npm"),
 						"--legacy-peer-deps",
+						"--ignore-scripts",
 					]);
 					mkdirSync(managedPath, { recursive: true });
 					writeFileSync(
@@ -2505,6 +2718,7 @@ export default function(api) { api.registerTool({ name: "test", description: "te
 					"--prefix",
 					join(agentDir, "npm"),
 					"--legacy-peer-deps",
+					"--ignore-scripts",
 				],
 				undefined,
 			);
@@ -2518,6 +2732,7 @@ export default function(api) { api.registerTool({ name: "test", description: "te
 					"--prefix",
 					join(tempDir, ".pi", "npm"),
 					"--legacy-peer-deps",
+					"--ignore-scripts",
 				],
 				undefined,
 			);

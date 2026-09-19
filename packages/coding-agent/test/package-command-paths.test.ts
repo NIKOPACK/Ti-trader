@@ -133,6 +133,25 @@ if (process.platform !== "win32") fs.chmodSync(piPath, 0o755);
 		};
 	}
 
+	it("persists lifecycle script permission as an exact global package identity", async () => {
+		await runPackageCommandDirectly(["allow-scripts", "npm:@scope/pkg@1.2.3"]);
+
+		const settings = JSON.parse(readFileSync(join(agentDir, "settings.json"), "utf-8")) as {
+			packageLifecycleScriptAllowlist?: string[];
+		};
+		expect(settings.packageLifecycleScriptAllowlist).toEqual(["npm:@scope/pkg"]);
+		expect(existsSync(join(projectDir, ".pi", "settings.json"))).toBe(false);
+	});
+
+	it("rejects lifecycle script permissions for wildcard package identities", async () => {
+		const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+		await runPackageCommandDirectly(["allow-scripts", "npm:@scope/*"]);
+
+		expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining("exact package identities"));
+		expect(existsSync(join(agentDir, "settings.json"))).toBe(false);
+	});
+
 	beforeEach(() => {
 		allowNetwork();
 		tempDir = join(tmpdir(), `pi-package-commands-${Date.now()}-${Math.random().toString(36).slice(2)}`);

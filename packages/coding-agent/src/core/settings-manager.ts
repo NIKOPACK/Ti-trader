@@ -123,6 +123,7 @@ export interface Settings {
 	defaultProjectTrust?: DefaultProjectTrust; // default: "ask"; global setting only
 	shellCommandPrefix?: string; // Prefix prepended to every bash command (e.g., "shopt -s expand_aliases" for alias support)
 	npmCommand?: string[]; // Command used for npm package lookup/install operations, argv-style (e.g., ["mise", "exec", "node@20", "--", "npm"])
+	packageLifecycleScriptAllowlist?: string[];
 	collapseChangelog?: boolean; // Show condensed changelog after update (use /changelog for full)
 	enableInstallTelemetry?: boolean; // default: true - anonymous version/update ping after changelog-detected updates
 	enableAnalytics?: boolean; // default: false - opt-in analytics data sharing
@@ -1039,6 +1040,16 @@ export class SettingsManager {
 
 	getNpmCommand(): string[] | undefined {
 		return this.settings.npmCommand ? [...this.settings.npmCommand] : undefined;
+	}
+
+	getGlobalPackageLifecycleScriptAllowlist(): string[] {
+		return [...(this.globalSettings.packageLifecycleScriptAllowlist ?? [])];
+	}
+
+	setGlobalPackageLifecycleScriptAllowlist(identities: string[]): void {
+		this.globalSettings.packageLifecycleScriptAllowlist = [...identities];
+		this.markModified("packageLifecycleScriptAllowlist");
+		this.save();
 	}
 
 	setNpmCommand(command: string[] | undefined): void {

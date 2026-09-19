@@ -43,7 +43,7 @@ import {
 	quarantineWindowsNativeDependencies,
 } from "./utils/windows-self-update.ts";
 
-export type PackageCommand = "install" | "remove" | "update" | "list";
+export type PackageCommand = "install" | "remove" | "update" | "list" | "allow-scripts";
 
 type UpdateTarget = { type: "all" } | { type: "self" } | { type: "extensions"; source?: string } | { type: "models" };
 
@@ -272,6 +272,8 @@ function getPackageCommandUsage(command: PackageCommand): string {
 			return `${APP_NAME} update [source|self|pi] [--self|--extensions|--models|--all] [--extension <source>] [--approve|--no-approve] [--force]`;
 		case "list":
 			return `${APP_NAME} list [--approve|--no-approve]`;
+		case "allow-scripts":
+			return `${APP_NAME} allow-scripts <source>`;
 	}
 }
 
@@ -369,6 +371,15 @@ Options:
   -na, --no-approve  Ignore project-local files for this command
 `);
 			return;
+
+		case "allow-scripts":
+			console.log(`${chalk.bold("Usage:")}
+  ${getPackageCommandUsage("allow-scripts")}
+
+Allow lifecycle scripts for one exact global npm or Git package identity.
+Project packages never inherit this allowlist.
+`);
+			return;
 	}
 }
 
@@ -377,7 +388,13 @@ function parsePackageCommand(args: string[]): PackageCommandOptions | undefined 
 	let command: PackageCommand | undefined;
 	if (rawCommand === "uninstall") {
 		command = "remove";
-	} else if (rawCommand === "install" || rawCommand === "remove" || rawCommand === "update" || rawCommand === "list") {
+	} else if (
+		rawCommand === "install" ||
+		rawCommand === "remove" ||
+		rawCommand === "update" ||
+		rawCommand === "list" ||
+		rawCommand === "allow-scripts"
+	) {
 		command = rawCommand;
 	}
 	if (!command) {
@@ -904,7 +921,10 @@ export async function handlePackageCommand(
 	}
 
 	const source = options.source;
-	if ((options.command === "install" || options.command === "remove") && !source) {
+	if (
+		(options.command === "install" || options.command === "remove" || options.command === "allow-scripts") &&
+		!source
+	) {
 		console.error(chalk.red(`Missing ${options.command} source.`));
 		console.error(chalk.dim(`Usage: ${getPackageCommandUsage(options.command)}`));
 		process.exitCode = 1;
@@ -924,6 +944,20 @@ export async function handlePackageCommand(
 
 	const cwd = process.cwd();
 	const agentDir = getAgentDir();
+	if (options.command === "allow-scripts") {
+		const globalSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
+		reportSettingsErrors(globalSettingsManager, "package command");
+		try {
+			const packageManager = new DefaultPackageManager({ cwd, agentDir, settingsManager: globalSettingsManager });
+			const identity = packageManager.allowLifecycleScripts(source!);
+			console.log(chalk.green(`Allowed lifecycle scripts for ${identity} in global settings.`));
+		} catch (error: unknown) {
+			const message = error instanceof Error ? error.message : "Unknown package command error";
+			console.error(chalk.red(`Error: ${message}`));
+			process.exitCode = 1;
+		}
+		return true;
+	}
 	const writesProjectPackageConfig = (options.command === "install" || options.command === "remove") && options.local;
 	const { settingsManager, projectTrustWarnings } = await createCommandSettingsManager({
 		cwd,

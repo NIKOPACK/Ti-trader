@@ -37,6 +37,7 @@ import type { Readable } from "node:stream";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
 import { gt, maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
+import { APP_NAME } from "../config.ts";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.ts";
 import { type GitSource, parseGitUrl } from "../utils/git.ts";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.ts";
@@ -114,6 +115,7 @@ export interface PackageManager {
 	installAndPersist(source: string, options?: { local?: boolean }): Promise<void>;
 	remove(source: string, options?: { local?: boolean }): Promise<void>;
 	removeAndPersist(source: string, options?: { local?: boolean }): Promise<boolean>;
+	allowLifecycleScripts(source: string): string;
 	update(source?: string): Promise<void>;
 	listConfiguredPackages(): ConfiguredPackage[];
 	resolveExtensionSources(
@@ -827,6 +829,22 @@ export class DefaultPackageManager implements PackageManager {
 		this.progressCallback = callback;
 	}
 
+	allowLifecycleScripts(source: string): string {
+		const parsed = this.parseSource(source);
+		if (parsed.type === "local") {
+			throw new Error(`Lifecycle scripts are only available for npm or Git packages: ${source}`);
+		}
+		const identity = this.getPackageIdentityFromParsed(parsed);
+		if (/[?*[\]{}]/.test(identity)) {
+			throw new Error(`Lifecycle script allowlist entries must be exact package identities: ${identity}`);
+		}
+		const allowlist = this.settingsManager.getGlobalPackageLifecycleScriptAllowlist();
+		if (!allowlist.includes(identity)) {
+			this.settingsManager.setGlobalPackageLifecycleScriptAllowlist([...allowlist, identity]);
+		}
+		return identity;
+	}
+
 	addSourceToSettings(source: string, options?: { local?: boolean }): boolean {
 		const scope: SourceScope = options?.local ? "project" : "user";
 		const currentSettings =
@@ -1012,7 +1030,11 @@ export class DefaultPackageManager implements PackageManager {
 		const parsed = this.parseSource(source);
 		const scope: SourceScope = options?.local ? "project" : "user";
 		this.assertProjectTrustedForScope(scope);
-		await this.withProgress("install", source, `Installing ${source}...`, async () => {
+		const message =
+			parsed.type === "local"
+				? `Installing ${source}...`
+				: this.packageOperationMessage("Installing", source, parsed, scope);
+		await this.withProgress("install", source, message, async () => {
 			if (parsed.type === "npm") {
 				await this.installNpm(parsed, scope, false);
 				return;
@@ -1174,19 +1196,36 @@ export class DefaultPackageManager implements PackageManager {
 			return;
 		}
 
-		const sourceLabel = sources.length === 1 ? sources[0].source : `${scope} npm packages`;
-		const message = sources.length === 1 ? `Updating ${sources[0].source}...` : `Updating ${scope} npm packages...`;
-		const specs = sources.map((entry) => (entry.parsed.version ? entry.parsed.spec : `${entry.parsed.name}@latest`));
+		for (const allowScripts of [false, true]) {
+			const group = sources.filter((entry) => this.canRunLifecycleScripts(entry.parsed, scope) === allowScripts);
+			if (group.length === 0) {
+				continue;
+			}
+			const sourceLabel = group.length === 1 ? group[0].source : `${scope} npm packages`;
+			const message =
+				group.length === 1
+					? this.packageOperationMessage("Updating", group[0].source, group[0].parsed, scope)
+					: allowScripts
+						? `Updating ${scope} npm packages with lifecycle scripts enabled for ${group
+								.map((entry) => this.getPackageIdentityFromParsed(entry.parsed))
+								.join(", ")}...`
+						: `Updating ${scope} npm packages with lifecycle scripts disabled for ${group
+								.map((entry) => this.getPackageIdentityFromParsed(entry.parsed))
+								.join(
+									", ",
+								)}; run ${APP_NAME} allow-scripts <source> or add exact identities to global packageLifecycleScriptAllowlist...`;
+			const specs = group.map((entry) => (entry.parsed.version ? entry.parsed.spec : `${entry.parsed.name}@latest`));
 
-		await this.withProgress("update", sourceLabel, message, async () => {
-			await this.installNpmBatch(specs, scope);
-		});
+			await this.withProgress("update", sourceLabel, message, async () => {
+				await this.installNpmBatch(specs, scope, allowScripts);
+			});
+		}
 	}
 
-	private async installNpmBatch(specs: string[], scope: InstalledSourceScope): Promise<void> {
+	private async installNpmBatch(specs: string[], scope: InstalledSourceScope, allowScripts = false): Promise<void> {
 		const installRoot = this.getNpmInstallRoot(scope, false);
 		this.ensureNpmProject(installRoot);
-		await this.runNpmCommand(this.getNpmInstallArgs(specs, installRoot));
+		await this.runNpmCommand(this.getNpmInstallArgs(specs, installRoot, allowScripts));
 	}
 
 	async checkForAvailableUpdates(): Promise<PackageUpdate[]> {
@@ -1276,14 +1315,22 @@ export class DefaultPackageManager implements PackageManager {
 
 			const installMissing = async (): Promise<boolean> => {
 				if (isOfflineModeEnabled()) return false;
+				const install = async (): Promise<void> => {
+					await this.withProgress(
+						"install",
+						resolvedSource,
+						this.packageOperationMessage("Installing", resolvedSource, parsed, resolvedScope),
+						async () => this.installParsedSource(parsed, resolvedScope),
+					);
+				};
 				if (!onMissing) {
-					await this.installParsedSource(parsed, resolvedScope);
+					await install();
 					return true;
 				}
 				const action = await onMissing(resolvedSource);
 				if (action === "skip") return false;
 				if (action === "error") throw new Error(`Missing source: ${resolvedSource}`);
-				await this.installParsedSource(parsed, resolvedScope);
+				await install();
 				return true;
 			};
 
@@ -1370,6 +1417,38 @@ export class DefaultPackageManager implements PackageManager {
 			await this.installGit(parsed, scope);
 			return;
 		}
+	}
+
+	private canRunLifecycleScripts(source: NpmSource | GitSource, scope: SourceScope): boolean {
+		return (
+			scope === "user" &&
+			this.settingsManager
+				.getGlobalPackageLifecycleScriptAllowlist()
+				.includes(this.getPackageIdentityFromParsed(source))
+		);
+	}
+
+	private getPackageIdentityFromParsed(source: NpmSource | GitSource): string {
+		if (source.type === "npm") {
+			return `npm:${source.name}`;
+		}
+		return `git:${source.host}/${source.path}`;
+	}
+
+	private packageOperationMessage(
+		action: "Installing" | "Updating",
+		source: string,
+		parsed: NpmSource | GitSource,
+		scope: SourceScope,
+	): string {
+		const identity = this.getPackageIdentityFromParsed(parsed);
+		if (this.canRunLifecycleScripts(parsed, scope)) {
+			return `${action} ${source} (lifecycle scripts enabled for exact global identity ${identity})...`;
+		}
+		if (scope !== "user") {
+			return `${action} ${source} (lifecycle scripts disabled for ${scope} packages; ${scope} scope never inherits the global allowlist)...`;
+		}
+		return `${action} ${source} (lifecycle scripts disabled for ${identity}; run ${APP_NAME} allow-scripts ${source} or add the exact identity to global packageLifecycleScriptAllowlist)...`;
 	}
 
 	private getPackageSourceString(pkg: PackageSource): string {
@@ -1775,12 +1854,13 @@ export class DefaultPackageManager implements PackageManager {
 		await this.runCommand(npmCommand.command, [...npmCommand.args, ...args], options);
 	}
 
-	private getGitDependencyInstallArgs(): string[] {
+	private getGitDependencyInstallArgs(allowScripts = false): string[] {
 		const configuredCommand = this.settingsManager.getNpmCommand();
+		const scriptArgs = allowScripts ? [] : ["--ignore-scripts"];
 		if (configuredCommand && configuredCommand.length > 0) {
-			return ["install"];
+			return ["install", ...scriptArgs];
 		}
-		return ["install", "--omit=dev"];
+		return ["install", "--omit=dev", ...scriptArgs];
 	}
 
 	private runNpmCommandSync(args: string[]): string {
@@ -1788,14 +1868,15 @@ export class DefaultPackageManager implements PackageManager {
 		return this.runCommandSync(npmCommand.command, [...npmCommand.args, ...args]);
 	}
 
-	private getNpmInstallArgs(specs: string[], installRoot: string): string[] {
+	private getNpmInstallArgs(specs: string[], installRoot: string, allowScripts = false): string[] {
 		const packageManagerName = this.getPackageManagerName();
+		const scriptArgs = allowScripts ? [] : ["--ignore-scripts"];
 		// Extension packages run inside pi and resolve pi APIs through loader aliases/virtual modules.
 		// Disable peer dependency resolution for managed installs (npm's --legacy-peer-deps, and
 		// equivalent bun/pnpm settings) so package managers do not install or solve host-provided
 		// @earendil-works/pi-* peers. Stale auto-installed pi peers can otherwise block updates.
 		if (packageManagerName === "bun") {
-			return ["install", ...specs, "--cwd", installRoot, "--omit=peer"];
+			return ["install", ...specs, "--cwd", installRoot, "--omit=peer", ...scriptArgs];
 		}
 		if (packageManagerName === "pnpm") {
 			return [
@@ -1806,15 +1887,18 @@ export class DefaultPackageManager implements PackageManager {
 				"--config.auto-install-peers=false",
 				"--config.strict-peer-dependencies=false",
 				"--config.strict-dep-builds=false",
+				...scriptArgs,
 			];
 		}
-		return ["install", ...specs, "--prefix", installRoot, "--legacy-peer-deps"];
+		return ["install", ...specs, "--prefix", installRoot, "--legacy-peer-deps", ...scriptArgs];
 	}
 
 	private async installNpm(source: NpmSource, scope: SourceScope, temporary: boolean): Promise<void> {
 		const installRoot = this.getNpmInstallRoot(scope, temporary);
 		this.ensureNpmProject(installRoot);
-		await this.runNpmCommand(this.getNpmInstallArgs([source.spec], installRoot));
+		await this.runNpmCommand(
+			this.getNpmInstallArgs([source.spec], installRoot, this.canRunLifecycleScripts(source, scope)),
+		);
 	}
 
 	private async uninstallNpm(source: NpmSource, scope: SourceScope): Promise<void> {
@@ -1835,14 +1919,15 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async installGit(source: GitSource, scope: SourceScope): Promise<void> {
+		const allowScripts = this.canRunLifecycleScripts(source, scope);
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (existsSync(targetDir)) {
 			if (source.ref) {
-				await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD");
+				await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD", allowScripts);
 				return;
 			}
 			const target = await this.getLocalGitUpdateTarget(targetDir);
-			await this.ensureGitRef(targetDir, target.fetchArgs, target.ref);
+			await this.ensureGitRef(targetDir, target.fetchArgs, target.ref, allowScripts);
 			return;
 		}
 		const gitRoot = this.getGitInstallRoot(scope);
@@ -1859,7 +1944,7 @@ export class DefaultPackageManager implements PackageManager {
 			}
 			const packageJsonPath = join(targetDir, "package.json");
 			if (existsSync(packageJsonPath)) {
-				await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
+				await this.runNpmCommand(this.getGitDependencyInstallArgs(allowScripts), { cwd: targetDir });
 			}
 		} catch (error) {
 			rmSync(targetDir, { recursive: true, force: true });
@@ -1869,6 +1954,7 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async updateGit(source: GitSource, scope: SourceScope): Promise<void> {
+		const allowScripts = this.canRunLifecycleScripts(source, scope);
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (!existsSync(targetDir)) {
 			await this.installGit(source, scope);
@@ -1876,12 +1962,12 @@ export class DefaultPackageManager implements PackageManager {
 		}
 
 		if (source.ref) {
-			await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD");
+			await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD", allowScripts);
 			return;
 		}
 
 		const target = await this.getLocalGitUpdateTarget(targetDir);
-		await this.ensureGitRef(targetDir, target.fetchArgs, target.ref);
+		await this.ensureGitRef(targetDir, target.fetchArgs, target.ref, allowScripts);
 	}
 
 	private hasMissingGitDependencies(targetDir: string): boolean {
@@ -1909,33 +1995,42 @@ export class DefaultPackageManager implements PackageManager {
 		}
 	}
 
-	private async repairMissingGitDependencies(targetDir: string): Promise<void> {
+	private async repairMissingGitDependencies(targetDir: string, allowScripts: boolean): Promise<void> {
 		if (!this.hasMissingGitDependencies(targetDir)) return;
-		await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
+		await this.runNpmCommand(this.getGitDependencyInstallArgs(allowScripts), { cwd: targetDir });
 	}
 
 	private getGitUpdateMarkerPath(targetDir: string): string {
 		return join(dirname(targetDir), `.${basename(targetDir)}.pi-update-incomplete`);
 	}
 
-	private async cleanAndInstallGitDependencies(targetDir: string, markerPath: string): Promise<void> {
+	private async cleanAndInstallGitDependencies(
+		targetDir: string,
+		markerPath: string,
+		allowScripts: boolean,
+	): Promise<void> {
 		// Clean untracked files (extensions should be pristine). If this fails after
 		// deleting dependencies, repair them so the existing extension still loads.
 		try {
 			await this.runCommand("git", ["clean", "-fdx"], { cwd: targetDir });
 		} catch (error) {
-			await this.repairMissingGitDependencies(targetDir).catch(() => {});
+			await this.repairMissingGitDependencies(targetDir, allowScripts).catch(() => {});
 			throw error;
 		}
 
 		const packageJsonPath = join(targetDir, "package.json");
 		if (existsSync(packageJsonPath)) {
-			await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
+			await this.runNpmCommand(this.getGitDependencyInstallArgs(allowScripts), { cwd: targetDir });
 		}
 		rmSync(markerPath, { force: true });
 	}
 
-	private async ensureGitRef(targetDir: string, fetchArgs: string[], ref: string): Promise<void> {
+	private async ensureGitRef(
+		targetDir: string,
+		fetchArgs: string[],
+		ref: string,
+		allowScripts: boolean,
+	): Promise<void> {
 		// Fetch only the ref we will reset to, avoiding unrelated branch/tag noise.
 		await this.runCommand("git", fetchArgs, { cwd: targetDir });
 
@@ -1951,16 +2046,16 @@ export class DefaultPackageManager implements PackageManager {
 		const markerPath = this.getGitUpdateMarkerPath(targetDir);
 		if (localHead.trim() === targetHead.trim()) {
 			if (existsSync(markerPath)) {
-				await this.cleanAndInstallGitDependencies(targetDir, markerPath);
+				await this.cleanAndInstallGitDependencies(targetDir, markerPath, allowScripts);
 			} else {
-				await this.repairMissingGitDependencies(targetDir);
+				await this.repairMissingGitDependencies(targetDir, allowScripts);
 			}
 			return;
 		}
 
 		writeFileSync(markerPath, "", "utf-8");
 		await this.runCommand("git", ["reset", "--hard", commitRef], { cwd: targetDir });
-		await this.cleanAndInstallGitDependencies(targetDir, markerPath);
+		await this.cleanAndInstallGitDependencies(targetDir, markerPath, allowScripts);
 	}
 
 	private async refreshTemporaryGitSource(source: GitSource, sourceStr: string): Promise<void> {
