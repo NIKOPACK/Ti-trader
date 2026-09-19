@@ -1,6 +1,7 @@
 import type { generateImages as generateImagesOpenRouterFunction } from "../../api/openrouter-images.ts";
 import { registerImagesApiProvider } from "../../images-api-registry.ts";
 import type { AssistantImages, ImagesContext, ImagesFunction, ImagesModel, ImagesOptions } from "../../types.ts";
+import { formatProviderError, normalizeProviderError } from "../../utils/error-body.ts";
 
 interface OpenRouterImagesProviderModule {
 	generateImages: typeof generateImagesOpenRouterFunction;
@@ -15,7 +16,7 @@ function createLazyLoadErrorImages(model: ImagesModel<"openrouter-images">, erro
 		model: model.id,
 		output: [],
 		stopReason: "error",
-		errorMessage: error instanceof Error ? error.message : String(error),
+		errorMessage: formatProviderError(normalizeProviderError(error)),
 		timestamp: Date.now(),
 	};
 }

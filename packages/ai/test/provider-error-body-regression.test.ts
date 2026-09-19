@@ -134,7 +134,7 @@ async function drainResult(stream: {
 
 describe("provider error body passthrough (per-tier regression)", () => {
 	beforeEach(() => {
-		openaiMock.parsedBody = { error: "blocked by gateway WAF" };
+		openaiMock.parsedBody = { error: "blocked by gateway WAF", apiKey: "openai-body-secret" };
 	});
 
 	it("openai-completions (body-blind text) surfaces status + body", async () => {
@@ -143,6 +143,7 @@ describe("provider error body passthrough (per-tier regression)", () => {
 		expect(output.stopReason).toBe("error");
 		expect(output.errorMessage).toContain("403");
 		expect(output.errorMessage).toContain("blocked by gateway WAF");
+		expect(output.errorMessage).not.toContain("openai-body-secret");
 		expect(output.errorMessage).not.toBe("403 status code (no body)");
 	});
 
@@ -153,12 +154,13 @@ describe("provider error body passthrough (per-tier regression)", () => {
 		openaiMock.parsedBody = {
 			message: "Provider returned error",
 			code: 403,
-			metadata: { raw: "upstream WAF blocked policy XYZ" },
+			metadata: { raw: "upstream WAF blocked policy XYZ; Authorization: Bearer metadata-secret" },
 		};
 
 		const output = await drainResult(streamOpenAICompletions(completionsModel, context, { apiKey: "test" }));
 
 		expect(output.errorMessage).toContain("upstream WAF blocked policy XYZ");
+		expect(output.errorMessage).not.toContain("metadata-secret");
 		const occurrences = output.errorMessage?.match(/upstream WAF blocked policy XYZ/g) ?? [];
 		expect(occurrences).toHaveLength(1);
 	});
@@ -175,7 +177,10 @@ describe("provider error body passthrough (per-tier regression)", () => {
 		bedrockMock.sendError = Object.assign(new Error("UnknownError"), {
 			name: "UnknownError",
 			$metadata: { httpStatusCode: 403 },
-			$response: { statusCode: 403, body: '{"message":"blocked by gateway WAF"}' },
+			$response: {
+				statusCode: 403,
+				body: '{"message":"blocked by gateway WAF","authorization":"Bearer bedrock-secret"}',
+			},
 		});
 
 		const model = getModel("amazon-bedrock", "us.anthropic.claude-opus-4-8");
@@ -184,6 +189,7 @@ describe("provider error body passthrough (per-tier regression)", () => {
 		expect(output.stopReason).toBe("error");
 		expect(output.errorMessage).toContain("403");
 		expect(output.errorMessage).toContain("blocked by gateway WAF");
+		expect(output.errorMessage).not.toContain("bedrock-secret");
 		expect(output.errorMessage).not.toContain("Unknown: UnknownError");
 	});
 

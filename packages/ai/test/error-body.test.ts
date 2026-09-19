@@ -6,7 +6,12 @@
 // parsed-body edge case, and the formatProviderError compose helper.
 
 import { describe, expect, it } from "vitest";
-import { formatProviderError, MAX_PROVIDER_ERROR_BODY_CHARS, normalizeProviderError } from "../src/utils/error-body.ts";
+import {
+	formatProviderError,
+	MAX_PROVIDER_ERROR_BODY_CHARS,
+	normalizeProviderError,
+	sanitizeProviderErrorCause,
+} from "../src/utils/error-body.ts";
 
 describe("normalizeProviderError", () => {
 	it("extracts status and body from a Mistral-shaped error", () => {
@@ -168,6 +173,76 @@ describe("normalizeProviderError", () => {
 
 		expect(norm.body).toContain("... [truncated 50 chars]");
 		expect(norm.body?.length).toBeLessThan(longBody.length);
+	});
+
+	it("redacts credentials before truncating provider messages and bodies", () => {
+		const secrets = ["message-secret", "json-secret", "query-secret", "nested-secret", "bearer-secret"];
+		const body = JSON.stringify({
+			error: {
+				code: "gateway_denied",
+				message: "blocked by gateway WAF",
+				api_key: "json-secret",
+				url: "https://gateway.test/error?access_token=query-secret",
+				nested: { clientSecret: "nested-secret" },
+				header: "Bearer bearer-secret",
+			},
+			padding: "x".repeat(MAX_PROVIDER_ERROR_BODY_CHARS),
+		});
+		const error = Object.assign(new Error("request failed; Authorization: Bearer message-secret"), {
+			status: 403,
+			body,
+		});
+
+		const norm = normalizeProviderError(error);
+		const serialized = JSON.stringify(norm);
+
+		for (const secret of secrets) expect(serialized).not.toContain(secret);
+		expect(norm.message).toContain("Authorization: [REDACTED]");
+		expect(norm.body).toContain("blocked by gateway WAF");
+		expect(norm.body).toContain("gateway_denied");
+		expect(norm.body).toContain("[REDACTED]");
+		expect(norm.body).toContain("[truncated");
+	});
+
+	it("redacts provider-prefixed environment credential keys", () => {
+		const secrets = ["openai-secret", "anthropic-secret", "aws-secret"];
+		const error = Object.assign(new Error("OPENAI_API_KEY=openai-secret ANTHROPIC_AUTH_TOKEN=anthropic-secret"), {
+			status: 401,
+			body: JSON.stringify({
+				OPENAI_API_KEY: "openai-secret",
+				ANTHROPIC_AUTH_TOKEN: "anthropic-secret",
+				AWS_SECRET_ACCESS_KEY: "aws-secret",
+			}),
+		});
+
+		const serialized = JSON.stringify(normalizeProviderError(error));
+
+		for (const secret of secrets) expect(serialized).not.toContain(secret);
+		expect(serialized).toContain("[REDACTED]");
+	});
+
+	it("redacts nested error causes while preserving safe classification fields", () => {
+		const nested = Object.assign(new Error("refresh_token=nested-secret"), { code: "invalid_grant" });
+		const source = Object.assign(new Error("Authorization: Bearer cause-secret"), {
+			name: "AbortError",
+			code: "ABORT_ERR",
+			status: 401,
+			cause: nested,
+		});
+
+		const sanitized = sanitizeProviderErrorCause(source) as Error & {
+			cause: Error & { code: string };
+			code: string;
+			status: number;
+		};
+
+		expect(sanitized.name).toBe("AbortError");
+		expect(sanitized.code).toBe("ABORT_ERR");
+		expect(sanitized.status).toBe(401);
+		expect(sanitized.cause.code).toBe("invalid_grant");
+		expect(`${sanitized.message}\n${sanitized.stack}\n${sanitized.cause.message}`).not.toMatch(
+			/cause-secret|nested-secret/,
+		);
 	});
 
 	it("sets messageCarriesBody when the message already contains the extracted body", () => {

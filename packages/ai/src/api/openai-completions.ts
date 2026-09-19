@@ -36,7 +36,7 @@ import type {
 	ToolCall,
 	ToolResultMessage,
 } from "../types.ts";
-import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
+import { formatProviderError, normalizeProviderError, redactProviderErrorText } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { shortHash } from "../utils/hash.ts";
 import { headersToRecord } from "../utils/headers.ts";
@@ -694,9 +694,10 @@ export const stream: StreamFunction<"openai-completions", OpenAICompletionsOptio
 			// normalizeProviderError already stringifies the parsed body (error.error)
 			// into errorMessage, so only append the raw metadata when it is not already
 			// present to avoid double-printing it.
-			const rawMetadata = (error as any)?.error?.metadata?.raw;
-			if (rawMetadata && !output.errorMessage.includes(String(rawMetadata))) {
-				output.errorMessage += `\n${rawMetadata}`;
+			const rawMetadata = (error as { error?: { metadata?: { raw?: unknown } } })?.error?.metadata?.raw;
+			const redactedMetadata = rawMetadata === undefined ? undefined : redactProviderErrorText(String(rawMetadata));
+			if (redactedMetadata && !output.errorMessage.includes(redactedMetadata)) {
+				output.errorMessage += `\n${redactedMetadata}`;
 			}
 			stream.push({ type: "error", reason: output.stopReason, error: output });
 			stream.end();

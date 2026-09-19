@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import { InMemoryCredentialStore } from "../src/auth/credential-store.ts";
 import type { ApiKeyAuth, CredentialStore, OAuthAuth, OAuthCredential, ProviderAuth } from "../src/auth/types.ts";
-import { calculateCost, createModels, createProvider, hasApi, type Provider } from "../src/models.ts";
+import { calculateCost, createModels, createProvider, hasApi, ModelsError, type Provider } from "../src/models.ts";
 import { InMemoryModelsStore, type ModelsStore, type ModelsStoreEntry } from "../src/models-store.ts";
 import type { Api, AssistantMessage, Context, Model, SimpleStreamOptions, StreamOptions, Usage } from "../src/types.ts";
 import { AssistantMessageEventStream } from "../src/utils/event-stream.ts";
@@ -1035,6 +1035,35 @@ describe("Models runtime", () => {
 		await expect(models.getAuth("p1")).rejects.toThrow(
 			"OAuth refresh failed for p1: token refresh failed (400): invalid_grant",
 		);
+	});
+
+	it("redacts provider credentials from wrapped error messages and causes", async () => {
+		const secret = "provider-cause-secret";
+		const failing: ApiKeyAuth = {
+			name: "Failing",
+			resolve: async () => {
+				throw Object.assign(new Error(`Authorization: Bearer ${secret}`), {
+					name: "AbortError",
+					code: "ABORT_ERR",
+					status: 401,
+				});
+			},
+		};
+		const models = createModels();
+		models.setProvider(testProvider({ id: "p1", auth: { apiKey: failing } }));
+
+		try {
+			await models.getAuth("p1");
+			expect.unreachable("Expected provider auth to fail");
+		} catch (error) {
+			expect(error).toBeInstanceOf(ModelsError);
+			const wrapped = error as ModelsError;
+			const cause = wrapped.cause as Error & { code: string; status: number };
+			expect(wrapped.message).not.toContain(secret);
+			expect(cause.message).not.toContain(secret);
+			expect(cause.stack).not.toContain(secret);
+			expect(cause).toMatchObject({ name: "AbortError", code: "ABORT_ERR", status: 401 });
+		}
 	});
 
 	it("wraps api-key auth failures in ModelsError", async () => {

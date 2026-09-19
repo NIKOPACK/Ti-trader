@@ -1,4 +1,5 @@
 import type { Tool } from "../types.ts";
+import { redactProviderErrorText } from "../utils/error-body.ts";
 
 interface JsonSchemaObject {
 	[key: string]: unknown;
@@ -216,7 +217,11 @@ export function resolveJsonSchemaStrictSampling(tool: Tool, supportsStrictMode: 
 		} catch (error) {
 			if (!(error instanceof UnsupportedStrictJsonSchemaError)) throw error;
 			if (config.strict !== "require") return undefined;
-			throw new Error(`Tool "${tool.name}" requires JSON-schema constrained sampling, but ${error.message}.`);
+			throw new Error(
+				redactProviderErrorText(
+					`Tool "${tool.name}" requires JSON-schema constrained sampling, but ${error.message}.`,
+				),
+			);
 		}
 	}
 	if (config.strict === "require") {
@@ -258,7 +263,9 @@ export function resolveGrammarConstrainedSampling(
 		};
 	} catch (error) {
 		const message = error instanceof Error ? error.message : String(error);
-		throw new Error(`Tool "${tool.name}" cannot use grammar constrained sampling: ${message}.`);
+		throw new Error(
+			redactProviderErrorText(`Tool "${tool.name}" cannot use grammar constrained sampling: ${message}.`),
+		);
 	}
 }
 

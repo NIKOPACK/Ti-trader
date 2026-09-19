@@ -3,6 +3,7 @@
  */
 
 import { GITHUB_COPILOT_MODELS } from "../../providers/github-copilot.models.ts";
+import { redactProviderErrorText } from "../../utils/error-body.ts";
 import { sleep } from "../../utils/sleep.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { pollOAuthDeviceCodeFlow } from "./device-code.ts";
@@ -189,7 +190,7 @@ async function fetchGitHubCopilotModels(
 		retryPolicy,
 	);
 	if (!response.ok) {
-		throw new Error(`${response.status} ${response.statusText}: ${await response.text()}`);
+		throw new Error(`${response.status} ${response.statusText}: ${redactProviderErrorText(await response.text())}`);
 	}
 	return parseGitHubCopilotModelCatalog(await response.json(), allowPolicyFallback);
 }
@@ -198,7 +199,7 @@ async function fetchJson(url: string, init: RequestInit): Promise<unknown> {
 	const response = await fetch(url, init);
 	if (!response.ok) {
 		const text = await response.text();
-		throw new Error(`${response.status} ${response.statusText}: ${text}`);
+		throw new Error(`${response.status} ${response.statusText}: ${redactProviderErrorText(text)}`);
 	}
 	return response.json();
 }
@@ -302,7 +303,10 @@ async function pollForGitHubAccessToken(
 				}
 
 				const descriptionSuffix = description ? `: ${description}` : "";
-				return { status: "failed", message: `Device flow failed: ${error}${descriptionSuffix}` };
+				return {
+					status: "failed",
+					message: redactProviderErrorText(`Device flow failed: ${error}${descriptionSuffix}`),
+				};
 			}
 
 			return { status: "failed", message: "Invalid device token response" };
@@ -402,7 +406,7 @@ async function enableGitHubCopilotModel(
 		return false;
 	}
 	if (response.status === 429) {
-		throw new Error(`${response.status} ${response.statusText}: ${await response.text()}`);
+		throw new Error(`${response.status} ${response.statusText}: ${redactProviderErrorText(await response.text())}`);
 	}
 	return response.ok;
 }

@@ -1,4 +1,5 @@
 import type { Api, AssistantMessage, AssistantMessageEvent, Model, ProviderStreams } from "../types.ts";
+import { formatProviderError, normalizeProviderError } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 
 function createSetupErrorMessage(model: Model<Api>, error: unknown): AssistantMessage {
@@ -17,7 +18,7 @@ function createSetupErrorMessage(model: Model<Api>, error: unknown): AssistantMe
 			cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
 		},
 		stopReason: "error",
-		errorMessage: error instanceof Error ? error.message : String(error),
+		errorMessage: formatProviderError(normalizeProviderError(error)),
 		timestamp: Date.now(),
 	};
 }

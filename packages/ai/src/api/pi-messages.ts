@@ -23,6 +23,7 @@ import type {
 	ToolCall,
 } from "../types.ts";
 import { appendAssistantMessageDiagnostic, createAssistantMessageDiagnostic } from "../utils/diagnostics.ts";
+import { formatProviderError, normalizeProviderError, redactProviderErrorText } from "../utils/error-body.ts";
 import { AssistantMessageEventStream } from "../utils/event-stream.ts";
 import { headersToRecord, providerHeadersToRecord } from "../utils/headers.ts";
 import { parseStreamingJson } from "../utils/json-parse.ts";
@@ -136,17 +137,18 @@ function createPiMessagesResponseError(
 	response: Response,
 	body: string,
 ): PiMessagesResponseError {
-	const errorBody = parsePiMessagesErrorBody(body);
+	const redactedBody = redactProviderErrorText(body);
+	const errorBody = parsePiMessagesErrorBody(redactedBody);
 	const code = typeof errorBody?.error?.code === "string" ? errorBody.error.code : undefined;
-	return new PiMessagesResponseError(formatPiMessagesResponseError(response, body, errorBody), code, {
+	return new PiMessagesResponseError(formatPiMessagesResponseError(response, redactedBody, errorBody), code, {
 		version: 1,
 		provider: model.provider,
 		model: model.id,
-		url: url.toString(),
+		url: redactProviderErrorText(url.toString()),
 		status: response.status,
 		statusText: response.statusText,
 		error: errorBody?.error,
-		body: errorBody ? undefined : truncateDiagnosticString(body),
+		body: errorBody ? undefined : truncateDiagnosticString(redactedBody),
 		timestampMs: Date.now(),
 	});
 }
@@ -200,7 +202,7 @@ function createEventConverter(model: Model<"pi-messages">) {
 				Object.assign(partial, {
 					stopReason: event.reason,
 					usage: event.usage,
-					errorMessage: event.errorMessage,
+					errorMessage: event.errorMessage === undefined ? undefined : redactProviderErrorText(event.errorMessage),
 					responseId: event.responseId,
 				});
 				appendRewriteDiagnostic(partial, event.rewrite);
@@ -320,7 +322,7 @@ function createErrorEvent(model: Model<"pi-messages">, error: unknown, aborted: 
 		model: model.id,
 		usage: createEmptyUsage(),
 		stopReason: reason,
-		errorMessage: error instanceof Error ? error.message : String(error),
+		errorMessage: formatProviderError(normalizeProviderError(error)),
 		timestamp: Date.now(),
 	};
 

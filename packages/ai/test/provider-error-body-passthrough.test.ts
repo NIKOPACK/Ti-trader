@@ -40,7 +40,7 @@ vi.mock("openai", () => {
 					};
 					promise.withResponse = async () => {
 						// 403 from a gateway/proxy carrying the real reason in the body.
-						throw new FakeAPIError(403, { error: "blocked by gateway WAF" });
+						throw new FakeAPIError(403, { error: "blocked by gateway WAF", apiKey: "image-secret" });
 					};
 					return promise;
 				},
@@ -73,6 +73,7 @@ describe("provider error body passthrough", () => {
 		expect(output.errorMessage).toContain("403");
 		// The body reason must not be swallowed by the opaque SDK message.
 		expect(output.errorMessage).toContain("blocked by gateway WAF");
+		expect(output.errorMessage).not.toContain("image-secret");
 		expect(output.errorMessage).not.toBe("403 status code (no body)");
 	});
 });

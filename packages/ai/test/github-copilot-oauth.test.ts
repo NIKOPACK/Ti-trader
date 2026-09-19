@@ -305,6 +305,27 @@ describe("GitHub Copilot OAuth device flow", () => {
 		await loginPromise;
 	});
 
+	it("redacts credentials from device-code response errors", async () => {
+		const secret = "github-token-secret";
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (): Promise<Response> => jsonResponse({ error: "denied", GITHUB_TOKEN: secret }, 500)),
+		);
+
+		const rejection = await loginGitHubCopilotForTest({
+			onDeviceCode: () => {},
+			onPrompt: async () => "",
+		}).then(
+			() => new Error("Expected login to fail"),
+			(error: unknown) => error,
+		);
+
+		expect(rejection).toBeInstanceOf(Error);
+		expect((rejection as Error).message).toContain("denied");
+		expect((rejection as Error).message).toContain("[REDACTED]");
+		expect((rejection as Error).message).not.toContain(secret);
+	});
+
 	it("updates only known, tool-capable, unconfigured account model policies", async () => {
 		vi.useFakeTimers();
 

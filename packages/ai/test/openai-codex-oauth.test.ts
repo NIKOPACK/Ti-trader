@@ -477,6 +477,7 @@ describe("OpenAI Codex OAuth", () => {
 	});
 
 	it("does not write token refresh failures to stderr", async () => {
+		const secrets = ["openai-api-secret", "refresh-secret"];
 		const consoleError = vi.spyOn(console, "error").mockImplementation(() => {});
 		vi.stubGlobal(
 			"fetch",
@@ -486,6 +487,8 @@ describe("OpenAI Codex OAuth", () => {
 						error: {
 							message: "Could not validate your token. Please try signing in again.",
 							type: "invalid_request_error",
+							OPENAI_API_KEY: secrets[0],
+							refresh_token: secrets[1],
 						},
 					}),
 					{ status: 401, statusText: "Unauthorized", headers: { "Content-Type": "application/json" } },
@@ -493,8 +496,8 @@ describe("OpenAI Codex OAuth", () => {
 			}),
 		);
 
-		await expect(
-			openaiCodexOAuth.refresh(
+		const rejection = await openaiCodexOAuth
+			.refresh(
 				{
 					type: "oauth",
 					access: "invalid-access-token",
@@ -502,8 +505,17 @@ describe("OpenAI Codex OAuth", () => {
 					expires: 0,
 				},
 				neverAbortedSignal,
-			),
-		).rejects.toThrow(/OpenAI Codex token refresh failed \(401\).*Could not validate your token/);
+			)
+			.then(
+				() => new Error("Expected refresh to fail"),
+				(error: unknown) => error,
+			);
+		expect(rejection).toBeInstanceOf(Error);
+		expect((rejection as Error).message).toMatch(
+			/OpenAI Codex token refresh failed \(401\).*Could not validate your token/,
+		);
+		for (const secret of secrets) expect((rejection as Error).message).not.toContain(secret);
+		expect((rejection as Error).message).toContain("[REDACTED]");
 		expect(consoleError).not.toHaveBeenCalled();
 	});
 });

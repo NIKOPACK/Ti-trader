@@ -6,6 +6,7 @@
  */
 
 import type { Server } from "node:http";
+import { redactProviderErrorText } from "../../utils/error-body.ts";
 import { getProviderEnvValue } from "../../utils/provider-env.ts";
 import type { OAuthAuth, OAuthCredential, ProviderAuthInteraction } from "../types.ts";
 import { oauthErrorHtml, oauthSuccessHtml } from "./oauth-page.ts";
@@ -91,9 +92,9 @@ function formatErrorDetails(error: unknown): string {
 		if (error.stack) {
 			details.push(`stack=${error.stack}`);
 		}
-		return details.join("; ");
+		return redactProviderErrorText(details.join("; "));
 	}
-	return String(error);
+	return redactProviderErrorText(String(error));
 }
 
 async function startCallbackServer(expectedState: string): Promise<CallbackServerInfo> {
@@ -181,7 +182,9 @@ async function postJson(url: string, body: Record<string, string | number>, sign
 	const responseBody = await response.text();
 
 	if (!response.ok) {
-		throw new Error(`HTTP request failed. status=${response.status}; url=${url}; body=${responseBody}`);
+		throw new Error(
+			`HTTP request failed. status=${response.status}; url=${url}; body=${redactProviderErrorText(responseBody)}`,
+		);
 	}
 
 	return responseBody;
@@ -219,7 +222,7 @@ async function exchangeAuthorizationCode(
 		tokenData = JSON.parse(responseBody) as { access_token: string; refresh_token: string; expires_in: number };
 	} catch (error) {
 		throw new Error(
-			`Token exchange returned invalid JSON. url=${TOKEN_URL}; body=${responseBody}; details=${formatErrorDetails(error)}`,
+			`Token exchange returned invalid JSON. url=${TOKEN_URL}; body=${redactProviderErrorText(responseBody)}; details=${formatErrorDetails(error)}`,
 		);
 	}
 
@@ -340,7 +343,7 @@ async function refreshAnthropicToken(refreshToken: string, signal: AbortSignal):
 		};
 	} catch (error) {
 		throw new Error(
-			`Anthropic token refresh returned invalid JSON. url=${TOKEN_URL}; body=${responseBody}; details=${formatErrorDetails(error)}`,
+			`Anthropic token refresh returned invalid JSON. url=${TOKEN_URL}; body=${redactProviderErrorText(responseBody)}; details=${formatErrorDetails(error)}`,
 		);
 	}
 

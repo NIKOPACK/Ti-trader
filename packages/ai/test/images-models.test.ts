@@ -158,6 +158,28 @@ describe("ImagesModels", () => {
 		expect(calls[0].options?.apiKey).toBeUndefined();
 	});
 
+	it("redacts provider errors returned by image generation", async () => {
+		const models = createImagesModels();
+		models.setProvider(
+			createImagesProvider({
+				id: "p1",
+				auth: { apiKey: { name: "Test", resolve: async () => ({ auth: {} }) } },
+				models: [testImageModel("p1", "model-a")],
+				api: {
+					generateImages: async () => {
+						throw new Error("request failed; Authorization: Bearer image-secret");
+					},
+				},
+			}),
+		);
+
+		const result = await models.generateImages(models.getModel("p1", "model-a")!, context);
+
+		expect(result.stopReason).toBe("error");
+		expect(result.errorMessage).toBe("request failed; Authorization: [REDACTED]");
+		expect(result.errorMessage).not.toContain("image-secret");
+	});
+
 	it("supports dynamic providers via refresh with in-flight dedupe", async () => {
 		let fetches = 0;
 		const provider = createImagesProvider({

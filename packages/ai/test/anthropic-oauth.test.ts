@@ -107,6 +107,28 @@ describe("Anthropic OAuth", () => {
 		expect(fetchMock).toHaveBeenCalledOnce();
 	});
 
+	it("redacts credentials from refresh response errors", async () => {
+		const secret = "anthropic-auth-secret";
+		vi.stubGlobal(
+			"fetch",
+			vi.fn(async (): Promise<Response> => {
+				return jsonResponse({ error: "invalid_grant", ANTHROPIC_AUTH_TOKEN: secret }, 401);
+			}),
+		);
+
+		const rejection = await anthropicOAuth
+			.refresh({ type: "oauth", access: "old-access", refresh: "old-refresh", expires: 0 }, neverAbortedSignal)
+			.then(
+				() => new Error("Expected refresh to fail"),
+				(error: unknown) => error,
+			);
+
+		expect(rejection).toBeInstanceOf(Error);
+		expect((rejection as Error).message).toContain("invalid_grant");
+		expect((rejection as Error).message).toContain("[REDACTED]");
+		expect((rejection as Error).message).not.toContain(secret);
+	});
+
 	it("anthropicOAuth.login resolves through the manual_code prompt and aborts it after settling", async () => {
 		const fetchMock = vi.fn(async (input: unknown): Promise<Response> => {
 			const url = typeof input === "string" ? input : String(input);

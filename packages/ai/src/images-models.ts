@@ -4,6 +4,7 @@ import { type AuthResolutionOverrides, ModelsError, resolveProviderAuth } from "
 import type { AuthContext, AuthResult, CredentialStore, ProviderAuth } from "./auth/types.ts";
 import type { CreateModelsOptions } from "./models.ts";
 import type { AssistantImages, ImagesApi, ImagesContext, ImagesModel, ImagesOptions, ProviderImages } from "./types.ts";
+import { formatProviderError, normalizeProviderError } from "./utils/error-body.ts";
 
 /**
  * An image-generation provider: the image-side counterpart of `Provider`.
@@ -217,7 +218,7 @@ class ImagesModelsImpl implements MutableImagesModels {
 				model: model.id,
 				output: [],
 				stopReason: "error",
-				errorMessage: error instanceof Error ? error.message : String(error),
+				errorMessage: formatProviderError(normalizeProviderError(error)),
 				timestamp: Date.now(),
 			};
 		}

@@ -177,7 +177,7 @@ describe("faux provider", () => {
 		registrations.push(registration);
 		registration.setResponses([
 			() => {
-				throw new Error("boom");
+				throw new Error("boom; Authorization: Bearer faux-secret");
 			},
 		]);
 
@@ -189,7 +189,8 @@ describe("faux provider", () => {
 		expect(events[0].type).toBe("error");
 		if (events[0].type === "error") {
 			expect(events[0].error.stopReason).toBe("error");
-			expect(events[0].error.errorMessage).toBe("boom");
+			expect(events[0].error.errorMessage).toBe("boom; Authorization: [REDACTED]");
+			expect(events[0].error.errorMessage).not.toContain("faux-secret");
 		}
 	});
 
@@ -436,7 +437,7 @@ describe("faux provider", () => {
 			{
 				...fauxAssistantMessage("partial"),
 				stopReason: "error",
-				errorMessage: "upstream failed",
+				errorMessage: "upstream failed; Authorization: Bearer explicit-secret",
 			},
 		]);
 
@@ -450,7 +451,8 @@ describe("faux provider", () => {
 		if (terminal.type === "error") {
 			expect(terminal.reason).toBe("error");
 			expect(terminal.error.stopReason).toBe("error");
-			expect(terminal.error.errorMessage).toBe("upstream failed");
+			expect(terminal.error.errorMessage).toBe("upstream failed; Authorization: [REDACTED]");
+			expect(terminal.error.errorMessage).not.toContain("explicit-secret");
 		}
 	});
 

@@ -18,6 +18,7 @@ import type {
 	ToolResultMessage,
 	Usage,
 } from "../types.ts";
+import { formatProviderError, normalizeProviderError, redactProviderErrorText } from "../utils/error-body.ts";
 import { createAssistantMessageEventStream } from "../utils/event-stream.ts";
 
 const DEFAULT_API = "faux";
@@ -313,7 +314,7 @@ function createErrorMessage(error: unknown, api: string, provider: string, model
 		model: modelId,
 		usage: DEFAULT_USAGE,
 		stopReason: "error",
-		errorMessage: error instanceof Error ? error.message : String(error),
+		errorMessage: formatProviderError(normalizeProviderError(error)),
 		timestamp: Date.now(),
 	};
 }
@@ -343,7 +344,11 @@ async function streamWithDeltas(
 	tokensPerSecond: number | undefined,
 	signal: AbortSignal | undefined,
 ): Promise<void> {
-	const partial: AssistantMessage = { ...message, content: [], stopReason: "pending" };
+	const sanitizedMessage =
+		message.errorMessage === undefined
+			? message
+			: { ...message, errorMessage: redactProviderErrorText(message.errorMessage) };
+	const partial: AssistantMessage = { ...sanitizedMessage, content: [], stopReason: "pending" };
 	if (signal?.aborted) {
 		const aborted = createAbortedMessage(partial);
 		stream.push({ type: "error", reason: "aborted", error: aborted });
@@ -353,7 +358,7 @@ async function streamWithDeltas(
 
 	stream.push({ type: "start", partial: { ...partial } });
 
-	for (let index = 0; index < message.content.length; index++) {
+	for (let index = 0; index < sanitizedMessage.content.length; index++) {
 		if (signal?.aborted) {
 			const aborted = createAbortedMessage(partial);
 			stream.push({ type: "error", reason: "aborted", error: aborted });
@@ -361,7 +366,7 @@ async function streamWithDeltas(
 			return;
 		}
 
-		const block = message.content[index];
+		const block = sanitizedMessage.content[index];
 
 		if (block.type === "thinking") {
 			partial.content = [...partial.content, { type: "thinking", thinking: "" }];
@@ -420,17 +425,17 @@ async function streamWithDeltas(
 		stream.push({ type: "toolcall_end", contentIndex: index, toolCall: block, partial: { ...partial } });
 	}
 
-	if (message.stopReason === "pending") {
+	if (sanitizedMessage.stopReason === "pending") {
 		throw new Error("Faux response ended without a stop reason");
 	}
-	if (message.stopReason === "error" || message.stopReason === "aborted") {
-		stream.push({ type: "error", reason: message.stopReason, error: message });
-		stream.end(message);
+	if (sanitizedMessage.stopReason === "error" || sanitizedMessage.stopReason === "aborted") {
+		stream.push({ type: "error", reason: sanitizedMessage.stopReason, error: sanitizedMessage });
+		stream.end(sanitizedMessage);
 		return;
 	}
 
-	stream.push({ type: "done", reason: message.stopReason, message });
-	stream.end(message);
+	stream.push({ type: "done", reason: sanitizedMessage.stopReason, message: sanitizedMessage });
+	stream.end(sanitizedMessage);
 }
 
 export function createFauxCore(options: RegisterFauxProviderOptions) {

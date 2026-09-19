@@ -14,11 +14,35 @@
 // into the message, so providers can preserve it without double-printing.
 
 export const MAX_PROVIDER_ERROR_BODY_CHARS = 4000;
+const REDACTED = "[REDACTED]";
+const SECRET_FIELD =
+	"(?:authorization|proxy[-_ ]?authorization|x[-_ ]?api[-_ ]?key|api[-_ ]?key|access[-_ ]?token|refresh[-_ ]?token|auth[-_ ]?token|token|password|passwd|secret[-_ ]?access[-_ ]?key|secret|client[-_ ]?secret|private[-_ ]?key|credentials?|cookie|set[-_ ]?cookie)";
+const PROVIDER_SECRET_FIELD = `(?:[a-z0-9]+[-_ ]+)*${SECRET_FIELD}`;
+const SECRET_KEYS = new Set([
+	"authorization",
+	"proxyauthorization",
+	"xapikey",
+	"apikey",
+	"accesstoken",
+	"refreshtoken",
+	"authtoken",
+	"token",
+	"password",
+	"passwd",
+	"secret",
+	"secretaccesskey",
+	"clientsecret",
+	"privatekey",
+	"credential",
+	"credentials",
+	"cookie",
+	"setcookie",
+]);
 
 export interface NormalizedProviderError {
 	/** HTTP status code, when one could be extracted from the SDK error object. */
 	status?: number;
-	/** Raw HTTP body reason, already trimmed and truncated to the cap. */
+	/** HTTP body reason, already redacted, trimmed, and truncated to the cap. */
 	body?: string;
 	/** `error.message`, or `safeJsonStringify(error)` for a non-`Error` throw. */
 	message: string;
@@ -37,18 +61,19 @@ type SdkErrorShape = Error & {
 
 export function normalizeProviderError(error: unknown): NormalizedProviderError {
 	if (!(error instanceof Error)) {
-		return { message: safeJsonStringify(error), messageCarriesBody: false };
+		return { message: redactProviderErrorText(safeJsonStringify(error)), messageCarriesBody: false };
 	}
 
 	const sdkError = error as SdkErrorShape;
 	const status = extractStatus(sdkError);
 	const body = extractBody(sdkError);
-	const messageCarriesBody = body === undefined || error.message.includes(body);
+	const message = redactProviderErrorText(error.message);
+	const messageCarriesBody = body === undefined || message.includes(body);
 
 	return {
 		status,
 		body,
-		message: error.message,
+		message,
 		messageCarriesBody,
 	} satisfies NormalizedProviderError;
 }
@@ -71,14 +96,82 @@ function extractStatus(error: SdkErrorShape): number | undefined {
  * `body` string (Mistral) → `error` parsed JSON body object (`openai` SDK's
  * `this.error`) → `$response.body` (Bedrock). Empty objects and unread response
  * streams are treated as no body so they do not surface as `"{}"` or serialized
- * stream internals. The chosen body is truncated to the cap.
+ * stream internals. The chosen body is redacted before it is truncated to the cap.
  */
 function extractBody(error: SdkErrorShape): string | undefined {
 	const bodyText = pickBodyText(error);
 	if (bodyText === undefined) return undefined;
 	const trimmed = bodyText.trim();
 	if (trimmed.length === 0) return undefined;
-	return truncateErrorText(trimmed, MAX_PROVIDER_ERROR_BODY_CHARS);
+	return truncateErrorText(redactProviderErrorText(trimmed), MAX_PROVIDER_ERROR_BODY_CHARS);
+}
+
+function redactTextPatterns(text: string): string {
+	return text
+		.replace(/^\s*((?:authorization|proxy-authorization|x-api-key|cookie|set-cookie)\s*:\s*).*$/gim, `$1${REDACTED}`)
+		.replace(new RegExp(`(["']${PROVIDER_SECRET_FIELD}["']\\s*:\\s*)(["'])(.*?)\\2`, "gi"), `$1$2${REDACTED}$2`)
+		.replace(/(\bauthorization\s*[:=]\s*)(?:bearer\s+|basic\s+)?(?:\[REDACTED\]|[^\s,;&}\]]+)/gi, `$1${REDACTED}`)
+		.replace(
+			new RegExp(`(\\b${PROVIDER_SECRET_FIELD}\\b\\s*[:=]\\s*)(?:\\[REDACTED\\]|[^\\s,;&}\\]]+)`, "gi"),
+			`$1${REDACTED}`,
+		)
+		.replace(/(bearer\s+)[a-z0-9._~+\-/]+=*/gi, `$1${REDACTED}`)
+		.replace(new RegExp(`([?&]${PROVIDER_SECRET_FIELD}=)[^&#\\s]+`, "gi"), `$1${REDACTED}`);
+}
+
+function isSecretKey(key: string): boolean {
+	const normalized = key.replace(/[^a-z0-9]/giu, "").toLowerCase();
+	return [...SECRET_KEYS].some((secret) => normalized.endsWith(secret));
+}
+
+function redactValue(value: unknown, seen: WeakSet<object>): unknown {
+	if (typeof value === "string") return redactTextPatterns(value);
+	if (typeof value !== "object" || value === null) return value;
+	if (seen.has(value)) return "[Circular]";
+	seen.add(value);
+
+	if (Array.isArray(value)) return value.map((item) => redactValue(item, seen));
+	if (!isPlainObject(value)) return redactTextPatterns(String(value));
+
+	const redacted: Record<string, unknown> = {};
+	for (const [key, item] of Object.entries(value)) {
+		redacted[key] = isSecretKey(key) ? REDACTED : redactValue(item, seen);
+	}
+	return redacted;
+}
+
+export function redactProviderErrorValue(value: unknown): unknown {
+	return redactValue(value, new WeakSet());
+}
+
+export function sanitizeProviderErrorCause(value: unknown): unknown {
+	if (!(value instanceof Error)) return redactProviderErrorValue(value);
+	const source = value as Error & {
+		cause?: unknown;
+		code?: unknown;
+		status?: unknown;
+		statusCode?: unknown;
+	};
+	const cause = source.cause === undefined ? undefined : sanitizeProviderErrorCause(source.cause);
+	const sanitized = new Error(
+		redactProviderErrorText(value.message || value.name),
+		cause === undefined ? undefined : { cause },
+	);
+	sanitized.name = redactProviderErrorText(value.name || "Error");
+	for (const key of ["code", "status", "statusCode"] as const) {
+		const field = source[key];
+		if (typeof field === "number") Object.assign(sanitized, { [key]: field });
+		if (typeof field === "string") Object.assign(sanitized, { [key]: redactProviderErrorText(field) });
+	}
+	return sanitized;
+}
+
+export function redactProviderErrorText(text: string): string {
+	try {
+		return redactTextPatterns(JSON.stringify(redactProviderErrorValue(JSON.parse(text))));
+	} catch {
+		return redactTextPatterns(text);
+	}
 }
 
 function pickBodyText(error: SdkErrorShape): string | undefined {
@@ -110,10 +203,13 @@ function isReadableStreamLike(value: unknown): boolean {
  * by construction) still pass.
  */
 function isPlainNonEmptyObject(value: unknown): boolean {
-	if (typeof value !== "object" || value === null) return false;
+	return isPlainObject(value) && Object.keys(value).length > 0;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+	if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
 	const proto = Object.getPrototypeOf(value);
-	if (proto !== Object.prototype && proto !== null) return false;
-	return Object.keys(value).length > 0;
+	return proto === Object.prototype || proto === null;
 }
 
 /**
@@ -127,11 +223,14 @@ function isPlainNonEmptyObject(value: unknown): boolean {
  */
 export function formatProviderError(norm: NormalizedProviderError, prefix?: string): string {
 	if (norm.messageCarriesBody || norm.status === undefined || norm.body === undefined) {
-		return prefix !== undefined && norm.status !== undefined
-			? `${prefix} (${norm.status}): ${norm.message}`
-			: norm.message;
+		const message =
+			prefix !== undefined && norm.status !== undefined
+				? `${prefix} (${norm.status}): ${norm.message}`
+				: norm.message;
+		return redactProviderErrorText(message);
 	}
-	return prefix !== undefined ? `${prefix} (${norm.status}): ${norm.body}` : `${norm.status}: ${norm.body}`;
+	const message = prefix !== undefined ? `${prefix} (${norm.status}): ${norm.body}` : `${norm.status}: ${norm.body}`;
+	return redactProviderErrorText(message);
 }
 
 export function truncateErrorText(text: string, maxChars: number): string {

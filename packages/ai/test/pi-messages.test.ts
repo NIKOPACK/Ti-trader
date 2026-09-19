@@ -182,7 +182,14 @@ describe("pi-messages", () => {
 	it("surfaces backend error responses with diagnostics", async () => {
 		const { baseUrl } = await startServer({
 			status: 401,
-			rawBody: JSON.stringify({ error: { message: "Token expired", code: "unauthorized" } }),
+			rawBody: JSON.stringify({
+				error: {
+					message: "Token expired",
+					code: "unauthorized",
+					apiKey: "diagnostic-secret",
+					url: "https://gateway.test/error?token=query-secret",
+				},
+			}),
 		});
 		const model = createModel(baseUrl);
 
@@ -194,18 +201,29 @@ describe("pi-messages", () => {
 		expect(message.errorMessage).toContain("unauthorized");
 		expect(message.diagnostics?.[0]?.type).toBe("pi_messages_response_failure");
 		expect(message.diagnostics?.[0]?.details?.status).toBe(401);
+		expect(JSON.stringify(message)).not.toContain("diagnostic-secret");
+		expect(JSON.stringify(message)).not.toContain("query-secret");
 	});
 
 	it("propagates server-sent error events", async () => {
 		const { baseUrl } = await startServer({
-			events: [{ type: "start" }, { type: "error", reason: "error", usage, errorMessage: "Upstream failed" }],
+			events: [
+				{ type: "start" },
+				{
+					type: "error",
+					reason: "error",
+					usage,
+					errorMessage: "Upstream failed; Authorization: Bearer sse-secret",
+				},
+			],
 		});
 		const model = createModel(baseUrl);
 
 		const message = await stream(model, context, { apiKey: "test-key" }).result();
 
 		expect(message.stopReason).toBe("error");
-		expect(message.errorMessage).toBe("Upstream failed");
+		expect(message.errorMessage).toBe("Upstream failed; Authorization: [REDACTED]");
+		expect(message.errorMessage).not.toContain("sse-secret");
 		expect(message.usage).toEqual(usage);
 	});
 

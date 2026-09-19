@@ -188,6 +188,15 @@ describe("constrained tool sampling", () => {
 			tool.constrainedSampling = { type: "json_schema", strict: "require" };
 			expect(() => resolveJsonSchemaStrictSampling(tool, true)).toThrow(error);
 		}
+
+		const secretTool = makeTool({
+			name: "tool Authorization: Bearer constrained-secret",
+			parameters: Type.Intersect([Type.Object({ a: Type.String() }), Type.Object({ b: Type.Number() })]),
+			constrainedSampling: { type: "json_schema", strict: "require" },
+		});
+		expect(() => resolveJsonSchemaStrictSampling(secretTool, true)).toThrow(
+			'Tool "tool Authorization: [REDACTED] requires JSON-schema constrained sampling, but allOf schemas are unsupported.',
+		);
 	});
 
 	it("replays grammar calls as custom Responses items", () => {

@@ -1,3 +1,5 @@
+import { redactProviderErrorText, redactProviderErrorValue } from "./error-body.ts";
+
 export interface DiagnosticErrorInfo {
 	name?: string;
 	message: string;
@@ -13,9 +15,9 @@ export interface AssistantMessageDiagnostic {
 }
 
 export function formatThrownValue(value: unknown): string {
-	if (value instanceof Error) return value.message || value.name;
-	if (typeof value === "string") return value;
-	return String(value);
+	if (value instanceof Error) return redactProviderErrorText(value.message || value.name);
+	if (typeof value === "string") return redactProviderErrorText(value);
+	return redactProviderErrorText(String(value));
 }
 
 export function extractDiagnosticError(error: unknown): DiagnosticErrorInfo {
@@ -23,8 +25,8 @@ export function extractDiagnosticError(error: unknown): DiagnosticErrorInfo {
 	const code = (error as Error & { code?: unknown }).code;
 	return {
 		name: error.name || undefined,
-		message: error.message || error.name,
-		stack: error.stack,
+		message: redactProviderErrorText(error.message || error.name),
+		stack: error.stack === undefined ? undefined : redactProviderErrorText(error.stack),
 		code: typeof code === "string" || typeof code === "number" ? code : undefined,
 	};
 }
@@ -34,7 +36,12 @@ export function createAssistantMessageDiagnostic(
 	error: unknown,
 	details?: Record<string, unknown>,
 ): AssistantMessageDiagnostic {
-	return { type, timestamp: Date.now(), error: extractDiagnosticError(error), details };
+	return {
+		type,
+		timestamp: Date.now(),
+		error: extractDiagnosticError(error),
+		details: details === undefined ? undefined : (redactProviderErrorValue(details) as Record<string, unknown>),
+	};
 }
 
 export function appendAssistantMessageDiagnostic<T extends { diagnostics?: AssistantMessageDiagnostic[] }>(

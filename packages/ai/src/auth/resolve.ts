@@ -1,6 +1,7 @@
 import type { ProviderEnv } from "../types.ts";
 import { operationSignal, raceWithAbortSignal } from "../utils/abort.ts";
 import { formatThrownValue } from "../utils/diagnostics.ts";
+import { sanitizeProviderErrorCause } from "../utils/error-body.ts";
 import type {
 	ApiKeyAuth,
 	ApiKeyCredential,
@@ -27,7 +28,8 @@ export class ModelsError extends Error {
 	readonly code: ModelsErrorCode;
 
 	constructor(code: ModelsErrorCode, message: string, options?: { cause?: unknown }) {
-		super(withCauseDetail(message, options?.cause), options);
+		const cause = options?.cause === undefined ? undefined : sanitizeProviderErrorCause(options.cause);
+		super(withCauseDetail(message, options?.cause), cause === undefined ? undefined : { cause });
 		this.name = "ModelsError";
 		this.code = code;
 	}

@@ -256,15 +256,23 @@ describe("Kimi Code OAuth", () => {
 		expect(calls).toBe(2);
 
 		// invalid_grant is not retried.
+		const secret = "aws-secret";
 		vi.stubGlobal(
 			"fetch",
-			vi.fn(async (): Promise<Response> => jsonResponse({ error: "invalid_grant" }, 400)),
-		);
-		await expect(
-			kimiCodingOAuth.refresh(
-				{ type: "oauth", access: "old", refresh: "old", expires: 0 },
-				new AbortController().signal,
+			vi.fn(
+				async (): Promise<Response> =>
+					jsonResponse({ error: "invalid_grant", error_description: `AWS_SECRET_ACCESS_KEY=${secret}` }, 400),
 			),
-		).rejects.toThrow("unauthorized");
+		);
+		const rejection = await kimiCodingOAuth
+			.refresh({ type: "oauth", access: "old", refresh: "old", expires: 0 }, new AbortController().signal)
+			.then(
+				() => new Error("Expected refresh to fail"),
+				(error: unknown) => error,
+			);
+		expect(rejection).toBeInstanceOf(Error);
+		expect((rejection as Error).message).toContain("unauthorized");
+		expect((rejection as Error).message).toContain("[REDACTED]");
+		expect((rejection as Error).message).not.toContain(secret);
 	});
 });

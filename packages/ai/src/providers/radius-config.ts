@@ -1,5 +1,6 @@
 import type { OAuthCredential } from "../auth/types.ts";
 import type { Model, ThinkingLevelMap } from "../types.ts";
+import { redactProviderErrorText } from "../utils/error-body.ts";
 
 export const DEFAULT_RADIUS_GATEWAY = "https://radius.pi.dev";
 
@@ -73,7 +74,7 @@ export function getRadiusModels(providerId: string, credential: OAuthCredential 
 }
 
 function truncateHttpBody(body: string): string {
-	const trimmed = body.trim();
+	const trimmed = redactProviderErrorText(body.trim());
 	return trimmed.length > 512 ? `${trimmed.slice(0, 512)}…` : trimmed;
 }
 
@@ -87,7 +88,9 @@ export async function loadRadiusGatewayConfig(
 	const response = await fetch(new URL("/v1/config", gateway), { headers, signal });
 	if (!response.ok) {
 		throw new Error(
-			`Could not load Radius config from ${gateway}: ${response.status}: ${truncateHttpBody(await response.text())}`,
+			redactProviderErrorText(
+				`Could not load Radius config from ${gateway}: ${response.status}: ${truncateHttpBody(await response.text())}`,
+			),
 		);
 	}
 	const config = sanitizeRadiusGatewayConfig(await response.json());
