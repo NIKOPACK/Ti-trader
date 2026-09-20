@@ -1,7 +1,9 @@
+import { InMemoryTelemetryContext, NOOP_TELEMETRY_CONTEXT } from "@earendil-works/pi-telemetry";
 import type { Order, Position } from "@nikopack/ti-trading-engine";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { validateLiveVenueCredentials } from "../../../trading-engine/src/venues/index.ts";
 import { getTrading, TradingRuntime, UnattendedTradingConfirmationRequired } from "../context.ts";
+import { TRADING_TELEMETRY_SCHEMA } from "../telemetry.ts";
 
 /**
  * Deterministic replacement tests: the engine package's client/engine classes
@@ -174,6 +176,14 @@ describe("TradingRuntime client replacement", () => {
 		expect(() => getTrading()).toThrow("Trading runtime not initialized");
 	});
 
+	it("uses the shared NOOP telemetry context by default", async () => {
+		const runtime = await TradingRuntime.init({ mode: "paper", exchange: "binance" });
+
+		expect(runtime.telemetry).toBe(NOOP_TELEMETRY_CONTEXT);
+		expect(runtime.getExecutionStatus().recovery).toMatchObject({ examined: 0, unresolved: 0 });
+		await runtime.close();
+	});
+
 	it("runs recovery before publishing both initial and replacement engines", async () => {
 		const runtime = await TradingRuntime.init({ mode: "paper", exchange: "binance" });
 		const initial = runtime.tradingEngine as unknown as InstanceType<typeof engineMocks.StubTradingEngine>;
@@ -183,6 +193,46 @@ describe("TradingRuntime client replacement", () => {
 		expect(replacement).not.toBe(initial);
 		expect(replacement.recoverExecutions).toHaveBeenCalledOnce();
 		expect(runtime.getExecutionStatus().recovery).toMatchObject({ unresolved: 0, examined: 0 });
+	});
+
+	it("records runtime and recovery spans with a parent relationship", async () => {
+		const telemetryContext = new InMemoryTelemetryContext();
+		const runtime = await TradingRuntime.init({ mode: "paper", exchange: "binance" }, undefined, telemetryContext);
+
+		const spans = telemetryContext.getSpans();
+		const runtimeSpan = spans.find((span) => span.name === "ti.trading.runtime.init");
+		const recoverySpan = spans.find((span) => span.name === "ti.trading.execution.recovery");
+		expect(runtimeSpan).toMatchObject({
+			parentId: null,
+			status: { status: "ok" },
+			attributes: {
+				"ti.trading.mode": "paper",
+				"ti.trading.market_family": "spot",
+				"ti.trading.unresolved_count": 0,
+			},
+		});
+		expect(recoverySpan).toMatchObject({
+			parentId: runtimeSpan?.id,
+			status: { status: "ok" },
+			attributes: {
+				"ti.trading.examined_count": 0,
+				"ti.trading.reconciled_count": 0,
+				"ti.trading.unresolved_count": 0,
+			},
+		});
+		const allowedAttributes = new Set([
+			"ti.trading.mode",
+			"ti.trading.market_family",
+			"ti.trading.duration_ms",
+			"ti.trading.error_type",
+			"ti.trading.examined_count",
+			"ti.trading.reconciled_count",
+			"ti.trading.unresolved_count",
+		]);
+		for (const span of spans) {
+			expect(Object.keys(span.attributes).every((key) => allowedAttributes.has(key))).toBe(true);
+		}
+		await runtime.close();
 	});
 
 	it("blocks even confirmed replacement when an unresolved reducing execution has no claim", async () => {
@@ -397,6 +447,86 @@ describe("TradingRuntime client replacement", () => {
 				monitor: expect.objectContaining({ enabled: false, intervalSec: 15, wakeAgent: true }),
 			}),
 		);
+	});
+
+	it("records manual recovery as a root span allowed by the schema", async () => {
+		const telemetryContext = new InMemoryTelemetryContext();
+		const runtime = await TradingRuntime.init({ mode: "paper", exchange: "binance" }, undefined, telemetryContext);
+
+		await runtime.recoverExecutions();
+
+		const recovery = telemetryContext.getSpans().filter((span) => span.name === "ti.trading.execution.recovery");
+		expect(recovery).toHaveLength(2);
+		expect(recovery[1]).toMatchObject({
+			parentId: null,
+			settled: true,
+			status: { status: "ok" },
+			attributes: { "ti.trading.examined_count": 0, "ti.trading.unresolved_count": 0 },
+		});
+		expect(TRADING_TELEMETRY_SCHEMA.spans["ti.trading.execution.recovery"].parents).toEqual({ kind: "any" });
+		await runtime.close();
+	});
+
+	it("records manual recovery failures without serializing the original error", async () => {
+		const telemetryContext = new InMemoryTelemetryContext();
+		const runtime = await TradingRuntime.init({ mode: "paper", exchange: "binance" }, undefined, telemetryContext);
+		const engine = runtime.tradingEngine as unknown as InstanceType<typeof engineMocks.StubTradingEngine>;
+		const error = new Error("credential=secret-recovery-token");
+		engine.recoverExecutions.mockRejectedValueOnce(error);
+
+		await expect(runtime.recoverExecutions()).rejects.toBe(error);
+
+		const recovery = telemetryContext.getSpans().filter((span) => span.name === "ti.trading.execution.recovery");
+		expect(recovery[1]).toMatchObject({
+			parentId: null,
+			settled: true,
+			status: { status: "error" },
+			attributes: { "ti.trading.error_type": "recovery" },
+		});
+		expect(JSON.stringify(telemetryContext.getSpans())).not.toContain("secret-recovery-token");
+		await runtime.close();
+	});
+
+	it("records initialization failures with only a safe error category", async () => {
+		const telemetryContext = new InMemoryTelemetryContext();
+		const error = new Error("credential=secret-init-token");
+		engineMocks.setTradingEngineConstructorError(error);
+
+		await expect(
+			TradingRuntime.init({ mode: "paper", exchange: "binance" }, undefined, telemetryContext),
+		).rejects.toBe(error);
+
+		expect(telemetryContext.getSpans()).toEqual([
+			expect.objectContaining({
+				name: "ti.trading.runtime.init",
+				settled: true,
+				status: { status: "error" },
+				attributes: expect.objectContaining({ "ti.trading.error_type": "runtime" }),
+			}),
+		]);
+		expect(JSON.stringify(telemetryContext.getSpans())).not.toContain("secret-init-token");
+		expect(engineMocks.createdClients[0].close).toHaveBeenCalledOnce();
+	});
+
+	it("records replacement failures and preserves the original runtime", async () => {
+		const telemetryContext = new InMemoryTelemetryContext();
+		const runtime = await TradingRuntime.init({ mode: "paper", exchange: "binance" }, undefined, telemetryContext);
+		const original = runtime.tradingEngine;
+		const error = new Error("credential=secret-replacement-token");
+		engineMocks.setTradingEngineConstructorError(error);
+
+		await expect(runtime.setExchange("bybit")).rejects.toBe(error);
+
+		const replacement = telemetryContext.getSpans().find((span) => span.name === "ti.trading.runtime.replace");
+		expect(replacement).toMatchObject({
+			parentId: null,
+			settled: true,
+			status: { status: "error" },
+			attributes: { "ti.trading.error_type": "runtime" },
+		});
+		expect(runtime.tradingEngine).toBe(original);
+		expect(JSON.stringify(telemetryContext.getSpans())).not.toContain("secret-replacement-token");
+		await runtime.close();
 	});
 
 	it("installs risk config on a fresh engine without replacing the client", async () => {

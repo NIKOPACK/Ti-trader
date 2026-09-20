@@ -76,6 +76,18 @@ export {
 	type TradingMode,
 } from "./state.ts";
 export {
+	marketFamilyForTradingType,
+	markTradingSpanAborted,
+	setTradingSpanAttributes,
+	startTradingSpan,
+	TRADING_TELEMETRY_SCHEMA,
+	type TradingSpanEndAttributes,
+	type TradingSpanName,
+	type TradingSpanStartAttributes,
+	type TradingTelemetryErrorType,
+	type TradingTelemetrySpan,
+} from "./telemetry.ts";
+export {
 	createBuyTool,
 	createCancelOrderListTool,
 	createCancelOrderTool,

@@ -10,6 +10,7 @@ vi.mock("../settings-menu.ts", () => ({
 	openTradingSettings: vi.fn(async () => {}),
 }));
 
+import { InMemoryTelemetryContext } from "@earendil-works/pi-telemetry";
 import { isProtection, type Order, type Position, protectionCoverage } from "@nikopack/ti-trading-engine";
 import type { TradingRuntime } from "../context.ts";
 import { createOrderMonitorExtension } from "../monitor.ts";
@@ -62,6 +63,7 @@ function setupMonitor(options: {
 	wakeAgent?: boolean;
 	hasUI?: boolean;
 	uiMode?: "tui" | "print";
+	telemetryContext?: InMemoryTelemetryContext;
 }) {
 	let openIndex = 0;
 	let historyIndex = 0;
@@ -116,6 +118,7 @@ function setupMonitor(options: {
 	createOrderMonitorExtension({
 		store: options.store ?? createMemoryMonitoringStore(),
 		getScope: () => options.scope ?? TEST_SCOPE,
+		telemetryContext: options.telemetryContext,
 	})(api);
 
 	const notify = vi.fn();
@@ -161,6 +164,178 @@ describe("order monitor config gating", () => {
 		});
 		await monitor.start();
 		await vi.advanceTimersByTimeAsync(15_000);
+		expect(monitor.getOpenOrders).not.toHaveBeenCalled();
+		await monitor.stop();
+	});
+});
+
+describe("order monitor telemetry", () => {
+	it("records poll and delivery spans without account or order identifiers", async () => {
+		const telemetryContext = new InMemoryTelemetryContext();
+		const monitor = setupMonitor({
+			openSnapshots: [[]],
+			historyResults: [[]],
+			telemetryContext,
+		});
+
+		await monitor.start();
+
+		const spans = telemetryContext.getSpans();
+		const poll = spans.find((span) => span.name === "ti.trading.monitor.poll");
+		const delivery = spans.find((span) => span.name === "ti.trading.monitor.delivery");
+		expect(poll).toMatchObject({
+			parentId: null,
+			status: { status: "ok" },
+			attributes: {
+				"ti.trading.mode": "paper",
+				"ti.trading.market_family": "spot",
+				"ti.trading.open_order_count": 0,
+			},
+		});
+		expect(delivery).toMatchObject({
+			parentId: poll?.id,
+			status: { status: "ok" },
+			attributes: {
+				"ti.trading.attempted_count": 0,
+				"ti.trading.delivered_count": 0,
+				"ti.trading.failure_count": 0,
+			},
+		});
+		const allowedAttributes = new Set([
+			"ti.trading.mode",
+			"ti.trading.market_family",
+			"ti.trading.duration_ms",
+			"ti.trading.error_type",
+			"ti.trading.open_order_count",
+			"ti.trading.unresolved_count",
+			"ti.trading.attempted_count",
+			"ti.trading.delivered_count",
+			"ti.trading.failure_count",
+		]);
+		for (const span of spans) {
+			expect(Object.keys(span.attributes).every((key) => allowedAttributes.has(key))).toBe(true);
+		}
+		await monitor.stop();
+	});
+
+	it("classifies delivery failures without retaining the thrown error or notification content", async () => {
+		const telemetryContext = new InMemoryTelemetryContext();
+		const store = createMemoryMonitoringStore();
+		store.transact((state) => {
+			const now = Date.now();
+			enqueueMonitoringNotification(
+				ensureMonitoringScope(state, TEST_SCOPE, now),
+				{
+					source: "orders",
+					customType: "order-fill",
+					content: "credential=secret-api-key",
+					notices: ["credential=secret-api-key"],
+					level: "warning",
+					wake: false,
+				},
+				now,
+			);
+		});
+		const monitor = setupMonitor({
+			openSnapshots: [[]],
+			historyResults: [[]],
+			store,
+			telemetryContext,
+		});
+		monitor.sendMessage.mockImplementation(() => {
+			throw new Error("credential=secret-api-key");
+		});
+
+		await monitor.start();
+
+		const delivery = telemetryContext.getSpans().find((span) => span.name === "ti.trading.monitor.delivery");
+		expect(delivery).toMatchObject({
+			status: { status: "error" },
+			attributes: { "ti.trading.failure_count": 1 },
+		});
+		expect(delivery?.status).not.toHaveProperty("error");
+		expect(JSON.stringify(delivery)).not.toContain("secret-api-key");
+		await monitor.stop();
+	});
+});
+
+describe("order monitor telemetry cancellation", () => {
+	it.each(["resolve", "reject"] as const)("marks a late %s after shutdown as aborted", async (outcome) => {
+		const telemetryContext = new InMemoryTelemetryContext();
+		const store = createMemoryMonitoringStore();
+		const monitor = setupMonitor({ openSnapshots: [[]], historyResults: [[]], store, telemetryContext });
+		let finish: (() => void) | undefined;
+		monitor.getOpenOrders.mockImplementationOnce(
+			() =>
+				new Promise<Order[]>((resolve, reject) => {
+					finish = () => (outcome === "resolve" ? resolve([]) : reject(new Error("credential=secret-poll-token")));
+				}),
+		);
+		const start = monitor.start();
+		await vi.waitFor(() => expect(monitor.getOpenOrders).toHaveBeenCalledOnce());
+		await monitor.stop();
+		finish?.();
+		await start;
+
+		const poll = telemetryContext.getSpans().find((span) => span.name === "ti.trading.monitor.poll");
+		expect(poll).toMatchObject({
+			settled: true,
+			status: { status: "error" },
+			attributes: { "ti.trading.error_type": "aborted" },
+		});
+		expect(JSON.stringify(telemetryContext.getSpans())).not.toContain("secret-poll-token");
+		expect(store.read().scopes).toHaveLength(0);
+		expect(monitor.sendMessage).not.toHaveBeenCalled();
+	});
+
+	it("classifies a current poll failure without recording the provider error", async () => {
+		const telemetryContext = new InMemoryTelemetryContext();
+		const monitor = setupMonitor({ openSnapshots: [[]], historyResults: [[]], telemetryContext });
+		monitor.getOpenOrders.mockRejectedValueOnce(new Error("credential=secret-poll-token"));
+
+		await monitor.start();
+
+		const poll = telemetryContext.getSpans().find((span) => span.name === "ti.trading.monitor.poll");
+		expect(poll).toMatchObject({
+			settled: true,
+			status: { status: "error" },
+			attributes: { "ti.trading.error_type": "poll" },
+		});
+		expect(JSON.stringify(telemetryContext.getSpans())).not.toContain("secret-poll-token");
+		await monitor.stop();
+	});
+
+	it("marks delivery interrupted by disabling the monitor as aborted", async () => {
+		const telemetryContext = new InMemoryTelemetryContext();
+		const store = createMemoryMonitoringStore();
+		store.transact((state) => {
+			const now = Date.now();
+			enqueueMonitoringNotification(
+				ensureMonitoringScope(state, TEST_SCOPE, now),
+				{
+					source: "orders",
+					customType: "order-fill",
+					content: "pending delivery",
+					notices: [],
+					level: "info",
+					wake: false,
+				},
+				now,
+			);
+		});
+		const monitor = setupMonitor({ openSnapshots: [[]], historyResults: [[]], store, telemetryContext });
+		monitor.sendMessage.mockImplementation(() => {
+			(monitor.runtime as { config: { monitor: { enabled: boolean } } }).config.monitor.enabled = false;
+		});
+
+		await monitor.start();
+
+		const delivery = telemetryContext.getSpans().find((span) => span.name === "ti.trading.monitor.delivery");
+		expect(delivery).toMatchObject({
+			settled: true,
+			status: { status: "error" },
+			attributes: { "ti.trading.error_type": "aborted", "ti.trading.attempted_count": 1 },
+		});
 		expect(monitor.getOpenOrders).not.toHaveBeenCalled();
 		await monitor.stop();
 	});

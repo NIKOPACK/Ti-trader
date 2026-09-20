@@ -5,6 +5,7 @@ const tuiSourceIndex = fileURLToPath(new URL("../tui/src/index.ts", import.meta.
 const engineSourceIndex = fileURLToPath(new URL("../trading-engine/src/index.ts", import.meta.url));
 const riskSourceIndex = fileURLToPath(new URL("../trading-risk/src/index.ts", import.meta.url));
 const triggersSourceIndex = fileURLToPath(new URL("../triggers/src/index.ts", import.meta.url));
+const telemetrySourceIndex = fileURLToPath(new URL("../telemetry/src/index.ts", import.meta.url));
 
 // Vitest resolves externalized bare Node built-ins relative to the workspace
 // package. Keep the test boundary equivalent to Node's runtime resolver.
@@ -25,6 +26,7 @@ export default defineConfig({
 	resolve: {
 		alias: [
 			{ find: /^@earendil-works\/pi-tui$/, replacement: tuiSourceIndex },
+			{ find: /^@earendil-works\/pi-telemetry$/, replacement: telemetrySourceIndex },
 			{ find: /^@nikopack\/ti-trading-engine$/, replacement: engineSourceIndex },
 			{ find: /^@nikopack\/ti-trading-risk$/, replacement: riskSourceIndex },
 			{ find: /^@nikopack\/ti-triggers$/, replacement: triggersSourceIndex },
