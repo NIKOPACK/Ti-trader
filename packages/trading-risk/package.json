@@ -26,5 +26,12 @@
     "vitest": "5.0.0"
   },
   "engines": { "node": ">=22.19.0" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NIKOPACK/Ti-trader.git",
+    "directory": "packages/trading-risk"
+  },
+  "homepage": "https://github.com/NIKOPACK/Ti-trader/tree/main/packages/trading-risk#readme",
+  "bugs": "https://github.com/NIKOPACK/Ti-trader/issues",
   "license": "MIT"
 }

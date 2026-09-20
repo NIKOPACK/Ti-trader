@@ -5,6 +5,7 @@ import type {
 	PlaceOrderType,
 	PreparedOco,
 	PreparedOrder,
+	PreparedPlanConfirmation,
 	ReferencePriceSource,
 } from "@nikopack/ti-trading-engine";
 import { type MenuKey, t, translate } from "./i18n.ts";
@@ -48,11 +49,12 @@ export function createOrderReview(
 		usage: { used: number; reserved: number; limit: number };
 		protectionStopPrice?: number;
 		planReference?: { id: string; version: number; intentId: string };
+		confirmation?: PreparedPlanConfirmation;
 	},
 ): OrderReview {
 	const { plan } = prepared;
 	const { input, capabilityContext } = plan;
-	const { language, quoteCurrency, usage } = context;
+	const { language, quoteCurrency, usage, confirmation } = context;
 	const unavailable = t(language, "orderReviewUnavailable");
 	const number = (value: number | undefined, allowZero = false): string =>
 		value !== undefined && Number.isFinite(value) && (allowZero ? value >= 0 : value > 0)
@@ -61,6 +63,7 @@ export function createOrderReview(
 	const quote = (value: number | undefined): string => `${number(value)} ${quoteCurrency}`;
 	const yesNo = (value: boolean): string => t(language, value ? "yes" : "no");
 	const lines: string[] = [];
+	if (confirmation?.requote) lines.push(t(language, "orderReviewUpdated"), "");
 	const field = (label: MenuKey, value: string): void => {
 		lines.push(`${t(language, label)}: ${value}`);
 	};
@@ -81,7 +84,7 @@ export function createOrderReview(
 	field(
 		"colAmount",
 		translate(language, "orderReviewBaseAmount", {
-			amount: number(input.amount),
+			amount: number(confirmation?.amount ?? input.amount),
 			asset: input.symbol.split("/")[0] || unavailable,
 		}),
 	);
@@ -97,7 +100,7 @@ export function createOrderReview(
 				quote(input.stopPrice),
 			);
 		if (input.trailingPercent !== undefined) field("colTrailing", `${number(input.trailingPercent)}%`);
-		field("orderReviewNotional", quote(plan.notional));
+		field("orderReviewNotional", quote(confirmation?.notional ?? plan.notional));
 		if (capabilityContext.marketFamily === "futures") {
 			field(
 				"positionMode",
@@ -117,16 +120,21 @@ export function createOrderReview(
 		field("colType", "OCO");
 		field("orderReviewStopLoss", quote(plan.input.stopLossPrice));
 		field("orderReviewTakeProfit", quote(plan.input.takeProfitPrice));
-		field("orderReviewNotional", quote(plan.observedNotional));
-		field("orderReviewRiskNotional", quote(plan.riskNotional));
+		field("orderReviewNotional", quote(confirmation?.notional ?? plan.observedNotional));
+		field("orderReviewRiskNotional", quote(confirmation?.riskNotional ?? plan.riskNotional));
 		field("colAvailable", `${number(preflight.balance.free, true)} ${preflight.balanceAsset}`);
 		field("orderReviewRequiredBalance", `${number(preflight.requiredBalance)} ${preflight.balanceAsset}`);
-		for (const warning of preflight.warnings) {
+		for (const warning of confirmation?.warnings ?? preflight.warnings) {
 			if (warning.trim()) field("toolWarnings", warning);
 		}
 	}
 
-	field("orderReviewReference", quote(plan.referencePrice));
+	if (prepared.kind === "order") {
+		for (const warning of confirmation?.warnings ?? []) {
+			if (warning.trim()) field("toolWarnings", warning);
+		}
+	}
+	field("orderReviewReference", quote(confirmation?.referencePrice ?? plan.referencePrice));
 	const source = PRICE_SOURCES[prepared.kind === "order" ? prepared.plan.referencePriceSource : "last"];
 	field("orderReviewSource", t(language, source));
 	const referenceDate = new Date(plan.referenceTimestamp);

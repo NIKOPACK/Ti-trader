@@ -1,7 +1,7 @@
 import type { AccountRiskLimits, RiskStateStore, TradingRiskState } from "@nikopack/ti-trading-risk";
 import { describe, expect, it } from "vitest";
 import { TradingEngine, type TradingEngineConfig } from "./engine.ts";
-import { ExecutionRecoveryError } from "./execution-journal.ts";
+import { ExecutionRecoveryError, type ExecutionRiskState } from "./execution-journal.ts";
 import { superviseAccountRisk } from "./risk-supervisor.ts";
 import type { AccountSnapshot, ExchangeClient, Order, PlaceOrderInput, Position } from "./types.ts";
 import { SubmissionRejectedError } from "./types.ts";
@@ -51,6 +51,7 @@ function fixture() {
 		partial: false,
 		stale: false,
 		unknownAccount: false,
+		lookupVisible: true,
 	};
 	let submissions = 0;
 	const client: ExchangeClient = {
@@ -107,12 +108,12 @@ function fixture() {
 		getOrderHistory: async () => structuredClone(orders),
 		getOrder: async (id) => {
 			const order = orders.find((order) => order.id === id);
-			if (!order) throw new Error("not found");
+			if (!behavior.lookupVisible || !order) throw new Error("not found");
 			return structuredClone(order);
 		},
 		getOrderByClientId: async (id) => {
 			const order = orders.find((order) => order.clientOrderId === id);
-			if (!order) throw new Error("not found");
+			if (!behavior.lookupVisible || !order) throw new Error("not found");
 			return structuredClone(order);
 		},
 		getOrderList: async () => {
@@ -238,7 +239,7 @@ describe("autonomous engine risk boundary", () => {
 		const getMarketInfo = f.client.getMarketInfo;
 		let calls = 0;
 		f.client.getMarketInfo = async (symbol) => {
-			if (++calls === 2) abort.abort();
+			if (++calls === 1) abort.abort();
 			return getMarketInfo(symbol);
 		};
 		await expect(
@@ -278,12 +279,13 @@ describe("autonomous engine risk boundary", () => {
 	it("rechecks opening flow limits at the final observed price rather than the old plan price", async () => {
 		const f = fixture();
 		const plan = await f.engine.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
-		f.client.getTicker = async (symbol) => ({ symbol, last: 110, bid: 110, ask: 110, timestamp: now });
+		// Stay inside the 1% confirmed-price band so account risk, not plan materiality, is the rejecting check.
+		f.client.getTicker = async (symbol) => ({ symbol, last: 100.5, bid: 100.5, ask: 100.5, timestamp: now });
 		f.client.getOrderBook = async (symbol) => ({
 			symbol,
 			timestamp: now,
-			bids: [{ price: 110, amount: 100 }],
-			asks: [{ price: 110, amount: 100 }],
+			bids: [{ price: 100.5, amount: 100 }],
+			asks: [{ price: 100.5, amount: 100 }],
 			bidDepth: 100,
 			askDepth: 100,
 		});
@@ -459,5 +461,103 @@ describe("autonomous engine risk boundary", () => {
 		await expect(f.engine.accountRisk!.inspect()).rejects.toThrow("disconnected");
 		expect(f.engine.accountRisk!.state()?.blockedReasons).toContain("account-observation-unavailable");
 		expect(f.submissions()).toBe(0);
+	});
+	it("does not resubmit a timed-out accepted protection after a delayed restart lookup", async () => {
+		const f = fixture();
+		f.behavior.partial = true;
+		await f.engine.placeOrder(await f.engine.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 }), {
+			intentId: "entry",
+			protectionStopPrice: 90,
+		});
+		expect(f.positions[0]?.amount).toBe(0.5);
+		expect(f.engine.risk.usage()).toMatchObject({ used: 100, reserved: 0 });
+		expect(f.engine.protectionTargets()).toEqual([
+			expect.objectContaining({ symbol: "BTC/USDT", side: "sell", stopPrice: 90 }),
+		]);
+
+		f.behavior.acceptedTimeout = true;
+		const timedOut = await superviseAccountRisk(f.engine, {
+			timeoutMs: 1000,
+			protectionAttempts: 2,
+			now: () => now,
+		});
+		expect(timedOut.actions.some((action) => action.action === "protect" && action.status === "unknown")).toBe(true);
+		expect(f.submissions()).toBe(2);
+		expect(f.orders.filter((order) => order.type === "stop_market")).toHaveLength(1);
+		expect(f.engine.getExecutionStatus().unresolved).toHaveLength(1);
+		expect(f.engine.risk.usage()).toMatchObject({ used: 100, reserved: 0 });
+		await expect(
+			f.engine.placeOrder(
+				await f.engine.prepareOrder("buy", { symbol: "BTC/USDT", type: "limit", amount: 0.1, price: 100 }),
+				{ intentId: "blocked-while-unknown", protectionStopPrice: 90 },
+			),
+		).rejects.toThrow(/unresolved executions/);
+		expect(f.submissions()).toBe(2);
+
+		f.behavior.lookupVisible = false;
+		const restarted = f.createEngine();
+		const delayed = await restarted.recoverExecutions({
+			backoffMs: 0,
+			lookupTimeoutMs: 20,
+			attemptsPerRecord: 1,
+		});
+		expect(delayed.unresolved).toBe(1);
+		expect(delayed.issues).toContainEqual(expect.objectContaining({ issue: "lookup-unavailable" }));
+		expect(restarted.listExecutions().find((entry) => entry.status === "unknown")).toMatchObject({
+			issue: "lookup-unavailable",
+			intent: expect.objectContaining({
+				input: expect.objectContaining({ type: "stop_market", amount: 0.5, stopPrice: 90 }),
+			}),
+		});
+		expect(restarted.protectionTargets()).toEqual([
+			expect.objectContaining({ symbol: "BTC/USDT", side: "sell", stopPrice: 90 }),
+		]);
+		const hiddenSupervise = await superviseAccountRisk(restarted, {
+			timeoutMs: 1000,
+			protectionAttempts: 2,
+			now: () => now,
+		});
+		expect(hiddenSupervise.actions.some((action) => action.status === "unknown")).toBe(true);
+		expect(f.submissions()).toBe(2);
+		expect(f.orders.filter((order) => order.type === "stop_market")).toHaveLength(1);
+		expect(restarted.getExecutionStatus().unresolved).toHaveLength(1);
+
+		f.behavior.lookupVisible = true;
+		f.store.transact!((state) => {
+			for (const record of (state as ExecutionRiskState).executions?.records ?? []) {
+				delete record.nextAttemptAt;
+			}
+		});
+		const recovered = await restarted.recoverExecutions({
+			backoffMs: 0,
+			lookupTimeoutMs: 20,
+			attemptsPerRecord: 1,
+		});
+		expect(recovered.unresolved).toBe(0);
+		expect(recovered.issues).toEqual([]);
+		expect(restarted.getExecutionStatus().unresolved).toHaveLength(0);
+		expect(restarted.risk.usage()).toMatchObject({ used: 100, reserved: 0 });
+		expect(restarted.listExecutions()).toEqual(
+			expect.arrayContaining([
+				expect.objectContaining({
+					intentId: "entry",
+					status: "acknowledged",
+					settlement: { outcome: "commit", notional: 100 },
+				}),
+				expect.objectContaining({
+					status: "reconciled",
+					intent: expect.objectContaining({
+						input: expect.objectContaining({ type: "stop_market", amount: 0.5 }),
+					}),
+					settlement: expect.objectContaining({ outcome: "commit" }),
+				}),
+			]),
+		);
+		await superviseAccountRisk(restarted, { timeoutMs: 1000, protectionAttempts: 2, now: () => now });
+		expect(f.submissions()).toBe(2);
+		expect(f.orders.filter((order) => order.type === "stop_market" && order.status === "open")).toHaveLength(1);
+		expect(restarted.protectionTargets()).toEqual([
+			expect.objectContaining({ symbol: "BTC/USDT", side: "sell", stopPrice: 90 }),
+		]);
 	});
 });

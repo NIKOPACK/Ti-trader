@@ -10,6 +10,7 @@ All notable changes to `@nikopack/ti-trading-risk` are documented in this file.
 
 ### Fixed
 
+- Package `repository`, `homepage` and `bugs` now point at [NIKOPACK/Ti-trader](https://github.com/NIKOPACK/Ti-trader).
 - Engine-verified reductions bypass opening whitelist and single-order/flow limits while retaining symbol and numeric validation.
 
 ## [0.2.0] - 2026-09-08

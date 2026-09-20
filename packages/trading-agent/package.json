@@ -76,11 +76,11 @@
 	"author": "NIKOPACK",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/NIKOPACK/Ti.git",
+		"url": "git+https://github.com/NIKOPACK/Ti-trader.git",
 		"directory": "packages/trading-agent"
 	},
-	"homepage": "https://github.com/NIKOPACK/Ti#readme",
-	"bugs": "https://github.com/NIKOPACK/Ti/issues",
+	"homepage": "https://github.com/NIKOPACK/Ti-trader#readme",
+	"bugs": "https://github.com/NIKOPACK/Ti-trader/issues",
 	"license": "MIT",
 	"engines": {
 		"node": ">=22.19.0"

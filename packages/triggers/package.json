@@ -22,5 +22,12 @@
   "dependencies": { "typebox": "1.3.7" },
   "devDependencies": { "@types/node": "22.19.19", "shx": "0.4.0", "typescript": "5.9.3", "vitest": "5.0.0" },
   "engines": { "node": ">=22.19.0" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NIKOPACK/Ti-trader.git",
+    "directory": "packages/triggers"
+  },
+  "homepage": "https://github.com/NIKOPACK/Ti-trader/tree/main/packages/triggers#readme",
+  "bugs": "https://github.com/NIKOPACK/Ti-trader/issues",
   "license": "MIT"
 }

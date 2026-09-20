@@ -28,6 +28,8 @@ import {
 	recoverJournal,
 } from "./execution-recovery.ts";
 import {
+	formatPreparedOcoSummary,
+	formatPreparedOrderSummary,
 	type OcoIntent,
 	type OrderIntent,
 	type OrderPlanningContext,
@@ -36,7 +38,14 @@ import {
 	prepareOcoOrder,
 	prepareOrder,
 } from "./order-plan.ts";
-import { type OrderPreflightResult, preflightOco, preflightOrder } from "./order-preflight.ts";
+import {
+	confirmationSnapshotChanged,
+	marketEvidenceChanged,
+	type OrderConfirmationEvidence,
+	type OrderPreflightResult,
+	preflightOco,
+	preflightOrder,
+} from "./order-preflight.ts";
 import {
 	type Balance,
 	createMarketDataView,
@@ -61,6 +70,21 @@ export class PreparedPlanError extends Error {
 	}
 }
 
+/** Maximum age of a prepared plan from prepare() through the last asynchronous revalidation. */
+export const PREPARED_PLAN_TTL_MS = 60_000;
+/** Bound on confirmation prompts so a moving market cannot I/O-storm inside the TTL window. */
+export const PREPARED_PLAN_MAX_CONFIRMATIONS = 4;
+
+export interface PreparedPlanConfirmation {
+	summary: string;
+	referencePrice: number;
+	amount: number;
+	notional: number;
+	riskNotional: number;
+	warnings: string[];
+	requote: boolean;
+}
+
 export interface TradingEngineSubmissionPolicy {
 	/** Stable logical action identity, preserved across model turn retries and restarts. */
 	intentId?: string;
@@ -71,7 +95,7 @@ export interface TradingEngineSubmissionPolicy {
 	protectionStopPrice?: number;
 	/** Engine-validated atomic protection replacement or full protected close. */
 	replacementIds?: string[];
-	confirm?(summary: string): Promise<boolean>;
+	confirm?(summary: string, confirmation?: PreparedPlanConfirmation): Promise<boolean>;
 	/** Explicitly opt into headless live submission without a confirmation callback. */
 	allowUnconfirmedLive?: boolean;
 	/** Return true when a failed submission may have reached the exchange. */
@@ -80,6 +104,27 @@ export interface TradingEngineSubmissionPolicy {
 
 function combineFailures(message: string, first: unknown, second: unknown): Error {
 	return new AggregateError([first, second], message);
+}
+
+function withConfirmationWarnings(summary: string, warnings: string[]): string {
+	return warnings.length === 0 ? summary : `${summary}\nWarnings: ${warnings.join("; ")}`;
+}
+
+function toPreparedPlanConfirmation(
+	preflight: OrderPreflightResult,
+	summarize: (evidence: OrderConfirmationEvidence, warnings: string[]) => string,
+	requote: boolean,
+): PreparedPlanConfirmation {
+	const { evidence, warnings } = preflight;
+	return {
+		summary: summarize(evidence, warnings),
+		referencePrice: evidence.referencePrice,
+		amount: evidence.amount,
+		notional: evidence.notional,
+		riskNotional: evidence.riskNotional,
+		warnings,
+		requote,
+	};
 }
 
 const LIVE_CANCELLATION_REQUIRES_OPEN_IDENTITY =
@@ -113,11 +158,14 @@ export class TradingEngine {
 	private readonly marketDataClient: MarketDataClient;
 	private readonly preparedOrders = new WeakMap<object, PreparedOrder>();
 	private readonly preparedOcos = new WeakMap<object, PreparedOco>();
+	/** Engine clock; callers cannot write this. */
+	private readonly preparedAt = new WeakMap<object, number>();
 	/** A prepared plan is single-use once an exchange attempt starts. */
 	private readonly consumedPlans = new WeakSet<object>();
 	/** Prevent two concurrent callers from submitting the same plan. */
 	private readonly inFlightPlans = new WeakSet<object>();
 	private readonly journal: ExecutionJournal | undefined;
+	private readonly clock: RiskClock;
 	private submissionsRetired = false;
 	readonly accountRisk: AccountRiskGuard | undefined;
 
@@ -140,7 +188,8 @@ export class TradingEngine {
 		this.config = acceptedConfig;
 		this.exchangeClient = exchange;
 		this.marketDataClient = createMarketDataView(exchange);
-		this.risk = new RiskLedger(toRiskConfig(acceptedConfig), stateStore, clock);
+		this.clock = clock ?? { now: () => new Date() };
+		this.risk = new RiskLedger(toRiskConfig(acceptedConfig), stateStore, this.clock);
 		if (execution) {
 			if (execution.durability !== "durable" && execution.durability !== "memory")
 				throw new Error("Explicit execution durability is required");
@@ -157,15 +206,11 @@ export class TradingEngine {
 					quoteCurrency: config.quoteCurrency,
 					positionMode: config.positionMode,
 				},
-				clock,
+				this.clock,
 				execution.admissionGeneration,
 			);
-			this.accountRisk = new AccountRiskGuard(
-				stateStore,
-				exchange,
-				this.journal.scope,
-				config.risk.account,
-				clock ? () => clock.now().getTime() : Date.now,
+			this.accountRisk = new AccountRiskGuard(stateStore, exchange, this.journal.scope, config.risk.account, () =>
+				this.clock.now().getTime(),
 			);
 		}
 	}
@@ -413,12 +458,14 @@ export class TradingEngine {
 	prepareOrder(side: OrderSide, intent: OrderIntent): Promise<PreparedOrder> {
 		return prepareOrder(side, intent, this.planningContext).then((plan) => {
 			this.preparedOrders.set(plan, plan);
+			this.preparedAt.set(plan, this.clock.now().getTime());
 			return plan;
 		});
 	}
 	prepareOcoOrder(intent: OcoIntent): Promise<PreparedOco> {
 		return prepareOcoOrder(intent, this.planningContext).then((plan) => {
 			this.preparedOcos.set(plan, plan);
+			this.preparedAt.set(plan, this.clock.now().getTime());
 			return plan;
 		});
 	}
@@ -504,7 +551,24 @@ export class TradingEngine {
 			"Order",
 			prepared.notional,
 			prepared.countTowardsDailyLimit,
-			prepared.summary,
+			{
+				referencePrice: prepared.referencePrice,
+				amount: prepared.amount,
+				notional: prepared.notional,
+				riskNotional: prepared.notional,
+			},
+			(evidence, warnings) =>
+				withConfirmationWarnings(
+					formatPreparedOrderSummary(
+						prepared.side,
+						prepared.amount,
+						prepared.input,
+						prepared.capabilityContext,
+						this.quoteCurrency,
+						evidence.notional,
+					),
+					warnings,
+				),
 			{ kind: "order", input, ...(replacementIds ? { replacementIds } : {}) },
 			() =>
 				replacementIds
@@ -531,7 +595,17 @@ export class TradingEngine {
 			"OCO order",
 			prepared.riskNotional,
 			prepared.countTowardsDailyLimit,
-			prepared.summary,
+			{
+				referencePrice: prepared.referencePrice,
+				amount: prepared.input.amount,
+				notional: prepared.observedNotional,
+				riskNotional: prepared.riskNotional,
+			},
+			(evidence, warnings) =>
+				withConfirmationWarnings(
+					formatPreparedOcoSummary(prepared.input, this.quoteCurrency, evidence.notional, evidence.riskNotional),
+					warnings,
+				),
 			{ kind: "oco", input },
 			() => this.exchangeClient.placeOcoOrder(input),
 			async () => {
@@ -550,22 +624,59 @@ export class TradingEngine {
 		);
 	}
 
+	private throwIfAborted(signal?: AbortSignal): void {
+		if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled");
+	}
+
+	private async preflightAccountRisk(
+		intent: ExecutionRecord["intent"],
+		countTowardsDailyLimit: boolean,
+		policy: TradingEngineSubmissionPolicy,
+	) {
+		if (!this.accountRisk?.state()) return;
+		return this.accountRisk.preflight(
+			intent.kind === "order"
+				? intent.input
+				: { ...intent.input, type: "stop_market" as const, stopPrice: intent.input.stopLossPrice },
+			countTowardsDailyLimit,
+			policy.protectionStopPrice,
+			policy.replacementIds,
+		);
+	}
+
+	private async revalidatePreparedPlan(
+		plan: object,
+		label: string,
+		preflight: () => Promise<OrderPreflightResult>,
+		intent: ExecutionRecord["intent"],
+		countTowardsDailyLimit: boolean,
+		policy: TradingEngineSubmissionPolicy,
+		signal?: AbortSignal,
+	) {
+		this.throwIfAborted(signal);
+		this.assertPreparedPlanFresh(plan, label);
+		const executionPreflight = await preflight();
+		this.throwIfAborted(signal);
+		const account = await this.preflightAccountRisk(intent, countTowardsDailyLimit, policy);
+		this.throwIfAborted(signal);
+		this.assertPreparedPlanFresh(plan, label);
+		return { preflight: executionPreflight, account };
+	}
+
 	private async submitWithReservation<T extends PlaceOrderResult | PlaceOcoOrderResult>(
 		plan: object,
 		label: string,
 		notional: number,
 		countTowardsDailyLimit: boolean,
-		summary: string,
+		preparedEvidence: Pick<OrderConfirmationEvidence, "referencePrice" | "amount" | "notional" | "riskNotional">,
+		summarize: (evidence: OrderConfirmationEvidence, warnings: string[]) => string,
 		intent: ExecutionRecord["intent"],
 		submit: () => Promise<T>,
 		preflight: () => Promise<OrderPreflightResult>,
 		policy: TradingEngineSubmissionPolicy,
 		signal?: AbortSignal,
 	): Promise<T> {
-		const throwIfAborted = (): void => {
-			if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled");
-		};
-		throwIfAborted();
+		this.throwIfAborted(signal);
 		const journal = this.executionJournal();
 		if (this.consumedPlans.has(plan)) {
 			throw new PreparedPlanError(`${label} plan has already been submitted; prepare a new plan before retrying`);
@@ -575,40 +686,36 @@ export class TradingEngine {
 		}
 		if (countTowardsDailyLimit) this.risk.assertNewExposureAllowed();
 		this.inFlightPlans.add(plan);
-		let confirmedPreflight: OrderPreflightResult;
-		try {
-			confirmedPreflight = await preflight();
-		} catch (error) {
-			this.inFlightPlans.delete(plan);
-			throw error;
-		}
-
+		let initial: Awaited<ReturnType<TradingEngine["revalidatePreparedPlan"]>>;
 		let execution: ExecutionRecord;
+		let riskRevision: number | undefined;
 		try {
-			if (this.submissionsRetired) throw new Error("Trading engine was replaced; prepare with the active runtime");
-			const riskInput =
-				intent.kind === "order"
-					? intent.input
-					: { ...intent.input, type: "stop_market" as const, stopPrice: intent.input.stopLossPrice };
-			const accountCheck = this.accountRisk?.state()
-				? await this.accountRisk.preflight(
-						riskInput,
-						countTowardsDailyLimit,
-						policy.protectionStopPrice,
-						policy.replacementIds,
-					)
-				: undefined;
-			execution = journal.prepare(
+			initial = await this.revalidatePreparedPlan(
+				plan,
+				label,
+				preflight,
 				intent,
-				countTowardsDailyLimit && accountCheck ? Math.max(notional, accountCheck.notional) : notional,
 				countTowardsDailyLimit,
-				{
-					intentId: policy.intentId,
-					reference: policy.reference,
-					riskRevision: accountCheck?.revision,
-					protectionStopPrice: policy.protectionStopPrice,
-				},
+				policy,
+				signal,
 			);
+			if (this.submissionsRetired) throw new Error("Trading engine was replaced; prepare with the active runtime");
+			if (!policy.confirm && marketEvidenceChanged(preparedEvidence, initial.preflight)) {
+				throw new PreparedPlanError(
+					`${label} reference price or risk notional materially changed; prepare and confirm a new order`,
+				);
+			}
+			const claimedNotional = countTowardsDailyLimit
+				? Math.max(notional, initial.preflight.evidence.notional, initial.account?.notional ?? 0)
+				: notional;
+			execution = journal.prepare(intent, claimedNotional, countTowardsDailyLimit, {
+				intentId: policy.intentId,
+				reference: policy.reference,
+				riskRevision: initial.account?.revision,
+				protectionStopPrice: policy.protectionStopPrice,
+			});
+			// prepare() increments accountRisk.revision; begin() must see that generation.
+			riskRevision = this.accountRisk?.state()?.revision;
 		} catch (error) {
 			this.inFlightPlans.delete(plan);
 			throw error;
@@ -630,17 +737,47 @@ export class TradingEngine {
 		};
 
 		if (policy.confirm) {
-			let confirmed: boolean;
-			try {
-				confirmed = await policy.confirm(summary);
-			} catch (error) {
-				return releaseAndThrow(error, `${label} confirmation failed and risk reservation release failed`);
-			}
-			if (!confirmed) {
-				return releaseAndThrow(
-					new Error("Order cancelled by user"),
-					`${label} cancellation and risk release failed`,
-				);
+			let confirmation = toPreparedPlanConfirmation(initial.preflight, summarize, false);
+			let prompts = 0;
+			for (;;) {
+				if (++prompts > PREPARED_PLAN_MAX_CONFIRMATIONS) {
+					return releaseAndThrow(
+						new PreparedPlanError(
+							`${label} market evidence kept changing during confirmation; prepare and confirm a new order`,
+						),
+						`${label} pre-submission check and risk release failed`,
+					);
+				}
+				let confirmed: boolean;
+				try {
+					confirmed = await policy.confirm(confirmation.summary, confirmation);
+				} catch (error) {
+					return releaseAndThrow(error, `${label} confirmation failed and risk reservation release failed`);
+				}
+				if (!confirmed) {
+					return releaseAndThrow(
+						new Error("Order cancelled by user"),
+						`${label} cancellation and risk release failed`,
+					);
+				}
+				try {
+					const current = await this.revalidatePreparedPlan(
+						plan,
+						label,
+						preflight,
+						intent,
+						countTowardsDailyLimit,
+						policy,
+						signal,
+					);
+					if (countTowardsDailyLimit && current.account && current.account.notional > execution.notional) {
+						throw new PreparedPlanError("Account notional increased after reservation; prepare a fresh intent");
+					}
+					if (!confirmationSnapshotChanged(confirmation, current.preflight)) break;
+					confirmation = toPreparedPlanConfirmation(current.preflight, summarize, true);
+				} catch (error) {
+					return releaseAndThrow(error, `${label} pre-submission check and risk release failed`);
+				}
 			}
 		} else if (this.mode === "live" && policy.allowUnconfirmedLive !== true) {
 			return releaseAndThrow(
@@ -651,35 +788,7 @@ export class TradingEngine {
 			);
 		}
 		try {
-			throwIfAborted();
-			const currentPreflight = await preflight();
-			if (
-				policy.confirm &&
-				(currentPreflight.warnings.length !== confirmedPreflight.warnings.length ||
-					currentPreflight.warnings.some((warning, index) => warning !== confirmedPreflight.warnings[index]))
-			) {
-				throw new Error(
-					`${label} capability warnings changed during confirmation; prepare and confirm a new order`,
-				);
-			}
-			let riskRevision: number | undefined;
-			if (this.accountRisk?.state()) {
-				const input =
-					intent.kind === "order"
-						? intent.input
-						: { ...intent.input, type: "stop_market" as const, stopPrice: intent.input.stopLossPrice };
-				const finalRisk = await this.accountRisk.preflight(
-					input,
-					countTowardsDailyLimit,
-					policy.protectionStopPrice,
-					policy.replacementIds,
-				);
-				riskRevision = finalRisk.revision;
-				if (countTowardsDailyLimit && finalRisk.notional > execution.notional)
-					throw new PreparedPlanError("Account notional increased after reservation; prepare a fresh intent");
-			}
-			// A user or another process may pause entries while confirmation is open.
-			throwIfAborted();
+			this.throwIfAborted(signal);
 			if (policy.validateReference && policy.validateReference() !== undefined)
 				throw new Error("Execution reference validation must be synchronous");
 			if (countTowardsDailyLimit) this.risk.assertNewExposureAllowed(execution.id);
@@ -746,6 +855,14 @@ export class TradingEngine {
 			throw new ExecutionRecoveryError(execution.id, "response validation or settlement persistence failed");
 		}
 		return { ...result, executionId: execution.id };
+	}
+
+	private assertPreparedPlanFresh(plan: object, label: string): void {
+		const preparedAt = this.preparedAt.get(plan);
+		const age = preparedAt === undefined ? Number.NaN : this.clock.now().getTime() - preparedAt;
+		if (!Number.isFinite(age) || age < 0 || age > PREPARED_PLAN_TTL_MS) {
+			throw new PreparedPlanError(`${label} plan expired; prepare and confirm a new order`);
+		}
 	}
 
 	async cancelOrder(id: string, symbol: string, signal?: AbortSignal, intentId?: string): Promise<void> {

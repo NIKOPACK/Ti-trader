@@ -2,6 +2,8 @@
 
 调查日期：2026-09-10。对象：`ti-trader` 当前产品形态（paper-first 加密交易 agent CLI，原生买卖工具，编码工具已移除，人确认实盘）是否有足够市场竞争力，以及下一步该开发什么。
 
+2026-09-20：工作区已把 `package.json` / changelog / SECURITY / OpenRouter referer 从 404 的 `NIKOPACK/Ti` 改为 [NIKOPACK/Ti-trader](https://github.com/NIKOPACK/Ti-trader)。已发布的 npm 版本在下次发布前仍指向死链。
+
 证据优先用第一方：官方文档、GitHub API、npm registry、交易所公告。二手评测只用来确认品类存在，不作为能力证明。
 
 ## 结论
@@ -10,9 +12,9 @@
 
 Ti 选的是「人确认的交易助手，不是无人值守赚钱服务」（见 `docs/product-readiness-plan.md`）。这个定位在 2026 年仍然正确：公开 LLM 实盘模拟赛里，多数模型赛季不赚钱，且本季 14 个模型没有一个跑赢 Bitcoin（TradeRank，2026-09-10）。
 
-但市场已经不缺「能用自然语言下单的 agent」。缺的是 **拿着交易所 key 时仍然可恢复、能力诚实、且不会顺手读盘/跑 shell 的执行层**。Ti 在这一层有工程积累，却几乎没有分发面：公开仓库 [NIKOPACK/Ti-trader](https://github.com/NIKOPACK/Ti-trader) 只有 1★ / 0 forks，没有 MCP/Skill，npm 安装量在发布日后迅速掉到个位数。对外元数据仍指向不存在的 `NIKOPACK/Ti`（npm `repository`/`homepage`、若干 changelog 链接），搜索和包页会落到 404。
+但市场已经不缺「能用自然语言下单的 agent」。缺的是 **拿着交易所 key 时仍然可恢复、能力诚实、且不会顺手读盘/跑 shell 的执行层**。Ti 在这一层有工程积累，却几乎没有分发面：公开仓库 [NIKOPACK/Ti-trader](https://github.com/NIKOPACK/Ti-trader) 只有 1★ / 0 forks，没有 MCP/Skill，npm 安装量在发布日后迅速掉到个位数。调查当时对外元数据指向不存在的 `NIKOPACK/Ti`（npm `repository`/`homepage`、若干 changelog 链接），搜索和包页会落到 404。
 
-下一步不要做更多交易所、Web 看板或无人值守策略。下一步是：**把现有引擎暴露成现有 coding agent 会安装的 MCP/Skill，修正对外仓库链接，把 Paper 长跑证据做完。** TUI 继续当操作台，不要改成 OpenAlice 那种全能研究桌面，也不要改成 NOFX 那种 Autopilot。
+下一步不要做更多交易所、Web 看板或无人值守策略。下一步是：**把现有引擎暴露成现有 coding agent 会安装的 MCP/Skill，修正对外仓库链接。** TUI 继续当操作台，不要改成 OpenAlice 那种全能研究桌面，也不要改成 NOFX 那种 Autopilot。
 
 ## 当前产品形态（对照基准）
 
@@ -27,7 +29,7 @@ Ti 选的是「人确认的交易助手，不是无人值守赚钱服务」（�
 | 恢复 | 执行记录、启动有界对账、`/recovery` `/audit` `/health` |
 | 能力诚实 | `supported` / `unsupported` / `unknown` 分开；除 Paper 与 Binance 离线契约外，其他交易所标 experimental |
 | 未做 | 正式回测、cron 无人值守、Web UI、MCP server |
-| 发布声明 | 已发布 CLI ≠ 生产验收。七天 Paper 长跑与授权实盘试点仍缺证据 |
+| 发布声明 | 已发布 CLI ≠ 生产验收。授权实盘试点仍缺证据 |
 
 npm 下载（api.npmjs.org）：
 
@@ -37,7 +39,7 @@ npm 下载（api.npmjs.org）：
 
 GitHub 公开仓库是 [NIKOPACK/Ti-trader](https://github.com/NIKOPACK/Ti-trader)（2026-08-27 创建，与 npm 首发同日）。2026-09-10 `gh api`：public、MIT、1 star、0 forks、无 homepage、无 GitHub Releases。近 14 天 traffic：26 views / 7 uniques，197 clones / 69 uniques。开放 issue 5 条，全是 Dependabot。
 
-分发泄漏：已发布的 npm 元数据仍写 `git+https://github.com/NIKOPACK/Ti.git`（registry 与 `packages/trading-agent/package.json` 的 `repository`/`homepage`/`bugs`）。`NIKOPACK/Ti` 对 `gh api` 返回 404。从 npm 点「Repository」会离开真实仓库。
+分发泄漏（2026-09-10）：已发布的 npm 元数据写 `git+https://github.com/NIKOPACK/Ti.git`（当时 registry 与 `packages/trading-agent/package.json` 的 `repository`/`homepage`/`bugs`）。`NIKOPACK/Ti` 对 `gh api` 返回 404。从 npm 点「Repository」会离开真实仓库。工作区已改；已发布包要等下次 `npm publish`。
 
 ## 2026 年市场怎么长的
 
@@ -104,11 +106,11 @@ Ti 目前唯一站得住的差异是表里第 2–4 行：**密钥与 shell 隔�
 
 ## 推荐下一步（按顺序，不要并行铺开）
 
-仓库自己的 P0（M1–M4 可恢复执行）已经在工作区落地，M6 的七天 Paper 证据仍缺。市场额外要求的是分发，不是新策略。
+仓库自己的 P0（M1–M4 可恢复执行）已经在工作区落地，M6 的 live 试点证据仍缺。市场额外要求的是分发，不是新策略。
 
 ### 1. 修正对外链接，用一页讲清楚切法
 
-仓库已经公开，问题是找不到、点错。把 npm / `package.json` / changelog 里的 `NIKOPACK/Ti` 全部改成 `NIKOPACK/Ti-trader`，补 GitHub homepage 和与 npm 对齐的 release tag。README 第一屏只需要三句话：
+仓库已经公开，问题是找不到、点错。工作区元数据已改为 `NIKOPACK/Ti-trader`；下次发布后 npm 包页才会跟上。仍需补 GitHub homepage 和与 npm 对齐的 release tag。README 第一屏只需要三句话：
 
 - 这不是会赚钱的 bot，是人确认的交易助手
 - 持有交易所密钥的进程没有 `bash`/`read`/`write`
@@ -118,7 +120,7 @@ Ti 目前唯一站得住的差异是表里第 2–4 行：**密钥与 shell 隔�
 
 ### 2. 做完 M6 证据，再谈 live
 
-`docs/product-readiness-plan.md` 的门槛仍然对：七天受控 Paper soak，零重复提交、不丢未决记录，然后才允许限额实盘试点。没有这份证据，MCP 只是把未验证的执行面送到 Claude Code 里。
+`docs/product-readiness-plan.md` 的门槛仍然对：恢复演练、独立安装和授权审批通过后，才允许限额实盘试点。没有这份证据，MCP 只是把未验证的执行面送到 Claude Code 里。
 
 ### 3. 出 `ti mcp` + `SKILL.md`（竞争力的主开发项）
 

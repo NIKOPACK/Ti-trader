@@ -7,6 +7,7 @@ import {
 	OrderPreparationError,
 	type PreparedOco,
 	type PreparedOrder,
+	type PreparedPlanConfirmation,
 	preflightOco,
 	RiskCommitError,
 } from "@nikopack/ti-trading-engine";
@@ -204,9 +205,9 @@ function liveOrderConfirm(
 	protectionStopPrice?: number,
 	signal?: AbortSignal,
 	planReference?: OrderToolParams["plan"],
-): ((summary: string) => Promise<boolean>) | undefined {
+): ((summary: string, confirmation?: PreparedPlanConfirmation) => Promise<boolean>) | undefined {
 	if (!needsLiveConfirmation(trading) && !(trading.mode === "live" && planReference)) return undefined;
-	return async () => {
+	return async (_summary, confirmation) => {
 		if (!ctx.hasUI) {
 			throw new Error(
 				`Live orders require interactive confirmation but no UI is available. ${UNATTENDED_LIVE_CONFIG_HINT}`,
@@ -220,6 +221,7 @@ function liveOrderConfirm(
 			usage,
 			protectionStopPrice,
 			planReference,
+			confirmation,
 		});
 		return showOrderReview(ctx, review, signal);
 	};

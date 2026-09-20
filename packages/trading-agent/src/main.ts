@@ -65,7 +65,7 @@ const CHANGELOG_PATH = fileURLToPath(new URL("../CHANGELOG.md", import.meta.url)
 const TI_ATTRIBUTION = {
 	userAgent: `ti/${VERSION}`,
 	openRouter: {
-		referer: "https://github.com/NIKOPACK/Ti",
+		referer: "https://github.com/NIKOPACK/Ti-trader",
 		title: "Ti",
 		categories: "cli-agent",
 	},

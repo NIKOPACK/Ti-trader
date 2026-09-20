@@ -314,7 +314,7 @@ describe("executable capability contracts", () => {
 						marketType: planning.config.marketType,
 						getEffectiveLeverage: () => 1,
 					}),
-				).resolves.toEqual({ warnings: [] });
+				).resolves.toMatchObject({ warnings: [] });
 			}
 			const result = await client.placeOrder({ ...plan.input, clientOrderId: "matrix-client" });
 			expect(result.order.clientOrderId).toBe("matrix-client");
@@ -457,7 +457,7 @@ describe("executable capability contracts", () => {
 			marketType: "usdm-futures" as const,
 			getEffectiveLeverage: () => 5,
 		};
-		await expect(preflightOrder(plan, dependencies)).resolves.toEqual({ warnings: [] });
+		await expect(preflightOrder(plan, dependencies)).resolves.toMatchObject({ warnings: [] });
 		await expect(preflightOrder(plan, { ...dependencies, feeRate: 0.001 })).rejects.toThrow(
 			/Insufficient available USDT/,
 		);
@@ -693,10 +693,10 @@ describe("capability evidence and metadata", () => {
 		);
 		await expect(
 			preflightOrder(await prepareOrder("sell", intent("stop_market"), planning), dependencies),
-		).resolves.toEqual({ warnings: [] });
+		).resolves.toMatchObject({ warnings: [] });
 		await expect(
 			preflightOrder(await prepareOrder("sell", intent("trailing_stop_market"), planning), dependencies),
-		).resolves.toEqual({ warnings: [] });
+		).resolves.toMatchObject({ warnings: [] });
 		const oco = await prepareOcoOrder(
 			{ symbol: spot, side: "sell", amount: 1, stopLossPrice: 90, takeProfitPrice: 110 },
 			planning,

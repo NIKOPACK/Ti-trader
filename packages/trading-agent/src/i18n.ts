@@ -267,6 +267,8 @@ export const MENU_EN = {
 	orderReviewLast: "Last trade",
 	orderReviewRequiredBalance: "Required balance (estimate)",
 	orderReviewConstraintNotice: "Final engine and exchange constraints still apply after confirmation.",
+	orderReviewUpdated:
+		"Market evidence changed after the previous confirmation. Review the updated estimate before submitting.",
 	orderReviewResize: "Enlarge the terminal to submit. Review scrolling and cancellation remain available.",
 	keys: "API keys",
 	keysDesc: "Exchange credentials for live trading",
@@ -901,6 +903,7 @@ export const MENU_ZH: { [K in MenuKey]: string } = {
 	orderReviewLast: "最新成交价",
 	orderReviewRequiredBalance: "所需余额（估算）",
 	orderReviewConstraintNotice: "确认后仍须满足引擎和交易所的最终约束。",
+	orderReviewUpdated: "行情或风险估计在上次确认后已变化。请复核更新后的估算再提交。",
 	orderReviewResize: "请放大终端后提交。仍可滚动复核和取消。",
 	keys: "API 密钥",
 	keysDesc: "实盘交易的交易所凭证",

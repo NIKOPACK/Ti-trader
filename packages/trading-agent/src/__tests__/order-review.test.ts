@@ -440,7 +440,58 @@ describe("structured live order review", () => {
 		expect(ctx.ui.notify).toHaveBeenCalledWith(t("zh-CN", "orderReviewCancelled"), "info");
 		expect(f.placeOrder).not.toHaveBeenCalled();
 		expect(f.engine.risk.usage().reserved).toBe(0);
-		expect(f.getTicker).toHaveBeenCalledTimes(1);
+		expect(f.getTicker).toHaveBeenCalledTimes(2);
+	});
+
+	it("shows the updated live review when market evidence is requoted after confirmation", async () => {
+		const f = fixture();
+		let ask = 100;
+		f.getTicker.mockImplementation(async (symbol: string) => ({
+			symbol,
+			last: ask,
+			ask,
+			bid: ask,
+			timestamp,
+		}));
+		const bodies: string[] = [];
+		const ctx = rpcContext(
+			vi.fn(async (_title?: string, body?: string) => {
+				bodies.push(body ?? "");
+				if (bodies.length === 1) ask = 105;
+				return true;
+			}),
+		);
+		await executeOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 }, ctx, f.runtime);
+		expect(bodies).toHaveLength(2);
+		expect(bodies[0]).toContain("Estimated notional: 100 USDT");
+		expect(bodies[1]).toContain("Estimated notional: 105 USDT");
+		expect(bodies[1]).toContain("Market evidence changed after the previous confirmation");
+		expect(f.placeOrder).toHaveBeenCalledTimes(1);
+	});
+
+	it("overlays requote evidence on the structured review without fetching a second plan", async () => {
+		const f = fixture();
+		const plan = await f.engine.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
+		const review = createOrderReview(
+			{ kind: "order", plan },
+			{
+				...f.reviewContext,
+				confirmation: {
+					summary: "BUY 1 BTC/USDT (market) ≈ 105.00 USDT",
+					referencePrice: 105,
+					amount: 1,
+					notional: 105,
+					riskNotional: 105,
+					warnings: ["capability unknown"],
+					requote: true,
+				},
+			},
+		);
+		expect(review.body).toContain("Market evidence changed after the previous confirmation");
+		expect(review.body).toContain("Estimated notional: 105 USDT");
+		expect(review.body).toContain("Reference price: 105 USDT");
+		expect(review.body).toContain("Warnings: capability unknown");
+		expect(review.body).not.toContain(plan.summary);
 	});
 
 	it("submits the exact reviewed plan after confirmation and retains final revalidation", async () => {
@@ -494,7 +545,7 @@ describe("structured live order review", () => {
 		expect(second.engine.risk.usage().reserved).toBe(0);
 	});
 
-	it("reviews the same OCO plan and reserved risk without additional ticker requests", async () => {
+	it("reviews the same OCO plan and reserved risk from the engine confirmation snapshot", async () => {
 		const f = fixture({ exchange: "okx" });
 		const ctx = rpcContext(
 			vi.fn(async (_title?: string, body?: string) => {
@@ -512,7 +563,7 @@ describe("structured live order review", () => {
 		expect(f.placeOcoOrder).toHaveBeenCalledWith(
 			expect.objectContaining({ amount: 1, stopLossPrice: 110, takeProfitPrice: 90 }),
 		);
-		expect(f.getTicker).toHaveBeenCalledTimes(1);
+		expect(f.getTicker).toHaveBeenCalledTimes(3);
 	});
 
 	it.each(["paper", "unattended", "headless"] as const)("preserves the %s submission policy", async (policy) => {

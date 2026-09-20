@@ -27,6 +27,9 @@ All notable changes to `@nikopack/ti-trading-engine` are documented in this file
 
 ### Fixed
 
+- After a human confirmation, material changes to price, risk notional or capability warnings generate a new summary and require another confirmation instead of submitting the originally confirmed snapshot. Invalidating changes, TTL expiry, the confirmation-prompt bound and unattended drift beyond 1% still fail closed without calling the adapter.
+- Package `repository`, `homepage` and `bugs` now point at [NIKOPACK/Ti-trader](https://github.com/NIKOPACK/Ti-trader).
+- Prepared ordinary and OCO plans expire 60 seconds after `prepare` using the engine clock, not the venue ticker timestamp. Each market/account revalidation round checks TTL before and after its I/O; confirmation is the only reason a second round runs. Confirmation revalidation does not replace the account-risk generation minted by `journal.prepare()`. An expired or generation-changed plan releases the reservation, does not call the adapter, and requires a new prepare/confirm. Clock rollback fails closed.
 - Unchanged execution polling no longer creates archive revisions for timestamp/source-only changes or alters settled quota. Actual order parameters and late observed fees remain revisioned.
 - Resting Paper fills retain cumulative economics and persist actual charged fees against the canonical order ID, without reconstructing fees from current settings.
 - Stale-timeout lock reclamation now serializes through the `.reclaim` gate like dead-owner recovery, closing a race where two waiters that both observed a stale lock could unlink each other's replacement lock and both believe they hold it. A fresh lock installed by another reclaimer is no longer removed.

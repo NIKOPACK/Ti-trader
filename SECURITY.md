@@ -53,7 +53,7 @@ rotated before investigating the software defect.
 ## Reporting a Vulnerability
 
 Please report vulnerabilities privately through
-[GitHub Security Advisories](https://github.com/NIKOPACK/Ti/security/advisories/new)
+[GitHub Security Advisories](https://github.com/NIKOPACK/Ti-trader/security/advisories/new)
 for this repository. Do not open a public issue for security-sensitive reports.
 
 Include a description of the issue and its impact, steps to reproduce or a

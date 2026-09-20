@@ -3,9 +3,13 @@ import { createHash } from "node:crypto";
 import { readFileSync, realpathSync } from "node:fs";
 import { dirname, isAbsolute, relative, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
+import { loadReleaseReviewers, verifyPilotApproval } from "./release-approval.mjs";
 
+export const EVIDENCE_SCHEMA_VERSION = 2;
 export const MINIMUM_SOAK_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAXIMUM_SAMPLE_GAP_MS = 10 * 60 * 1000;
+export const MINIMUM_SOAK_ACTIVITY_SUCCESSES = 7;
+export const DEFAULT_RELEASE_REVIEWERS_PATH = fileURLToPath(new URL("./release-reviewers.json", import.meta.url));
 export const REQUIRED_SUITES = ["repository-check", "risk", "engine", "triggers", "agent", "release-gate"];
 export const REQUIRED_INSTALL_CHECKS = [
 	"cleanInstall", "cliVersion", "isolatedDataDir", "paperDefault", "recoveryAfterRestart",
@@ -33,6 +37,43 @@ function timestamp(value) {
 	return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : undefined;
 }
 
+function isVerifiedLivePath(path) {
+	return (
+		record(path) &&
+		text(path.exchange) &&
+		(path.marketFamily === "spot" || path.marketFamily === "futures") &&
+		(path.positionMode === "one-way" || path.positionMode === "hedge") &&
+		text(path.orderType) &&
+		text(path.quoteCurrency) &&
+		(path.environment === "testnet" || path.environment === "live") &&
+		path.submit === "passed" &&
+		path.query === "passed" &&
+		path.cancel === "passed" &&
+		path.recovery === "passed" &&
+		path.evidenceLevel === "externally-verified" &&
+		text(path.observation)
+	);
+}
+
+function resolveReviewers(options = {}) {
+	if (Array.isArray(options.reviewers)) return options.reviewers;
+	try {
+		return loadReleaseReviewers(options.reviewersPath ?? DEFAULT_RELEASE_REVIEWERS_PATH);
+	} catch {
+		return undefined;
+	}
+}
+
+function result(blockers) {
+	const ready = blockers.length === 0;
+	return {
+		ready,
+		target: "human-confirmed-live-pilot",
+		assuranceLevel: ready ? "signed-active-verified" : "blocked",
+		blockers,
+	};
+}
+
 function readArtifact(reference, artifactRoot) {
 	if (!record(reference) || !text(reference.file) || !/^[a-f0-9]{64}$/.test(reference.sha256 ?? "")) {
 		throw new Error("requires a relative artifact file and SHA-256");
@@ -54,11 +95,11 @@ function readArtifact(reference, artifactRoot) {
 }
 
 /** Evidence validation is a release gate, not a substitute for maintainer review. */
-export function evaluateReleaseEvidence(evidence, artifactRoot, now = Date.now()) {
+export function evaluateReleaseEvidence(evidence, artifactRoot, now = Date.now(), options = {}) {
 	const blockers = [];
 	if (!Number.isFinite(now)) throw new Error("Invalid evaluation clock");
-	if (!record(evidence) || evidence.schemaVersion !== 1) {
-		return { ready: false, target: "human-confirmed-live-pilot", blockers: ["Expected evidence schemaVersion 1"] };
+	if (!record(evidence) || evidence.schemaVersion !== EVIDENCE_SCHEMA_VERSION) {
+		return result([`Expected evidence schemaVersion ${EVIDENCE_SCHEMA_VERSION}`]);
 	}
 	const revision = evidence.revision;
 	if (typeof revision !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision)) {
@@ -130,6 +171,41 @@ export function evaluateReleaseEvidence(evidence, artifactRoot, now = Date.now()
 		if (!samplesValid) {
 			blockers.push("soak: requires continuous <=10-minute samples, no duplicate/lost executions, and a healthy resolved finish");
 		}
+		let sawFault = false;
+		let recoveredAfterFault = false;
+		if (Array.isArray(samples)) {
+			for (const sample of samples) {
+				if (!record(sample)) continue;
+				if (sample.expectedFault === true) {
+					sawFault = true;
+					recoveredAfterFault = false;
+				} else if (sawFault && sample.healthy === true && sample.unresolvedExecutions === 0) {
+					recoveredAfterFault = true;
+				}
+			}
+		}
+		if (!sawFault || !recoveredAfterFault) {
+			blockers.push("soak: requires a controlled fault and a later healthy recovery sample");
+		}
+		const activity = soak.activity;
+		const succeededSamples = Array.isArray(samples)
+			? samples.filter((sample) => record(sample) && sample.activity === "succeeded").length
+			: 0;
+		if (
+			soak.schemaVersion !== 2 ||
+			!/^sha256:[a-f0-9]{64}$/.test(soak.dataDirIdentity ?? "") ||
+			!record(activity) ||
+			!count(activity.attempts) ||
+			!count(activity.successes) ||
+			!count(activity.failures) ||
+			activity.attempts !== activity.successes + activity.failures ||
+			activity.successes < MINIMUM_SOAK_ACTIVITY_SUCCESSES ||
+			succeededSamples < MINIMUM_SOAK_ACTIVITY_SUCCESSES
+		) {
+			blockers.push("soak: requires schemaVersion 2, directory identity, and successful Paper trading activity");
+		} else {
+			completed(activity.lastSuccessAt, "soak activity");
+		}
 	}
 
 	const drills = artifact("drills", "recovery-drills");
@@ -162,6 +238,28 @@ export function evaluateReleaseEvidence(evidence, artifactRoot, now = Date.now()
 		}
 	}
 
+	const liveCapabilities = artifact("liveCapabilities", "live-capabilities");
+	const verifiedPaths = [];
+	if (liveCapabilities) {
+		completed(liveCapabilities.completedAt, "liveCapabilities");
+		if (liveCapabilities.schemaVersion !== 1) {
+			blockers.push("liveCapabilities: schemaVersion 1 is required");
+		}
+		if (!text(liveCapabilities.ccxtVersion) || !/^\d+\.\d+\.\d+(?:-[a-zA-Z0-9.-]+)?$/.test(liveCapabilities.ccxtVersion)) {
+			blockers.push("liveCapabilities: CCXT version is required");
+		}
+		if (!Array.isArray(liveCapabilities.paths) || liveCapabilities.paths.length === 0) {
+			blockers.push("liveCapabilities: at least one externally verified path is required");
+		} else {
+			for (const path of liveCapabilities.paths) {
+				if (isVerifiedLivePath(path)) verifiedPaths.push(path);
+			}
+			if (verifiedPaths.length === 0) {
+				blockers.push("liveCapabilities: mock, offline-contract or experimental evidence cannot satisfy a live path");
+			}
+		}
+	}
+
 	const approval = evidence.pilotApproval;
 	if (!record(approval) || !text(approval.reviewer) || approval.revision !== revision ||
 		approval.scope !== "human-confirmed-live-pilot" || !text(approval.exchange) || !text(approval.market) ||
@@ -170,23 +268,34 @@ export function evaluateReleaseEvidence(evidence, artifactRoot, now = Date.now()
 		blockers.push("pilotApproval: explicit reviewer, candidate, exchange/market, positive cap and safety permissions are required");
 	} else {
 		completed(approval.approvedAt, "pilotApproval");
-	}
-	return { ready: blockers.length === 0, target: "human-confirmed-live-pilot", blockers };
-}
-
-export function evaluateCandidateEvidence(evidence, artifactRoot, candidate, now = Date.now()) {
-	const result = evaluateReleaseEvidence(evidence, artifactRoot, now);
-	if (!record(evidence) || evidence.revision !== candidate.revision) {
-		result.blockers.push("Candidate does not match the current checkout");
-	}
-	if (!candidate.workingTreeClean) result.blockers.push("Release checkout is not clean");
-	for (const key of ["risk", "engine", "agent"]) {
-		if (!record(evidence?.versions) || evidence.versions[key] !== candidate.versions[key]) {
-			result.blockers.push(`Candidate ${key} version does not match the current checkout`);
+		if (
+			!verifiedPaths.some(
+				(path) =>
+					path.exchange === approval.exchange &&
+					path.marketFamily === approval.market &&
+					path.quoteCurrency === approval.quoteCurrency,
+			)
+		) {
+			blockers.push("pilotApproval: scope is not a subset of externally verified live capabilities");
 		}
 	}
-	result.ready = result.blockers.length === 0;
-	return result;
+	const signature = verifyPilotApproval(evidence, resolveReviewers(options));
+	if (!signature.ok) blockers.push(signature.reason);
+	return result(blockers);
+}
+
+export function evaluateCandidateEvidence(evidence, artifactRoot, candidate, now = Date.now(), options = {}) {
+	const evaluated = evaluateReleaseEvidence(evidence, artifactRoot, now, options);
+	if (!record(evidence) || evidence.revision !== candidate.revision) {
+		evaluated.blockers.push("Candidate does not match the current checkout");
+	}
+	if (!candidate.workingTreeClean) evaluated.blockers.push("Release checkout is not clean");
+	for (const key of ["risk", "engine", "agent"]) {
+		if (!record(evidence?.versions) || evidence.versions[key] !== candidate.versions[key]) {
+			evaluated.blockers.push(`Candidate ${key} version does not match the current checkout`);
+		}
+	}
+	return result(evaluated.blockers);
 }
 
 function main(args) {

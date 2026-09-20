@@ -4,7 +4,7 @@
 
 审计对象是提交 `c678c130cf864c62c45449856a3f92f9a41c90ec`（`main`）对应的 Ti-trader 工作树。
 
-总体判断：核心交易状态机设计质量较高，但当前候选不具备“生产可用”或“无人值守实盘”结论所需的工程证据。系统可以继续用于隔离 Paper 验证；在完成高优先级整改、真实发布链验证、七天有效 Paper soak、恢复演练和受限 Live 证据前，不应进入真实资金试点。
+总体判断：核心交易状态机设计质量较高，但当前候选不具备“生产可用”或“无人值守实盘”结论所需的工程证据。系统可以继续用于隔离 Paper 验证；在完成高优先级整改、真实发布链验证、恢复演练和受限 Live 证据前，不应进入真实资金试点。
 
 最重要的架构事实是：这不是“让 LLM 直接操作交易所”。LLM 只驱动受限交易工具；订单规划、风险预留、提交资格、未知结果处理和恢复由确定性的 `trading-engine`、`trading-risk` 与 execution journal 强制执行。超时或网络错误不会被当成“订单不存在”，未知提交不会自动重发。
 
@@ -20,7 +20,7 @@
 当前发布判断：
 
 - Paper 开发验证：可以继续，但必须使用独立数据目录，并明确 Paper 行情可能联网。
-- 人工逐单确认的 Live pilot：不批准。缺少外部交易所证据、有效 soak 和已验证安装工件。
+- 人工逐单确认的 Live pilot：不批准。缺少外部交易所证据和已验证安装工件。
 - 无人值守 Live：不批准。项目当前产品目标本身也不是无人值守服务。
 - npm 发布：不批准。`coding-agent` 发布链与 shrinkwrap 当前不一致。
 
@@ -50,7 +50,7 @@
 
 - `npm run check`、`./test.sh`、build、pack 或 install。
 - CLI、TUI、RPC server、模型请求、OAuth、交易所 API、SSH、VM 或 sandbox。
-- Paper smoke、七天 soak、恢复演练或 Live/testnet pilot。
+- Paper smoke、恢复演练或 Live/testnet pilot。
 - 真实凭据读取、刷新或外部 provider 认证。
 
 因此，本报告证明的是“当前代码表达了什么行为和约束”，不是“测试当前通过”“交易所实际接受”“策略盈利”或“生产可用”的证明。
@@ -197,7 +197,7 @@ Live 通过 CCXT 接入 spot 与 linear USDM futures。Binance 的 client ID、a
 ### AUD-003：人工确认后没有重新验证行情与余额
 
 - 等级：高
-- 状态：开放
+- 状态：已修复（TTL、确认后预检、实质变化重新确认）
 - 类型：资金安全
 
 证据：`packages/trading-engine/src/engine.ts:358-486`。
@@ -214,6 +214,8 @@ Live 通过 CCXT 接入 spot 与 linear USDM futures。Binance 的 client ID、a
 4. 把 adapter 最终校验保留为最后防线，不用它替代本地重新确认。
 
 验收标准：测试覆盖确认期间价格、余额、市场规则和 position 变化；过期或变化的 plan 不发送，且 reservation 被可靠释放。
+
+整改：TTL 与确认后预检已落地。确认绑定最新证据快照；价格、风险 notional 或 warning 实质变化会生成新 summary 并再次确认。会改变冻结订单数量的仓位变化、触发价失效和无人值守 1% 漂移仍 fail-closed。
 
 ### AUD-004：Live 能力缺少外部交易所验证
 
@@ -450,9 +452,8 @@ protocol/client/RemoteSession 有完整库和测试，但 Ti 的生产入口没�
 3. 修复 build graph 后执行干净 `npm run build` 与 `npm run build:trading`。
 4. 仓库外 package pack/install probe。
 5. storage/transport/accepted-before-crash 等九类 recovery drills。
-6. 绑定同一 `TI_DATA_DIR` 的七天 activity Paper soak。
-7. 受限 Binance testnet/live submit/query/cancel/recovery 证据。
-8. 安装包而不是 workspace alias 上的 CLI/TUI/恢复验证。
+6. 受限 Binance testnet/live submit/query/cancel/recovery 证据。
+7. 安装包而不是 workspace alias 上的 CLI/TUI/恢复验证。
 
 ### 6.3 不能由现有测试推出的结论
 
@@ -470,10 +471,10 @@ protocol/client/RemoteSession 有完整库和测试，但 Ti 的生产入口没�
 ### P0：任何 Live pilot 前
 
 1. 修复 AUD-001、AUD-002，获得可重现构建与安装工件。
-2. 修复 AUD-003，确认后重新 preflight 或强制 plan TTL。
+2. 修复 AUD-003：每一轮行情/账户预检在 I/O 前后检查 plan TTL；确认成功才跑第二轮，不再在 `journal.begin()` 前叠一次检查。确认绑定最新证据快照：价格、风险 notional 或 warning 有实质变化时生成新 summary 并重新确认，而不是 TTL 内静默提交。
 3. 完成 AUD-004 的外部 venue 证据，支持范围先收敛到明确组合。
 4. 修复 AUD-005 的下载校验和 lifecycle script 策略。
-5. 修复 AUD-006、AUD-007，重新开始有效的七天 activity soak。
+5. 修复 AUD-006、AUD-007。
 6. 实际运行 check、完整非 E2E 测试和 recovery drills。
 
 ### P1：扩大人工确认 pilot 前
@@ -503,7 +504,7 @@ protocol/client/RemoteSession 有完整库和测试，但 Ti 的生产入口没�
 
 ### 发布建议
 
-维持 Paper-only 开发状态。不要发布 npm 包，不要启用无人值守 Live，不要把当前 offline contract 或测试源码当作实盘认证。在 P0 全部完成并产生 revision-bound evidence 后，再评估一个禁 withdrawals、逐单确认、极低 notional 的受限 Binance pilot。
+维持 Paper-only 开发状态。不要发布 npm 包，不要启用无人值守 Live，不要把当前 offline contract 或测试源码当作实盘认证。隔离 Paper 的仓库外安装与持续验证可以在缺少 Live 外部证据时继续，供早期用户反馈。Live 外部证据仍是独立门槛。在 P0 全部完成并产生 revision-bound evidence 后，再评估一个禁 withdrawals、逐单确认、极低 notional 的受限 Binance pilot。
 
 ## 9. 审计边界声明
 

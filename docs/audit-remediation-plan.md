@@ -155,13 +155,37 @@ flowchart TD
 - 实现：
   1. 用本地 monotonic/注入 clock 记录 prepare 时间，不依赖交易所 ticker timestamp。
   2. 定义短而明确的默认 TTL；首版优先固定常量，避免增加没有必要的公共配置。
-  3. confirmation 返回后超过 TTL，release reservation 并要求重新 prepare/confirm。
+  3. 每一轮行情/账户预检在 I/O 前后检查 TTL；无确认窗口时只跑一轮。超时则 release reservation 并要求重新 prepare/confirm。
   4. 不自动重算后继续提交，避免用户确认的内容与实际订单不同。
 - 定向验证：
-  - 从 `packages/trading-engine` 运行 `engine.test.ts`
-  - fake clock 覆盖 TTL 边界、确认取消、release 失败和 Paper unattended 快速路径
+  - 从 `packages/trading-engine` 运行 `engine.test.ts` 与 `autonomous-risk.test.ts`
+  - fake clock 覆盖 TTL 边界、确认后预检耗时越过 TTL、确认取消、release 失败和 Paper unattended 快速路径
+  - 组合故障：部分成交 → 保护单已接受但响应超时 → 重启查询暂时找不到 → 后续恢复确认；期间不重复提交、不丢失未决记录
   - `npm run check`
 - 完成标准：过期 plan 永不触达 adapter；错误明确要求重新准备订单。
+
+### PR-04b：确认后实质变化重新报价
+
+- 审计项：AUD-003 建议第 3 条
+- 前置：PR-03、PR-04
+- Commit：`fix(engine): requote materially changed confirmations`
+- 主要文件：
+  - `packages/trading-engine/src/engine.ts`
+  - `packages/trading-engine/src/order-preflight.ts`
+  - `packages/trading-engine/src/order-plan.ts`
+  - `packages/trading-engine/src/engine.test.ts`
+  - `packages/trading-agent/src/order-review.ts`
+  - `packages/trading-agent/src/tools/execution.ts`
+- 实现：
+  1. Preflight 只判定冻结订单是否仍合法，并返回当前价格、数量、notional 和 warning。
+  2. 确认绑定最近一次展示的证据快照；实质变化则生成新 summary 并再次 `confirm`，而不是静默提交或一律要求重新 prepare。
+  3. 仓位数量已无法覆盖冻结订单、触发价失效、TTL、账户硬风控 notional 超过 reservation，以及无人值守路径上超过 1% 的漂移，仍然 fail-closed。
+  4. Live 复核 UI 展示引擎最新快照，不解析 summary、不重算第二份计划。
+- 定向验证：
+  - 从 `packages/trading-engine` 运行 `engine.test.ts`
+  - 从 `packages/trading-agent` 运行 `src/__tests__/order-review.test.ts`
+  - `npm run check`
+- 完成标准：TTL 内实质变化必须重新确认；用户拒绝 requote 时释放 reservation 且不调用 adapter。
 
 ## 5. P0 修复：供应链
 
@@ -516,8 +540,7 @@ prepare -> reserve -> user confirms slowly -> second preflight fails -> release 
 整个整改完成还需要：
 
 - P0 分支全部合并。
-- 干净 candidate 的 `npm run check`、`./test.sh`、构建和仓库外安装验证。
+- 冻结当前交易安全候选后，做干净 `npm run check`、`./test.sh`、构建和仓库外安装验证，并持续跑隔离 Paper。
 - 九项 recovery drills。
-- 修复后重新开始的七天 activity Paper soak。
-- revision-bound、签名审批和 externally verified Live capability evidence。
+- revision-bound、签名审批和 externally verified Live capability evidence。这是 Live pilot 的独立门槛，不阻塞早期 Paper 用户反馈。
 - 最终仅批准禁 withdrawals、逐单确认、极低 notional 的有限 pilot；无人值守仍是独立项目。

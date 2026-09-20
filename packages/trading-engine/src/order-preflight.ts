@@ -16,8 +16,17 @@ export class OrderPreflightError extends Error {
 	}
 }
 
+export interface OrderConfirmationEvidence {
+	referencePrice: number;
+	amount: number;
+	notional: number;
+	riskNotional: number;
+	priceStep: number;
+}
+
 export interface OrderPreflightResult {
 	warnings: string[];
+	evidence: OrderConfirmationEvidence;
 }
 
 export interface OcoPreflightResult extends OrderPreflightResult {
@@ -174,13 +183,49 @@ function priceStep(market: MarketInfo): number {
 	return precision;
 }
 
-function materiallyChangedPrice(prepared: number, current: number, market: MarketInfo): boolean {
-	const tolerance = Math.max(prepared * MAX_CONFIRMED_PRICE_DRIFT_RATIO, priceStep(market));
+function materiallyChangedPrice(prepared: number, current: number, step: number): boolean {
+	const tolerance = Math.max(prepared * MAX_CONFIRMED_PRICE_DRIFT_RATIO, step);
 	return Math.abs(current - prepared) > tolerance;
 }
 
 function materiallyChangedNotional(prepared: number, current: number): boolean {
 	return Math.abs(current - prepared) > prepared * MAX_CONFIRMED_PRICE_DRIFT_RATIO;
+}
+
+export function marketEvidenceChanged(
+	previous: Pick<OrderConfirmationEvidence, "referencePrice" | "amount" | "notional" | "riskNotional">,
+	next: OrderPreflightResult,
+): boolean {
+	const { evidence } = next;
+	if (materiallyChangedPrice(previous.referencePrice, evidence.referencePrice, evidence.priceStep)) return true;
+	if (materiallyChangedNotional(previous.notional, evidence.notional)) return true;
+	if (materiallyChangedNotional(previous.riskNotional, evidence.riskNotional)) return true;
+	return !futuresAmountsEqual(previous.amount, evidence.amount);
+}
+
+export function confirmationSnapshotChanged(
+	previous: Pick<OrderConfirmationEvidence, "referencePrice" | "amount" | "notional" | "riskNotional"> & {
+		warnings: readonly string[];
+	},
+	next: OrderPreflightResult,
+): boolean {
+	if (
+		previous.warnings.length !== next.warnings.length ||
+		previous.warnings.some((warning, index) => warning !== next.warnings[index])
+	) {
+		return true;
+	}
+	return marketEvidenceChanged(previous, next);
+}
+
+function confirmationEvidence(
+	market: MarketInfo,
+	referencePrice: number,
+	amount: number,
+	notional: number,
+	riskNotional: number,
+): OrderConfirmationEvidence {
+	return { referencePrice, amount, notional, riskNotional, priceStep: priceStep(market) };
 }
 
 function currentReferencePrice(plan: PreparedOrder, ticker: Ticker): number | undefined {
@@ -216,32 +261,26 @@ function validateTrigger(plan: PreparedOrder, ticker: Ticker): void {
 
 async function revalidateOrderPrice(
 	plan: PreparedOrder,
-	market: MarketInfo,
 	getTicker: (symbol: string) => Promise<Ticker>,
-): Promise<void> {
+): Promise<number> {
 	const dynamicReference = ["ask", "bid", "last"].includes(plan.referencePriceSource);
 	const triggerOrder =
 		["stop", "stop_market", "take_profit", "take_profit_market"].includes(plan.input.type) ||
 		(plan.input.type === "trailing_stop_market" && plan.input.stopPrice !== undefined);
-	if (!dynamicReference && !triggerOrder) return;
+	if (!dynamicReference && !triggerOrder) return plan.referencePrice;
 
 	const ticker = await loadTicker(plan.input.symbol, getTicker);
 	validateTrigger(plan, ticker);
-	if (!dynamicReference) return;
-	const referencePrice = finitePrice(
-		currentReferencePrice(plan, ticker),
-		`Current ${plan.referencePriceSource} price`,
-	);
-	if (materiallyChangedPrice(plan.referencePrice, referencePrice, market)) {
-		reject(
-			`Reference price materially changed from ${plan.referencePrice} to ${referencePrice}; prepare and confirm a new order`,
-		);
-	}
+	if (!dynamicReference) return plan.referencePrice;
+	return finitePrice(currentReferencePrice(plan, ticker), `Current ${plan.referencePriceSource} price`);
 }
 
-async function revalidateReducingPosition(plan: PreparedOrder, getPositions: () => Promise<Position[]>): Promise<void> {
+async function revalidateReducingPosition(
+	plan: PreparedOrder,
+	getPositions: () => Promise<Position[]>,
+): Promise<number | undefined> {
 	const prepared = plan.reducingPosition;
-	if (!prepared) return;
+	if (!prepared) return undefined;
 
 	let positions: Position[];
 	try {
@@ -267,7 +306,7 @@ async function revalidateReducingPosition(plan: PreparedOrder, getPositions: () 
 	if (currentAmount < plan.amount && !futuresAmountsEqual(currentAmount, plan.amount)) {
 		reject(`The current position amount ${currentAmount} no longer covers the confirmed reduction ${plan.amount}`);
 	}
-	if (!plan.closePosition) return;
+	if (!plan.closePosition) return undefined;
 	if (!futuresAmountsEqual(currentAmount, plan.amount)) {
 		reject(
 			`The close-position amount changed from ${plan.amount} to ${currentAmount}; prepare and confirm a new order`,
@@ -277,18 +316,10 @@ async function revalidateReducingPosition(plan: PreparedOrder, getPositions: () 
 		current.quoteValue !== undefined && Number.isFinite(current.quoteValue) && current.quoteValue > 0
 			? current.quoteValue
 			: currentAmount * plan.referencePrice;
-	if (materiallyChangedNotional(plan.notional, currentNotional)) {
-		reject(
-			`The close-position risk notional changed from ${plan.notional} to ${currentNotional}; prepare and confirm a new order`,
-		);
-	}
+	return currentNotional;
 }
 
-async function revalidateOcoPrice(
-	plan: PreparedOco,
-	market: MarketInfo,
-	getTicker: (symbol: string) => Promise<Ticker>,
-): Promise<void> {
+async function revalidateOcoPrice(plan: PreparedOco, getTicker: (symbol: string) => Promise<Ticker>): Promise<number> {
 	const ticker = await loadTicker(plan.input.symbol, getTicker);
 	const currentPrice = finitePrice(ticker.last, "Current last price");
 	const valid =
@@ -296,11 +327,7 @@ async function revalidateOcoPrice(
 			? plan.input.stopLossPrice < currentPrice && currentPrice < plan.input.takeProfitPrice
 			: plan.input.takeProfitPrice < currentPrice && currentPrice < plan.input.stopLossPrice;
 	if (!valid) reject(`Current price ${currentPrice} invalidates the confirmed OCO price range`);
-	if (materiallyChangedPrice(plan.referencePrice, currentPrice, market)) {
-		reject(
-			`OCO reference price materially changed from ${plan.referencePrice} to ${currentPrice}; prepare and confirm a new order`,
-		);
-	}
+	return currentPrice;
 }
 
 export async function preflightOrder(
@@ -327,8 +354,8 @@ export async function preflightOrder(
 		);
 	}
 	checkMarketLimits(plan, market, futures);
-	await revalidateOrderPrice(plan, market, dependencies.getTicker);
-	await revalidateReducingPosition(plan, dependencies.getPositions);
+	const referencePrice = await revalidateOrderPrice(plan, dependencies.getTicker);
+	const closeNotional = await revalidateReducingPosition(plan, dependencies.getPositions);
 	let balances: Balance[];
 	try {
 		balances = await dependencies.getBalances();
@@ -348,7 +375,13 @@ export async function preflightOrder(
 		dependencies.feeRate,
 	);
 	const evaluated = evaluateOrderCapability({ ...plan.capabilityContext, marketInfo: market }, plan.input);
-	return { warnings: evaluated.capability.status === "unknown" ? [evaluated.capability.reason] : [] };
+	const notional =
+		closeNotional ??
+		(["ask", "bid", "last"].includes(plan.referencePriceSource) ? plan.amount * referencePrice : plan.notional);
+	return {
+		warnings: evaluated.capability.status === "unknown" ? [evaluated.capability.reason] : [],
+		evidence: confirmationEvidence(market, referencePrice, plan.amount, notional, notional),
+	};
 }
 
 export async function preflightOco(
@@ -374,7 +407,9 @@ export async function preflightOco(
 	if (!marketMatches(market, plan.input.symbol, dependencies.quoteCurrency, false)) {
 		reject("Returned market metadata does not match the requested OCO spot symbol or quote currency", true);
 	}
-	if (dependencies.getTicker) await revalidateOcoPrice(plan, market, dependencies.getTicker);
+	const referencePrice = dependencies.getTicker
+		? await revalidateOcoPrice(plan, dependencies.getTicker)
+		: plan.referencePrice;
 	const ocoCapability = getTradingCapabilities({ ...plan.capabilityContext, marketInfo: market }).oco[plan.input.side];
 	if (ocoCapability.status === "unsupported") reject(ocoCapability.reason);
 	const minAmount = market.minAmount ?? market.limits?.amount?.min;
@@ -404,8 +439,11 @@ export async function preflightOco(
 	const worstCaseQuote = plan.input.amount * Math.max(plan.input.stopLossPrice, plan.input.takeProfitPrice);
 	const required = plan.input.side === "sell" ? plan.input.amount : worstCaseQuote + (estimatedFee ?? 0);
 	if (balance.free < required) reject(`Insufficient available ${asset}: need ${required}, have ${balance.free}`);
+	const observedNotional = plan.input.amount * referencePrice;
+	const riskNotional = plan.input.side === "buy" ? plan.riskNotional : observedNotional;
 	return {
 		warnings: ocoCapability.status === "unknown" ? [ocoCapability.reason] : [],
+		evidence: confirmationEvidence(market, referencePrice, plan.input.amount, observedNotional, riskNotional),
 		market,
 		balance,
 		balanceAsset: asset,

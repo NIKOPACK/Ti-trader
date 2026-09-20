@@ -13,7 +13,7 @@ The plan prioritizes recoverable execution and clear operator controls over more
 | M3: Restart reconciliation | P0 | M2 | Recover unresolved executions without resubmitting | Released in 0.1.9 |
 | M4: Supported capability matrix | P0 | Can run alongside M2; evidence required by M3 | One executable source of truth for supported combinations | Released; evidence is still offline-only |
 | M5: Durable monitoring and audit | P1 | M3 | Restart-aware monitoring, event history and health reporting | Released in 0.1.9; bounded delivery documented |
-| M6: Operational release gates | P1 | M3, M4, M5 | Recovery procedures, release evidence and controlled rollout | Collectors shipped; seven-day Paper soak and live pilot evidence still pending |
+| M6: Operational release gates | P1 | M3, M4, M5 | Recovery procedures, release evidence and controlled rollout | Collectors shipped; live pilot evidence still pending |
 | M7: Account-wide hard risk | P0 for autonomous | M3 | Exposure/loss/protection limits, supervision, latched loss trips | Implemented in working tree; not released |
 | M8: Autonomous Paper runtime | P1 | M7 | Headless Paper daemon with model-controlled wakes; live startup fail-closed | Implemented in working tree; not released |
 
@@ -122,22 +122,21 @@ Implemented in the scoped monitoring store and monitor extensions, with bilingua
 
 ## M6: Operational readiness and release
 
-Operator procedures are in the [operations runbook](trading-operations.md). The [release evidence reference](trading-release-evidence.md) documents the isolated readiness runner and an executable, revision-bound pilot gate. Missing soak, installation or approval artifacts fail the gate rather than being treated as completed work.
+Operator procedures are in the [operations runbook](trading-operations.md). The [release evidence reference](trading-release-evidence.md) documents the isolated readiness runner and an executable, revision-bound live-pilot gate. `evaluateReleaseEvidence` fail-closes without schemaVersion 2 soak activity (including a controlled fault and later healthy recovery), `liveCapabilities`, Ed25519 `pilotApproval`, and the existing offline/drills/installation artifacts. Isolated Paper verification does not wait on `liveCapabilities` or signed `pilotApproval`; those still block a live pilot. Out-of-repo installation remains on the Paper path. Soak activity is live-pilot gate evidence, not a blocker for early Paper user feedback.
 
 **Implementation:**
 
 - Document installation, configuration, API permission limits, data backup/restore, upgrade/downgrade restrictions, emergency pause and manual reconciliation.
 - Add a release checklist tying every supported capability to its evidence and open known limitations.
 - Make offline regression gates credential-independent. Keep explicitly authorized live/testnet exercises separate from normal CI.
-- Run a controlled Paper soak with restart and transport/storage-failure injection; retain execution, recovery and monitor evidence.
 - Define rollback rules that preserve unresolved records and pauses. Never downgrade a shared-data-directory writer to a version that drops safety state.
 - Release risk, engine and agent in dependency order, with exact versions and maintainer authorization.
 
-**Acceptance:** all P0 acceptance cases pass, no unresolved critical execution defect, and operator recovery is reproducible from documented steps. Require at least a seven-day controlled Paper soak with zero duplicate submissions and no lost unresolved records before a limited, human-confirmed live pilot. This duration is a proposed release gate, not a claim that such a soak has occurred. A live pilot requires a separately approved account scope and notional cap.
+**Acceptance:** all P0 acceptance cases pass, no unresolved critical execution defect, and operator recovery is reproducible from documented steps. A live pilot additionally requires the executable gate artifacts above and a separately approved account scope and notional cap.
 
 ## Delivery policy
 
-Each milestone ships as reviewable source, focused offline regressions, operator/API documentation and a changelog entry. Do not claim mature unattended live operation after completing the human-confirmed assistant milestones or Paper-only autonomous work. Seven-day Paper soak evidence and a maintainer-approved live pilot remain open. Commits, publication and use of real funds require explicit authorization.
+Each milestone ships as reviewable source, focused offline regressions, operator/API documentation and a changelog entry. Do not claim mature unattended live operation after completing the human-confirmed assistant milestones or Paper-only autonomous work. After freezing a trading-safety candidate, run a clean out-of-repo install and continue isolated Paper verification; live external evidence is a separate gate and must not block early Paper user feedback. A maintainer-approved live pilot remains open. Commits, publication and use of real funds require explicit authorization.
 
 ## M7: Account-wide hard risk
 

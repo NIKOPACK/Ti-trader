@@ -45,6 +45,9 @@ export * from "./capabilities.ts";
 export { CcxtExchangeClient } from "./ccxt-client.ts";
 export type { ExchangeCredentials, FuturesMarginType, FuturesPositionMode, MarketType } from "./client-types.ts";
 export {
+	PREPARED_PLAN_MAX_CONFIRMATIONS,
+	PREPARED_PLAN_TTL_MS,
+	type PreparedPlanConfirmation,
 	PreparedPlanError,
 	TradingEngine,
 	type TradingEngineConfig,
@@ -93,7 +96,10 @@ export {
 	prepareOrder,
 } from "./order-plan.ts";
 export {
+	confirmationSnapshotChanged,
+	marketEvidenceChanged,
 	type OcoPreflightResult,
+	type OrderConfirmationEvidence,
 	OrderPreflightError,
 	type OrderPreflightResult,
 	preflightOco,

@@ -3,7 +3,7 @@
 	"private": true,
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/NIKOPACK/Ti.git"
+		"url": "git+https://github.com/NIKOPACK/Ti-trader.git"
 	},
 	"type": "module",
 	"workspaces": [

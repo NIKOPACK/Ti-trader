@@ -127,8 +127,8 @@ Rules:
 
 Attribution:
 
-- Internal (from issues): `Fixed foo bar ([#123](https://github.com/NIKOPACK/Ti/issues/123))`
-- External contributions: `Added feature X ([#456](https://github.com/NIKOPACK/Ti/pull/456) by [@username](https://github.com/username))`
+- Internal (from issues): `Fixed foo bar ([#123](https://github.com/NIKOPACK/Ti-trader/issues/123))`
+- External contributions: `Added feature X ([#456](https://github.com/NIKOPACK/Ti-trader/pull/456) by [@username](https://github.com/username))`
 
 ## Releasing
 

@@ -6,6 +6,7 @@ All notable changes to `@nikopack/ti-triggers` are documented in this file.
 
 ### Fixed
 
+- Package `repository`, `homepage` and `bugs` now point at [NIKOPACK/Ti-trader](https://github.com/NIKOPACK/Ti-trader).
 - The evaluator now returns an `unknown` evaluation with a reason for unsupported condition kinds instead of throwing a bare `TypeError` when unvalidated input reaches the public `evaluateCondition`/`transitionTrigger` APIs.
 - `conditionSchema` and `triggerSchema` now validate trigger structure instead of accepting any value. The recursive condition schema is expressed as a JSON Schema definition referenced through `$ref`, and `triggerSchema.when` rejects structurally invalid conditions. `expiresAt` accepts any `Date.parse`-able string, matching `validateTriggerDefinition`.
 

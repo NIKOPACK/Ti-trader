@@ -19,7 +19,7 @@ Install the reviewed candidate using the normal package workflow, or the isolate
 node scripts/trading-package-install.mjs --report /tmp/ti-release-evidence/installation.json
 ```
 
-Confirm its version before opening a session. Initial configuration must be Paper; verify the displayed mode again after every account or market switch. Do not assume a restart resets a previously saved live configuration. For a controlled Paper soak, keep `TI_DATA_DIR` on that candidate and collect samples with `scripts/trading-paper-soak.mjs` rather than filling the observation record by hand.
+Confirm its version before opening a session. Initial configuration must be Paper; verify the displayed mode again after every account or market switch. Do not assume a restart resets a previously saved live configuration.
 
 API permissions must exclude withdrawals. Keep exchange credentials in Ti's credential store, not in commands, source files, logs or release evidence. A hand-made `keys.json` that is group- or world-readable is tightened to mode 600 on read; treat the stderr warning as confirmation that the file was too open, then keep the directory private. Require confirmation for each live order during a pilot (`orderApproval: "confirm"`). Switching to `unattended` is an explicit opt-in and requires interactive confirmation in Settings or `/approval unattended`. Do not disable confirmation to work around a failed UI or recovery workflow.
 
@@ -126,6 +126,6 @@ Plan and decision stores reject unknown format versions and invalid nested data 
 
 ## Release and pilot decision
 
-Use the [release evidence gate](trading-release-evidence.md) for isolated regression reports, seven-day Paper observation records, recovery exercises, clean installation evidence and explicit pilot approval.
+Use the [release evidence gate](trading-release-evidence.md) for isolated regression reports, recovery exercises, clean installation evidence, schemaVersion 2 Paper soak activity, externally verified `liveCapabilities`, and Ed25519 `pilotApproval`. Isolated Paper verification does not wait on live-capability or signed-approval artifacts; those still block a live pilot.
 
-Do not label a candidate ready because implementation files exist or because a short offline run passed. The seven-day observation period must actually occur. Publication, real credentials, live pilot scope and notional limits require separate maintainer authorization.
+Do not label a candidate ready because implementation files exist or because a short offline run passed. Publication, real credentials, live pilot scope and notional limits require separate maintainer authorization.

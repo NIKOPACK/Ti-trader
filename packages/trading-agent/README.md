@@ -203,7 +203,7 @@ Ti 会在本地保存每轮模型/提示词/工具指纹、有限数字观测、
 
 私密导出包含完整冻结证据、协议、结果、已留存的最新执行事实和有界评估概览，不重复保存全部派生行，最大 128 MiB；单文件导出不替代整个账户备份。库导出的 `validateDecisionEvidence` / `evaluateDecisions` 可对导出文件的 `evidence` 字段离线重算纪律与前瞻对照；`evaluateActualExecutions` 使用 `evidence`、`executionRecords` 和 `Date.parse(evaluatedAt)` 重算该时点的实际执行报告。记录范围仍是交互/单次会话，不包括独立自主 Paper 守护进程。
 
-三种结论不可互相替代：运行就绪依赖实际长时间 Paper、恢复及独立安装证据；纪律评估只说明可观察行为；前瞻对照只描述固定规则下的结果。`no_recorded_discipline_issues` 或 `descriptive_evidence_only` 均不表示模型可信、策略盈利或获准实盘。
+三种结论不可互相替代：运行就绪依赖恢复及独立安装证据；纪律评估只说明可观察行为；前瞻对照只描述固定规则下的结果。`no_recorded_discipline_issues` 或 `descriptive_evidence_only` 均不表示模型可信、策略盈利或获准实盘。
 
 ## 工具结果与订单状态
 
@@ -271,7 +271,7 @@ Paper 现货和 Paper 合约的触发在每次账户读取时懒惰撮合：所�
 
 **边界**：这不是交易所总停机开关。已有订单仍可能成交，已经开始发送的请求不能被撤回；杠杆和保证金设置也不在开仓暂停范围内。现货卖单、卖出 OCO、经校验的合约减仓和平仓仍受原有单笔限额、白名单和确认策略约束，撤单仍可用。不要为解除暂停而删除状态文件，也不要盲目重试结果未知的订单。
 
-分阶段目标见[开发计划](../../docs/product-readiness-plan.md)，故障处置和备份流程见[运维手册](../../docs/trading-operations.md)。功能落地不等于完成实盘验收；七天 Paper 运行、独立安装及授权试点仍须提供实际证据。
+分阶段目标见[开发计划](../../docs/product-readiness-plan.md)，故障处置和备份流程见[运维手册](../../docs/trading-operations.md)。功能落地不等于完成实盘验收；独立安装及授权试点仍须提供实际证据。
 
 ## 执行记录与重启对账
 

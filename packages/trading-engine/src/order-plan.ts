@@ -81,6 +81,27 @@ export interface PreparedOco {
 	readonly summary: string;
 }
 
+export function formatPreparedOrderSummary(
+	side: OrderSide,
+	amount: number,
+	input: PlaceOrderInput,
+	capabilityContext: TradingCapabilityContext,
+	quoteCurrency: string,
+	notional: number,
+): string {
+	const omitQuantity = evaluateOrderCapability(capabilityContext, input).omitExchangeQuantity;
+	return `${side.toUpperCase()} ${amount} ${input.symbol} (${input.type})${input.price !== undefined ? ` @ ${input.price}` : ""}${input.stopPrice !== undefined ? ` trigger ${input.stopPrice}` : ""}${input.trailingPercent !== undefined ? ` trail ${input.trailingPercent}%` : ""}${input.closePosition ? " (close entire matching position)" : ""}${omitQuantity ? " (Binance close-all; exchange may omit quantity)" : ""} ≈ ${notional.toFixed(2)} ${quoteCurrency}`;
+}
+
+export function formatPreparedOcoSummary(
+	input: PlaceOcoOrderInput,
+	quoteCurrency: string,
+	observedNotional: number,
+	riskNotional: number,
+): string {
+	return `OCO ${input.side.toUpperCase()} ${input.amount} ${input.symbol} SL ${input.stopLossPrice} / TP ${input.takeProfitPrice} ≈ ${observedNotional.toFixed(2)} ${quoteCurrency}${input.side === "buy" ? ` (risk ≤ ${riskNotional.toFixed(2)} ${quoteCurrency})` : ""}`;
+}
+
 export function isBinanceCloseAllTrigger(trading: OrderPlanningContext, plan: PreparedOrder): boolean {
 	return evaluateOrderCapability(
 		{
@@ -495,7 +516,6 @@ export async function prepareOrder(
 	}
 	if (!Number.isFinite(notional) || notional <= 0) rejectOrder("Order notional must be positive and finite");
 	const reduceOnlyRequested = params.reduceOnly === true || params.closePosition === true;
-	const binanceCloseAllTrigger = orderCapability.omitExchangeQuantity;
 	const exchangeConstraints = orderCapability.constraints;
 	const exchangeConstraint = exchangeConstraints.length > 0 ? exchangeConstraints.join("; ") : undefined;
 	const input: PlaceOrderInput = {
@@ -510,7 +530,7 @@ export async function prepareOrder(
 		trailingPercent: params.trailingPercent,
 		closePosition: params.closePosition,
 	};
-	const summary = `${side.toUpperCase()} ${amount} ${params.symbol} (${params.type})${params.price !== undefined ? ` @ ${params.price}` : ""}${params.stopPrice !== undefined ? ` trigger ${params.stopPrice}` : ""}${params.trailingPercent !== undefined ? ` trail ${params.trailingPercent}%` : ""}${params.closePosition ? " (close entire matching position)" : ""}${binanceCloseAllTrigger ? " (Binance close-all; exchange may omit quantity)" : ""} ≈ ${notional.toFixed(2)} ${config.quoteCurrency}`;
+	const summary = formatPreparedOrderSummary(side, amount, input, capabilityContext, config.quoteCurrency, notional);
 	return freezePreparedOrder({
 		input,
 		capabilityContext,
@@ -594,6 +614,17 @@ export async function prepareOcoOrder(params: OcoIntent, trading: OrderPlanningC
 		referencePrice,
 		referenceTimestamp: ticker.timestamp,
 		countTowardsDailyLimit: params.side === "buy",
-		summary: `OCO ${params.side.toUpperCase()} ${amount} ${params.symbol} SL ${params.stopLossPrice} / TP ${params.takeProfitPrice} ≈ ${observedNotional.toFixed(2)} ${trading.config.quoteCurrency}${params.side === "buy" ? ` (risk ≤ ${riskNotional.toFixed(2)} ${trading.config.quoteCurrency})` : ""}`,
+		summary: formatPreparedOcoSummary(
+			{
+				symbol: params.symbol,
+				side: params.side,
+				amount,
+				stopLossPrice: params.stopLossPrice,
+				takeProfitPrice: params.takeProfitPrice,
+			},
+			trading.config.quoteCurrency,
+			observedNotional,
+			riskNotional,
+		),
 	});
 }

@@ -63,7 +63,7 @@ Do not `sudo npm install -g`; on `EACCES`, set npm's prefix to `~/.npm-global` a
 | 4 | `/settings` — language, risk caps, market, paper balance, monitor |
 | 5 | `/exchange-login` only when you intend to trade live |
 
-State lives in `~/.ti-trader/agent/` (`trading.json`, `keys.json`, sessions); Pi's `~/.pi` is untouched. Set `TI_DATA_DIR` for an isolated soak.
+State lives in `~/.ti-trader/agent/` (`trading.json`, `keys.json`, sessions); Pi's `~/.pi` is untouched. Set `TI_DATA_DIR` for an isolated candidate.
 
 ## Commands you will actually use
 
@@ -86,7 +86,7 @@ State lives in `~/.ti-trader/agent/` (`trading.json`, `keys.json`, sessions); Pi
 - Missing bid/ask, funding, or open interest comes back as `null` plus `warnings`, never as `0`.
 - Optional research extensions (`web-search`, `zhihu-research`, `market-research`, `subagent`, `freqtrade`) load only when their env is set or you pass `--extension`. They cannot submit orders.
 - Ti does not expose a remote trading service. The workspace CBOR protocol, `PiClient`, and `RemoteSession` are experimental library components with no production server wired into `ti`; Pi's JSONL RPC mode is a separate local process-integration path. A future remote Ti service must separately audit authentication, authorization, transport security, session leases, and trading-tool permissions.
-- A published CLI is not a production-acceptance claim. A seven-day Paper soak and any live pilot still need their own evidence.
+- A published CLI is not a production-acceptance claim. Any live pilot still needs its own evidence.
 
 Operator runbook: [docs/trading-operations.md](docs/trading-operations.md). Autonomous Paper: [docs/autonomous-trading.md](docs/autonomous-trading.md). Design: [packages/trading-agent/DESIGN.md](packages/trading-agent/DESIGN.md). Engine contract: [packages/trading-engine/README.md](packages/trading-engine/README.md).
 

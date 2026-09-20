@@ -37,6 +37,9 @@ All notable changes to `ti-trader` are documented in this file.
 
 ### Fixed
 
+- Live order review shows the engine's latest confirmation snapshot when market evidence is re-quoted after the previous confirmation, including updated notional, reference price and warnings.
+- Package `repository`, `homepage`, `bugs`, changelog compare links and the OpenRouter HTTP referer now point at [NIKOPACK/Ti-trader](https://github.com/NIKOPACK/Ti-trader) instead of the 404 `NIKOPACK/Ti` URL.
+- The release gate now requires evidence schemaVersion 2: an active Paper soak (directory identity, at least seven successful round-trips, a controlled fault and later recovery), an externally verified live-capabilities artifact, and an Ed25519 signature from `scripts/release-reviewers.json` over the canonical candidate and artifact hashes. Idle soaks, offline-contract capability rows and unsigned approvals stay blocked.
 - Autonomous market-lab candle requests fetch one extra bar and keep closed candles, matching the interactive session bridge, so the 20-bar minimum is reachable during market hours. Futures vs spot source uses `isFuturesSymbol`.
 - Subagent session listing skips incomplete or corrupt session directories instead of failing the whole owner scope. `create()` removes a directory if metadata never becomes durable.
 - Reclaiming a session whose in-flight run record is unreadable marks the session interrupted instead of leaving it stuck `running`.
@@ -297,15 +300,15 @@ Initial public release.
 - Coding tools disabled; system prompt fully replaced with a trading-domain prompt
 - Configuration and state under `~/.ti/agent/`, isolated from the pi coding agent's `~/.pi`
 
-[Unreleased]: https://github.com/NIKOPACK/Ti/compare/v0.1.11...HEAD
-[0.1.11]: https://github.com/NIKOPACK/Ti/compare/v0.1.10...v0.1.11
-[0.1.10]: https://github.com/NIKOPACK/Ti/compare/v0.1.9...v0.1.10
-[0.1.9]: https://github.com/NIKOPACK/Ti/compare/v0.1.8...v0.1.9
-[0.1.8]: https://github.com/NIKOPACK/Ti/compare/v0.1.7...v0.1.8
-[0.1.7]: https://github.com/NIKOPACK/Ti/compare/v0.1.6...v0.1.7
-[0.1.6]: https://github.com/NIKOPACK/Ti/compare/v0.1.5...v0.1.6
-[0.1.5]: https://github.com/NIKOPACK/Ti/compare/v0.1.4...v0.1.5
-[0.1.4]: https://github.com/NIKOPACK/Ti/compare/v0.1.3...v0.1.4
-[0.1.3]: https://github.com/NIKOPACK/Ti/compare/v0.1.2...v0.1.3
-[0.1.1]: https://github.com/NIKOPACK/Ti/compare/v0.1.0...v0.1.1
-[0.1.0]: https://github.com/NIKOPACK/Ti/releases/tag/v0.1.0
+[Unreleased]: https://github.com/NIKOPACK/Ti-trader/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/NIKOPACK/Ti-trader/compare/v0.1.10...v0.1.11
+[0.1.10]: https://github.com/NIKOPACK/Ti-trader/compare/v0.1.9...v0.1.10
+[0.1.9]: https://github.com/NIKOPACK/Ti-trader/compare/v0.1.8...v0.1.9
+[0.1.8]: https://github.com/NIKOPACK/Ti-trader/compare/v0.1.7...v0.1.8
+[0.1.7]: https://github.com/NIKOPACK/Ti-trader/compare/v0.1.6...v0.1.7
+[0.1.6]: https://github.com/NIKOPACK/Ti-trader/compare/v0.1.5...v0.1.6
+[0.1.5]: https://github.com/NIKOPACK/Ti-trader/compare/v0.1.4...v0.1.5
+[0.1.4]: https://github.com/NIKOPACK/Ti-trader/compare/v0.1.3...v0.1.4
+[0.1.3]: https://github.com/NIKOPACK/Ti-trader/compare/v0.1.2...v0.1.3
+[0.1.1]: https://github.com/NIKOPACK/Ti-trader/compare/v0.1.0...v0.1.1
+[0.1.0]: https://github.com/NIKOPACK/Ti-trader/releases/tag/v0.1.0
