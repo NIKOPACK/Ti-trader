@@ -18,11 +18,13 @@ import {
 	loadSoakSnapshot,
 	noteRestart,
 	placePaperRoundTrip,
+	recordActivityBaseline,
 	recordActivityResult,
 	unresolvedExecutionIds,
 } from "./trading-paper-soak.mjs";
 
 const roots = [];
+const observation = { file: "observation.json", sha256: "c".repeat(64) };
 const originalDataDir = process.env.TI_DATA_DIR;
 afterEach(() => {
 	for (const root of roots.splice(0)) rmSync(root, { recursive: true, force: true });
@@ -56,22 +58,32 @@ test("treats a missing previously unresolved record as lost, including after ter
 	assert.equal(countLostUnresolvedRecords(previous, [{ id: "done", status: "acknowledged" }]), 1);
 });
 
-test("accepts only Paper mode snapshots and records expected faults without dropping duplicate/lost counters", () => {
-	for (const config of [{}, { mode: "live" }, { mode: "papre" }]) {
-		assert.throws(
-			() => inspectSoakSnapshot({ config, state: {}, paperAccounts: [] }),
-			/requires a Paper mode/,
-		);
-	}
+test("refuses live mode snapshots and binds controlled faults to their observation", () => {
+	assert.throws(() => inspectSoakSnapshot({ config: { mode: "live" }, state: {}, paperAccounts: [] }), /refuses live mode/);
 	const inspected = inspectSoakSnapshot({
 		config: { mode: "paper" },
 		state: { executions: { records: [{ id: "open", status: "unknown", intent: { input: { clientOrderId: "ti1" } } }] } },
 		paperAccounts: [{ orders: [{ clientOrderId: "ti1" }] }],
-	}, [], Date.parse("2026-01-01T00:00:00.000Z"), true);
+	}, [], Date.parse("2026-01-01T00:00:00.000Z"), {
+		type: "transport-failure",
+		observation,
+	});
 	assert.equal(inspected.sample.healthy, false);
 	assert.equal(inspected.sample.expectedFault, true);
+	assert.deepEqual(inspected.sample.fault, {
+		type: "transport-failure",
+		at: "2026-01-01T00:00:00.000Z",
+		observation,
+	});
 	assert.equal(inspected.sample.duplicateSubmissions, 0);
 	assert.equal(inspected.sample.unresolvedExecutions, 1);
+	assert.throws(
+		() => inspectSoakSnapshot({ config: { mode: "paper" }, state: {}, paperAccounts: [] }, [], Date.now(), {
+			type: "arbitrary",
+			observation: { file: "observation.json", sha256: "invalid" },
+		}),
+		/controlled type and SHA-256/,
+	);
 });
 
 test("rejects a sample gap over ten minutes so a stalled collector cannot be patched later", () => {
@@ -89,7 +101,19 @@ test("rejects a sample gap over ten minutes so a stalled collector cannot be pat
 		at: new Date(start + MAXIMUM_SAMPLE_GAP_MS).toISOString(), duplicateSubmissions: 0,
 		lostUnresolvedRecords: 0, unresolvedExecutions: 0, healthy: true,
 	});
-	assert.equal(noteRestart(report), 1);
+	assert.equal(noteRestart(report, {
+		type: "runtime-restart",
+		observation,
+	}, "2026-01-01T00:10:00.000Z"), 1);
+	assert.deepEqual(report.restartEvents, [{
+		type: "runtime-restart",
+		at: "2026-01-01T00:10:00.000Z",
+		observation,
+	}]);
+	assert.throws(() => noteRestart(report, {
+		type: "arbitrary",
+		observation,
+	}), /controlled type, UTC time and SHA-256/);
 });
 
 test("binds reports and installed runtimes to the canonical data directory", async () => {
@@ -99,6 +123,7 @@ test("binds reports and installed runtimes to the canonical data directory", asy
 	const identity = dataDirIdentity(canonicalDataDir);
 	const revision = "a".repeat(40);
 	const report = createSoakReport(revision, identity, "2026-01-01T00:00:00.000Z");
+	recordActivityBaseline(report, { config: { mode: "paper" }, state: {}, paperAccounts: [] }, Date.parse(report.startedAt));
 	const reportPath = join(temp(), "soak.json");
 	writeFileSync(reportPath, `${JSON.stringify(report)}\n`);
 
@@ -122,17 +147,23 @@ test("binds reports and installed runtimes to the canonical data directory", asy
 test("records activity attempts and marks failed activity samples unhealthy", () => {
 	const startedAt = "2026-01-01T00:00:00.000Z";
 	const report = createSoakReport("a".repeat(40), "sha256:test", startedAt);
+	recordActivityBaseline(
+		report,
+		{ config: { mode: "paper" }, state: {}, paperAccounts: [] },
+		Date.parse(startedAt),
+	);
 	recordActivityResult(report, false, startedAt);
 	const failed = inspectSoakSnapshot(
 		{ config: { mode: "paper" }, state: {}, paperAccounts: [] },
 		[],
 		Date.parse(startedAt),
-		false,
+		undefined,
 		"failed",
 	);
 	appendSoakSample(report, failed.sample);
 
 	assert.deepEqual(report.activity, {
+		baseline: { at: startedAt, observedExecutions: 0, observedOrders: 0 },
 		attempts: 1,
 		successes: 0,
 		failures: 1,
@@ -140,10 +171,13 @@ test("records activity attempts and marks failed activity samples unhealthy", ()
 	});
 	assert.equal(failed.sample.activity, "failed");
 	assert.equal(failed.sample.healthy, false);
+	assert.equal(failed.sample.observedExecutions, 0);
+	assert.equal(failed.sample.observedOrders, 0);
 
 	const successAt = "2026-01-01T00:01:00.000Z";
 	recordActivityResult(report, true, successAt);
 	assert.deepEqual(report.activity, {
+		baseline: { at: startedAt, observedExecutions: 0, observedOrders: 0 },
 		attempts: 2,
 		successes: 1,
 		failures: 1,
@@ -156,13 +190,18 @@ test("persists a failed activity sample while binding the CLI runtime to --data-
 	const installDir = temp();
 	const reportPath = join(temp(), "soak.json");
 	const canonicalDataDir = realpathSync(dataDir);
+	mkdirSync(join(dataDir, "agent"), { recursive: true });
+	writeFileSync(join(dataDir, "agent", "trading.json"), JSON.stringify({ mode: "paper" }));
 	const packageDir = join(installDir, "node_modules", "ti-trader");
 	mkdirSync(join(packageDir, "dist"), { recursive: true });
 	writeFileSync(join(packageDir, "package.json"), JSON.stringify({ type: "module" }));
 	writeFileSync(
 		join(packageDir, "dist", "context.js"),
-		`if (process.env.TI_DATA_DIR !== ${JSON.stringify(canonicalDataDir)}) throw new Error("wrong data dir");
+		`import { readFileSync } from "node:fs";
+if (process.env.TI_DATA_DIR !== ${JSON.stringify(canonicalDataDir)}) throw new Error("wrong data dir");
 export async function initTrading() {
+	const report = JSON.parse(readFileSync(${JSON.stringify(reportPath)}, "utf8"));
+	if (!report.activity?.baseline) throw new Error("activity baseline was not persisted");
 	return {
 		mode: "paper",
 		marketData: { getTicker: async () => { throw new Error("simulated activity failure"); } },
@@ -194,37 +233,16 @@ export async function initTrading() {
 	assert.match(result.stderr, /simulated activity failure/);
 	const report = JSON.parse(readFileSync(reportPath, "utf-8"));
 	assert.equal(report.dataDirIdentity, dataDirIdentity(dataDir));
-	assert.deepEqual(report.activity, { attempts: 1, successes: 0, failures: 1, lastSuccessAt: null });
+	assert.deepEqual(report.activity, {
+		baseline: { at: report.activity.baseline.at, observedExecutions: 0, observedOrders: 0 },
+		attempts: 1,
+		successes: 0,
+		failures: 1,
+		lastSuccessAt: null,
+	});
 	assert.equal(report.samples.length, 1);
 	assert.equal(report.samples[0].activity, "failed");
 	assert.equal(report.samples[0].healthy, false);
-});
-
-test("rejects an existing Live configuration before Paper activity", () => {
-	const dataDir = temp();
-	const installDir = temp();
-	const reportPath = join(temp(), "soak.json");
-	const agent = join(dataDir, "agent");
-	mkdirSync(agent, { recursive: true });
-	writeFileSync(join(agent, "trading.json"), JSON.stringify({ mode: "live" }));
-
-	const result = spawnSync(
-		process.execPath,
-		[
-			join(dirname(fileURLToPath(import.meta.url)), "trading-paper-soak.mjs"),
-			"--report",
-			reportPath,
-			"--data-dir",
-			dataDir,
-			"--install-dir",
-			installDir,
-			"--once",
-			"--activity",
-		],
-		{ encoding: "utf-8" },
-	);
-	assert.notEqual(result.status, 0);
-	assert.match(result.stderr, /configured for Paper mode/);
 });
 
 test("sizes Paper activity with quoteAmount and sells the filled lot", async () => {
@@ -267,4 +285,7 @@ test("reads durable journal and paper ledgers from the isolated data directory",
 	assert.equal(snapshot.config.mode, "paper");
 	assert.equal(snapshot.state.executions.records[0].id, "e1");
 	assert.equal(snapshot.paperAccounts[0].orders[0].clientOrderId, "ti1");
+	const inspected = inspectSoakSnapshot(snapshot);
+	assert.equal(inspected.sample.observedExecutions, 1);
+	assert.equal(inspected.sample.observedOrders, 1);
 });

@@ -6,6 +6,11 @@ import { fileURLToPath } from "node:url";
 
 export const MINIMUM_SOAK_MS = 7 * 24 * 60 * 60 * 1000;
 export const MAXIMUM_SAMPLE_GAP_MS = 10 * 60 * 1000;
+export const MINIMUM_SOAK_ACTIVITY_SUCCESSES = 1;
+export const MINIMUM_SOAK_EXECUTION_OBSERVATIONS = 2;
+export const MINIMUM_SOAK_ORDER_OBSERVATIONS = 2;
+export const SOAK_FAULT_TYPES = ["process-crash", "storage-failure", "transport-failure"];
+export const SOAK_RESTART_TYPES = ["collector-restart", "runtime-restart", "host-restart"];
 export const REQUIRED_SUITES = ["repository-check", "risk", "engine", "triggers", "agent", "release-gate"];
 export const REQUIRED_INSTALL_CHECKS = [
 	"cleanInstall", "cliVersion", "isolatedDataDir", "paperDefault", "recoveryAfterRestart",
@@ -33,7 +38,7 @@ function timestamp(value) {
 	return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : undefined;
 }
 
-function readArtifact(reference, artifactRoot) {
+function readArtifactBody(reference, artifactRoot) {
 	if (!record(reference) || !text(reference.file) || !/^[a-f0-9]{64}$/.test(reference.sha256 ?? "")) {
 		throw new Error("requires a relative artifact file and SHA-256");
 	}
@@ -48,17 +53,46 @@ function readArtifact(reference, artifactRoot) {
 	if (createHash("sha256").update(body).digest("hex") !== reference.sha256) {
 		throw new Error("artifact hash mismatch");
 	}
+	return body;
+}
+
+export function createArtifactReference(file, artifactRoot) {
+	if (!text(file)) throw new Error("observation artifact file is required");
+	const root = realpathSync(artifactRoot);
+	const path = realpathSync(resolve(file));
+	const child = relative(root, path);
+	if (child === "" || child === ".." || child.startsWith(`..${sep}`) || isAbsolute(child)) {
+		throw new Error("observation artifact must stay inside the evidence directory");
+	}
+	const body = readFileSync(path);
+	return {
+		file: child.split(sep).join("/"),
+		sha256: createHash("sha256").update(body).digest("hex"),
+	};
+}
+
+function readArtifact(reference, artifactRoot) {
+	const body = readArtifactBody(reference, artifactRoot);
 	const result = JSON.parse(body.toString("utf8"));
 	if (!record(result)) throw new Error("artifact must contain a JSON object");
 	return result;
+}
+
+function verifiedObservation(reference, artifactRoot) {
+	try {
+		readArtifactBody(reference, artifactRoot);
+		return true;
+	} catch {
+		return false;
+	}
 }
 
 /** Evidence validation is a release gate, not a substitute for maintainer review. */
 export function evaluateReleaseEvidence(evidence, artifactRoot, now = Date.now()) {
 	const blockers = [];
 	if (!Number.isFinite(now)) throw new Error("Invalid evaluation clock");
-	if (!record(evidence) || evidence.schemaVersion !== 1) {
-		return { ready: false, target: "human-confirmed-live-pilot", blockers: ["Expected evidence schemaVersion 1"] };
+	if (!record(evidence) || evidence.schemaVersion !== 3) {
+		return { ready: false, target: "human-confirmed-live-pilot", blockers: ["Expected evidence schemaVersion 3"] };
 	}
 	const revision = evidence.revision;
 	if (typeof revision !== "string" || !/^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(revision)) {
@@ -104,31 +138,125 @@ export function evaluateReleaseEvidence(evidence, artifactRoot, now = Date.now()
 	if (soak) {
 		const start = timestamp(soak.startedAt);
 		const end = completed(soak.completedAt, "soak");
-		if (soak.mode !== "paper" || start === undefined || end === undefined || end - start < MINIMUM_SOAK_MS) {
+		if (
+			soak.schemaVersion !== 3 ||
+			!/^(?:sha256:)[a-f0-9]{64}$/.test(soak.dataDirIdentity ?? "") ||
+			soak.mode !== "paper" ||
+			start === undefined ||
+			end === undefined ||
+			end - start < MINIMUM_SOAK_MS
+		) {
 			blockers.push("soak: requires at least seven observed days in Paper mode");
 		}
-		if (!count(soak.restartCount) || soak.restartCount < 1) blockers.push("soak: a recorded restart is required");
+		const restartEvents = soak.restartEvents;
+		const restartEvidenceValid =
+			count(soak.restartCount) &&
+			soak.restartCount >= 1 &&
+			Array.isArray(restartEvents) &&
+			restartEvents.length === soak.restartCount &&
+			restartEvents.every((event) => {
+				const at = record(event) ? timestamp(event.at) : undefined;
+				return at !== undefined && start !== undefined && end !== undefined && at >= start && at <= end &&
+					SOAK_RESTART_TYPES.includes(event.type) && verifiedObservation(event.observation, artifactRoot);
+			});
+		if (!restartEvidenceValid) {
+			blockers.push("soak: requires a structured controlled restart observation");
+		}
+		const activity = soak.activity;
+		const baseline = record(activity) ? activity.baseline : undefined;
+		const baselineAt = record(baseline) ? timestamp(baseline.at) : undefined;
+		let activityValid =
+			record(activity) &&
+			record(baseline) &&
+			baselineAt !== undefined &&
+			start !== undefined &&
+			end !== undefined &&
+			baselineAt >= start &&
+			baselineAt <= end &&
+			count(baseline.observedExecutions) &&
+			count(baseline.observedOrders) &&
+			count(activity.attempts) &&
+			count(activity.successes) &&
+			count(activity.failures) &&
+			activity.attempts === activity.successes + activity.failures &&
+			activity.successes >= MINIMUM_SOAK_ACTIVITY_SUCCESSES;
 		const samples = soak.samples;
 		let previous = start;
 		let samplesValid = Array.isArray(samples) && samples.length > 1;
+		let successfulActivities = 0;
+		let failedActivities = 0;
+		let lastSuccessAt;
+		let lastFaultIndex = -1;
+		let maximumSuccessfulActivityExecutions = 0;
+		let maximumSuccessfulActivityOrders = 0;
 		if (samplesValid) {
-			for (const sample of samples) {
+			for (const [index, sample] of samples.entries()) {
 				const time = record(sample) ? timestamp(sample.at) : undefined;
+				const fault = record(sample) ? sample.fault : undefined;
+				const faultAt = record(fault) ? timestamp(fault.at) : undefined;
+				const validFault =
+					record(sample) &&
+					sample.expectedFault === true &&
+					record(fault) &&
+					faultAt === time &&
+					SOAK_FAULT_TYPES.includes(fault.type) &&
+					verifiedObservation(fault.observation, artifactRoot);
 				if (time === undefined || previous === undefined || time < previous || time > end ||
 					time - previous > MAXIMUM_SAMPLE_GAP_MS || sample.duplicateSubmissions !== 0 ||
 					sample.lostUnresolvedRecords !== 0 || !count(sample.unresolvedExecutions) ||
-					(sample.healthy !== true && sample.expectedFault !== true)) {
+					!count(sample.observedExecutions) || !count(sample.observedOrders) ||
+					(sample.activity !== undefined && sample.activity !== "succeeded" && sample.activity !== "failed") ||
+					(sample.expectedFault !== undefined && sample.expectedFault !== true) ||
+					((sample.expectedFault === true || sample.fault !== undefined) && !validFault) ||
+					(validFault && sample.healthy !== false) ||
+					(sample.activity === "failed" && sample.healthy !== false) ||
+					(sample.healthy !== true && !validFault && sample.activity !== "failed")) {
 					samplesValid = false;
 					break;
 				}
+				if (sample.activity === "succeeded") {
+					successfulActivities += 1;
+					lastSuccessAt = sample.at;
+					maximumSuccessfulActivityExecutions = Math.max(
+						maximumSuccessfulActivityExecutions,
+						sample.observedExecutions,
+					);
+					maximumSuccessfulActivityOrders = Math.max(maximumSuccessfulActivityOrders, sample.observedOrders);
+				}
+				if (sample.activity === "failed") failedActivities += 1;
+				if (validFault) lastFaultIndex = index;
 				previous = time;
 			}
+			const first = samples[0];
 			const last = samples.at(-1);
-			if (previous === undefined || end === undefined || end - previous > MAXIMUM_SAMPLE_GAP_MS ||
+			if (!record(first) || baselineAt === undefined || timestamp(first.at) < baselineAt ||
+				previous === undefined || end === undefined || end - previous > MAXIMUM_SAMPLE_GAP_MS ||
 				!record(last) || last.unresolvedExecutions !== 0 || last.healthy !== true) samplesValid = false;
 		}
+		activityValid =
+			activityValid &&
+			successfulActivities === activity.successes &&
+			failedActivities === activity.failures &&
+			lastSuccessAt === activity.lastSuccessAt;
+		const recoveredAfterFault =
+			lastFaultIndex >= 0 &&
+			samples.slice(lastFaultIndex + 1).some((sample) =>
+				record(sample) && sample.healthy === true && sample.unresolvedExecutions === 0 && sample.expectedFault !== true,
+			);
 		if (!samplesValid) {
 			blockers.push("soak: requires continuous <=10-minute samples, no duplicate/lost executions, and a healthy resolved finish");
+		}
+		if (
+			!activityValid ||
+			maximumSuccessfulActivityExecutions - (baseline?.observedExecutions ?? Number.POSITIVE_INFINITY) <
+				MINIMUM_SOAK_EXECUTION_OBSERVATIONS ||
+			maximumSuccessfulActivityOrders - (baseline?.observedOrders ?? Number.POSITIVE_INFINITY) <
+				MINIMUM_SOAK_ORDER_OBSERVATIONS
+		) {
+			blockers.push("soak: requires successful Paper round-trip activity observed after the run baseline");
+		}
+		if (!recoveredAfterFault) {
+			blockers.push("soak: requires a controlled fault followed by a healthy resolved recovery sample");
 		}
 	}
 

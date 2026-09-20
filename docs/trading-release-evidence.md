@@ -34,10 +34,12 @@ Use a dedicated data directory and the independently installed candidate, not th
 
 ```bash
 export TI_DATA_DIR="$HOME/ti-candidate-data"
-node scripts/trading-paper-soak.mjs --report /tmp/ti-release-evidence/soak.json --data-dir "$TI_DATA_DIR" --run
+node scripts/trading-paper-soak.mjs --report /tmp/ti-release-evidence/soak.json --data-dir "$TI_DATA_DIR" --install-dir /path/to/isolated-install --activity --run
 ```
 
-`--run` continues until SIGINT/SIGTERM. Restarting the collector against the same report increments `restartCount`. `--activity --install-dir /path/to/isolated-install` places a small Paper round-trip each interval using the installed package. `--expected-fault` marks an injected-fault sample. `--complete` is only for the final sample after seven observed days; a short or gappy run cannot be completed into valid evidence. If a sample gap exceeds ten minutes, start a new candidate soak. Do not concatenate records from different Git revisions.
+`--run` continues until SIGINT/SIGTERM. Before the first activity, the collector records the execution and Paper-order counters as the run baseline; only later increments count as activity evidence. `--activity` places a small Paper round-trip each interval using the installed package and records attempts, successes, failures and the last successful activity time. The collector binds the installed runtime and snapshots to the canonical `--data-dir`; the report stores only its SHA-256 identity.
+
+A resumed run must describe the controlled restart with `--note-restart runtime-restart --restart-observation /tmp/ti-release-evidence/restart.json`. An injected-fault sample likewise requires an allowed fault type and an observation file, for example `--expected-fault transport-failure --fault-observation /tmp/ti-release-evidence/fault.json`. Observation files must stay inside the evidence directory; the collector records their relative path and SHA-256, and the gate verifies both without embedding logs or credentials in the soak report. Bare flags, free-form labels, missing files and hash mismatches are rejected. `--complete` is only for the final sample after seven observed days; a short, idle or gappy run cannot be completed into valid evidence. If a sample gap exceeds ten minutes, start a new candidate soak. Do not concatenate records from different Git revisions or data directories.
 
 ## Evaluate a release manifest
 
@@ -53,7 +55,7 @@ Manifest fields:
 
 | Field | Required content |
 | --- | --- |
-| `schemaVersion` | `1` |
+| `schemaVersion` | `3` |
 | `revision` | Full candidate Git commit hash |
 | `versions` | Exact `risk`, `engine` and `agent` package version strings |
 | `offline` | Artifact reference for the isolated runner report |
@@ -66,17 +68,21 @@ An artifact reference is `{ "file": "offline.json", "sha256": "<64 lowercase hex
 
 ## Paper soak artifact
 
-`kind` must be `paper-soak`, and `mode` must be `paper`.
+`schemaVersion` must be `3`, `kind` must be `paper-soak`, and `mode` must be `paper`.
 
 | Field | Meaning |
 | --- | --- |
 | `startedAt`, `completedAt` | Canonical ISO UTC timestamps spanning at least seven days |
-| `restartCount` | Positive integer, counted from actual controlled restarts |
+| `restartCount`, `restartEvents` | Matching structured controlled-restart count and type/time/observation references |
+| `dataDirIdentity` | `sha256:` plus the SHA-256 of the canonical dedicated data-directory path |
+| `activity` | Run baseline plus internally consistent attempts, successes, failures and `lastSuccessAt` counters |
 | `samples` | Chronologically ordered observations, with no gap over ten minutes |
 
-Each sample contains `at`, `duplicateSubmissions`, `lostUnresolvedRecords`, `unresolvedExecutions` and `healthy`. Counters must come from inspecting the journal and exchange/Paper ledger, not from assuming that a process exit was successful. Duplicate submissions and lost records must remain zero. An intentionally injected fault may have `healthy: false`, `expectedFault: true` and outstanding unresolved executions. The last sample must be healthy with no unresolved executions.
+Each sample contains `at`, `duplicateSubmissions`, `lostUnresolvedRecords`, `unresolvedExecutions`, `observedExecutions`, `observedOrders` and `healthy`. Activity samples also contain `activity: "succeeded" | "failed"`. Counters must come from inspecting the journal and Paper ledger, not from assuming that a process exit was successful. Duplicate submissions and lost records must remain zero. At least one Paper round-trip must succeed, and snapshots after the recorded baseline must add at least two executions and two Paper orders; historical totals do not count.
 
-Record a sample at startup and at completion as well as during the run. Keep no more than ten minutes between the declared bounds and their nearest samples. A process that was merely left open for seven days, a report with a week-long gap, or a compressed replay of historical dates does not constitute soak evidence. The gate cannot detect invented observations; maintainer review of source logs is mandatory.
+At least one sample must record an intentionally injected fault with `healthy: false`, `expectedFault: true` and a structured `fault` containing an allowed type, the sample timestamp and a hash-verified `{ file, sha256 }` observation reference. Restart events use the same reference format. A later sample must be healthy with no unresolved executions. Activity failure also forces that sample unhealthy; it cannot be hidden by clean duplicate/lost counters. The final sample must be healthy with no unresolved executions.
+
+Record a sample at startup and at completion as well as during the run. Keep no more than ten minutes between the declared bounds and their nearest samples. A process that was merely left open for seven days, a report with a week-long gap, a fault without later recovery, or a compressed replay of historical dates does not constitute soak evidence. The gate cannot detect invented observations; maintainer review of source logs is mandatory.
 
 ## Recovery exercise artifact
 
