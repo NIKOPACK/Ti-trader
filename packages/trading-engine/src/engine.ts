@@ -52,6 +52,18 @@ import {
 	SubmissionRejectedError,
 } from "./types.ts";
 
+const PREPARED_PLAN_TTL_MS = 30_000;
+
+function monotonicClock(clock?: RiskClock): () => number {
+	const now = clock ? () => clock.now().getTime() : () => performance.now();
+	let last = Number.NEGATIVE_INFINITY;
+	return () => {
+		last = Math.max(last, now());
+		if (!Number.isFinite(last)) throw new Error("Trading clock returned a non-finite timestamp");
+		return last;
+	};
+}
+
 export class PreparedPlanError extends Error {
 	readonly code = "PREPARED_PLAN_REJECTED" as const;
 
@@ -113,6 +125,8 @@ export class TradingEngine {
 	private readonly marketDataClient: MarketDataClient;
 	private readonly preparedOrders = new WeakMap<object, PreparedOrder>();
 	private readonly preparedOcos = new WeakMap<object, PreparedOco>();
+	private readonly preparedAt = new WeakMap<object, number>();
+	private readonly monotonicNow: () => number;
 	/** A prepared plan is single-use once an exchange attempt starts. */
 	private readonly consumedPlans = new WeakSet<object>();
 	/** Prevent two concurrent callers from submitting the same plan. */
@@ -140,6 +154,7 @@ export class TradingEngine {
 		this.config = acceptedConfig;
 		this.exchangeClient = exchange;
 		this.marketDataClient = createMarketDataView(exchange);
+		this.monotonicNow = monotonicClock(clock);
 		this.risk = new RiskLedger(toRiskConfig(acceptedConfig), stateStore, clock);
 		if (execution) {
 			if (execution.durability !== "durable" && execution.durability !== "memory")
@@ -410,15 +425,24 @@ export class TradingEngine {
 		this.journal?.setConfig(toRiskConfig(acceptedConfig));
 	}
 
+	private assertPlanFresh(plan: object, label: string): void {
+		const preparedAt = this.preparedAt.get(plan);
+		if (preparedAt === undefined || this.monotonicNow() - preparedAt > PREPARED_PLAN_TTL_MS) {
+			throw new PreparedPlanError(`${label} plan expired; prepare and confirm a new plan`);
+		}
+	}
+
 	prepareOrder(side: OrderSide, intent: OrderIntent): Promise<PreparedOrder> {
 		return prepareOrder(side, intent, this.planningContext).then((plan) => {
 			this.preparedOrders.set(plan, plan);
+			this.preparedAt.set(plan, this.monotonicNow());
 			return plan;
 		});
 	}
 	prepareOcoOrder(intent: OcoIntent): Promise<PreparedOco> {
 		return prepareOcoOrder(intent, this.planningContext).then((plan) => {
 			this.preparedOcos.set(plan, plan);
+			this.preparedAt.set(plan, this.monotonicNow());
 			return plan;
 		});
 	}
@@ -573,6 +597,7 @@ export class TradingEngine {
 		if (this.inFlightPlans.has(plan)) {
 			throw new PreparedPlanError(`${label} plan is already being submitted`);
 		}
+		this.assertPlanFresh(plan, label);
 		if (countTowardsDailyLimit) this.risk.assertNewExposureAllowed();
 		this.inFlightPlans.add(plan);
 		let confirmedPreflight: OrderPreflightResult;
@@ -652,6 +677,7 @@ export class TradingEngine {
 		}
 		try {
 			throwIfAborted();
+			this.assertPlanFresh(plan, label);
 			const currentPreflight = await preflight();
 			if (
 				policy.confirm &&
