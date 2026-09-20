@@ -3,13 +3,25 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, writeFileSync } from "node:fs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { MAXIMUM_SAMPLE_GAP_MS } from "./trading-release-gate.mjs";
+import {
+	createArtifactReference,
+	MAXIMUM_SAMPLE_GAP_MS,
+	SOAK_FAULT_TYPES,
+	SOAK_RESTART_TYPES,
+} from "./trading-release-gate.mjs";
 
 export const DEFAULT_SAMPLE_INTERVAL_MS = 8 * 60 * 1000;
 const UNRESOLVED = new Set(["prepared", "submission-started", "unknown"]);
 
 const record = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 const text = (value) => typeof value === "string" && value.trim().length > 0;
+const artifactReference = (value) =>
+	record(value) && text(value.file) && typeof value.sha256 === "string" && /^[a-f0-9]{64}$/.test(value.sha256);
+const timestamp = (value) => {
+	if (typeof value !== "string") return undefined;
+	const parsed = Date.parse(value);
+	return Number.isFinite(parsed) && new Date(parsed).toISOString() === value ? parsed : undefined;
+};
 
 function readJson(path) {
 	if (!existsSync(path)) return undefined;
@@ -28,16 +40,17 @@ export function dataDirIdentity(dataDir) {
 export function createSoakReport(revision, dataDirIdentity, startedAt = new Date().toISOString()) {
 	if (!text(dataDirIdentity)) throw new Error("soak report requires a data directory identity");
 	return {
-		schemaVersion: 2,
+		schemaVersion: 3,
 		kind: "paper-soak",
 		revision,
 		mode: "paper",
 		dataDirIdentity,
 		startedAt,
 		restartCount: 0,
+		restartEvents: [],
 		samples: [],
 		collector: { unresolvedIds: [] },
-		activity: { attempts: 0, successes: 0, failures: 0, lastSuccessAt: null },
+		activity: { baseline: null, attempts: 0, successes: 0, failures: 0, lastSuccessAt: null },
 	};
 }
 
@@ -104,9 +117,9 @@ export function countLostUnresolvedRecords(previousIds, records) {
 	return previousIds.filter((id) => !current.has(id)).length;
 }
 
-export function loadSoakSnapshot(dataDir, modeOverride) {
+export function loadSoakSnapshot(dataDir) {
 	const agent = join(dataDir, "agent");
-	const config = readJson(join(agent, "trading.json")) ?? (modeOverride ? { mode: modeOverride } : {});
+	const config = readJson(join(agent, "trading.json")) ?? {};
 	const state = readJson(join(agent, "trading-state.json")) ?? {};
 	const paperDir = join(agent, "paper");
 	const paperAccounts = [];
@@ -124,7 +137,7 @@ export function inspectSoakSnapshot(
 	snapshot,
 	previousIds = [],
 	now = Date.now(),
-	expectedFault = false,
+	fault,
 	activity,
 ) {
 	if (!record(snapshot) || !record(snapshot.config) || !record(snapshot.state)) {
@@ -133,22 +146,31 @@ export function inspectSoakSnapshot(
 	if (activity !== undefined && activity !== "succeeded" && activity !== "failed") {
 		throw new Error("soak activity result must be succeeded or failed");
 	}
-	if (snapshot.config.mode !== "paper") throw new Error("Paper soak collector requires a Paper mode data directory");
+	if (
+		fault !== undefined &&
+		(!record(fault) || !SOAK_FAULT_TYPES.includes(fault.type) || !artifactReference(fault.observation))
+	) {
+		throw new Error("soak fault requires a controlled type and SHA-256 observation reference");
+	}
+	if (snapshot.config.mode === "live") throw new Error("Paper soak collector refuses live mode data directories");
 	const records = Array.isArray(snapshot.state.executions?.records) ? snapshot.state.executions.records : [];
 	const paperOrders = paperOrdersFromAccounts(snapshot.paperAccounts ?? []);
 	const duplicateSubmissions = countDuplicateSubmissions(records, paperOrders);
 	const lostUnresolvedRecords = countLostUnresolvedRecords(previousIds, records);
 	const unresolvedIds = unresolvedExecutionIds(records);
 	const healthy = duplicateSubmissions === 0 && lostUnresolvedRecords === 0 && activity !== "failed";
+	const at = new Date(now).toISOString();
 	return {
 		sample: {
-			at: new Date(now).toISOString(),
+			at,
 			duplicateSubmissions,
 			lostUnresolvedRecords,
 			unresolvedExecutions: unresolvedIds.length,
-			healthy: expectedFault ? false : healthy,
+			observedExecutions: records.length,
+			observedOrders: paperOrders.length,
+			healthy: fault ? false : healthy,
 			...(activity ? { activity } : {}),
-			...(expectedFault ? { expectedFault: true } : {}),
+			...(fault ? { expectedFault: true, fault: { ...fault, at } } : {}),
 		},
 		unresolvedIds,
 	};
@@ -175,16 +197,39 @@ export function appendSoakSample(report, sample) {
 	return report;
 }
 
-export function noteRestart(report) {
-	if (!record(report) || !Number.isSafeInteger(report.restartCount) || report.restartCount < 0) {
-		throw new Error("soak report restartCount is invalid");
+export function noteRestart(report, restart, at = new Date().toISOString()) {
+	if (
+		!record(report) ||
+		!Array.isArray(report.restartEvents) ||
+		!record(restart) ||
+		!SOAK_RESTART_TYPES.includes(restart.type) ||
+		!artifactReference(restart.observation) ||
+		timestamp(at) === undefined
+	) {
+		throw new Error("soak restart requires a controlled type, UTC time and SHA-256 observation reference");
 	}
-	report.restartCount += 1;
+	report.restartEvents.push({ ...restart, at });
+	report.restartCount = report.restartEvents.length;
 	return report.restartCount;
 }
 
+export function recordActivityBaseline(report, snapshot, now = Date.now()) {
+	if (!record(report?.activity) || report.activity.baseline !== null) {
+		throw new Error("soak activity baseline must be recorded exactly once");
+	}
+	const { sample } = inspectSoakSnapshot(snapshot, [], now);
+	report.activity.baseline = {
+		at: sample.at,
+		observedExecutions: sample.observedExecutions,
+		observedOrders: sample.observedOrders,
+	};
+	return report.activity.baseline;
+}
+
 export function recordActivityResult(report, succeeded, at = new Date().toISOString()) {
-	if (!record(report?.activity)) throw new Error("soak report activity counters are missing");
+	if (!record(report?.activity) || !record(report.activity.baseline)) {
+		throw new Error("soak report activity baseline is missing");
+	}
 	if (typeof succeeded !== "boolean" || !Number.isFinite(Date.parse(at))) {
 		throw new Error("soak activity result is invalid");
 	}
@@ -227,16 +272,21 @@ export function loadReport(path, revision, identity) {
 	if (!record(report) || report.kind !== "paper-soak" || report.revision !== revision) {
 		throw new Error("existing soak report does not match this candidate revision");
 	}
-	if (report.schemaVersion !== 2 || report.dataDirIdentity !== identity) {
+	if (report.schemaVersion !== 3 || report.dataDirIdentity !== identity) {
 		throw new Error("existing soak report does not match this data directory");
 	}
 	if (!record(report.collector)) report.collector = { unresolvedIds: [] };
-	if (!record(report.activity)) throw new Error("existing soak report is missing activity counters");
+	if (!record(report.activity) || !record(report.activity.baseline)) {
+		throw new Error("existing soak report is missing the activity baseline");
+	}
+	if (!Array.isArray(report.restartEvents) || report.restartEvents.length !== report.restartCount) {
+		throw new Error("existing soak report is missing structured restart evidence");
+	}
 	return report;
 }
 
 function parseArgs(args) {
-	const options = { intervalMs: DEFAULT_SAMPLE_INTERVAL_MS, expectedFault: false, complete: false };
+	const options = { intervalMs: DEFAULT_SAMPLE_INTERVAL_MS, complete: false };
 	for (let index = 0; index < args.length; index++) {
 		const arg = args[index];
 		const next = () => {
@@ -267,10 +317,16 @@ function parseArgs(args) {
 				options.activity = true;
 				break;
 			case "--note-restart":
-				options.noteRestart = true;
+				options.noteRestart = { type: next() };
+				break;
+			case "--restart-observation":
+				options.restartObservation = resolve(next());
 				break;
 			case "--expected-fault":
-				options.expectedFault = true;
+				options.expectedFault = { type: next() };
+				break;
+			case "--fault-observation":
+				options.faultObservation = resolve(next());
 				break;
 			case "--complete":
 				options.complete = true;
@@ -281,7 +337,7 @@ function parseArgs(args) {
 	}
 	if (!options.reportPath || !options.dataDir) {
 		throw new Error(
-			"Usage: node scripts/trading-paper-soak.mjs --report FILE --data-dir DIR [--install-dir DIR] [--interval-ms MS] [--once|--run] [--activity] [--note-restart] [--expected-fault] [--complete]",
+			"Usage: node scripts/trading-paper-soak.mjs --report FILE --data-dir DIR [--install-dir DIR] [--interval-ms MS] [--once|--run] [--activity] [--note-restart TYPE --restart-observation FILE] [--expected-fault TYPE --fault-observation FILE] [--complete]",
 		);
 	}
 	if (!Number.isFinite(options.intervalMs) || options.intervalMs <= 0 || options.intervalMs > MAXIMUM_SAMPLE_GAP_MS) {
@@ -289,15 +345,21 @@ function parseArgs(args) {
 	}
 	if (options.once && options.run) throw new Error("choose either --once or --run");
 	if (options.activity && !options.installDir) throw new Error("--activity requires --install-dir pointing at the isolated candidate install");
+	if (Boolean(options.noteRestart) !== Boolean(options.restartObservation)) {
+		throw new Error("--note-restart and --restart-observation must be provided together");
+	}
+	if (Boolean(options.expectedFault) !== Boolean(options.faultObservation)) {
+		throw new Error("--expected-fault and --fault-observation must be provided together");
+	}
 	return options;
 }
 
-function sampleReport(report, dataDir, expectedFault, activity, now = Date.now(), modeOverride) {
+function sampleReport(report, dataDir, fault, activity, now = Date.now()) {
 	const inspected = inspectSoakSnapshot(
-		loadSoakSnapshot(dataDir, modeOverride),
+		loadSoakSnapshot(dataDir),
 		report.collector.unresolvedIds,
 		now,
-		expectedFault,
+		fault,
 		activity,
 	);
 	appendSoakSample(report, inspected.sample);
@@ -333,25 +395,34 @@ async function main(args) {
 	const repo = fileURLToPath(new URL("../", import.meta.url));
 	const revision = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
 	mkdirSync(options.dataDir, { recursive: true });
+	mkdirSync(dirname(options.reportPath), { recursive: true });
 	const canonicalDataDir = realpathSync(options.dataDir);
 	const identity = dataDirIdentity(canonicalDataDir);
-	const configured = readJson(join(canonicalDataDir, "agent", "trading.json"));
-	if (options.activity && configured !== undefined && configured.mode !== "paper") {
-		throw new Error("Paper soak activity requires the candidate data directory to be configured for Paper mode");
-	}
 	const existing = existsSync(options.reportPath);
 	const report = loadReport(options.reportPath, revision, identity);
-	if (options.noteRestart || (options.run && existing)) noteRestart(report);
 	const persist = () => writeJson(options.reportPath, report);
+	if (options.run && existing && !options.noteRestart) {
+		throw new Error("resuming a soak run requires structured --note-restart evidence");
+	}
+	if (options.noteRestart) {
+		noteRestart(report, {
+			...options.noteRestart,
+			observation: createArtifactReference(options.restartObservation, dirname(options.reportPath)),
+		});
+	}
+	if (report.activity.baseline === null) {
+		recordActivityBaseline(report, loadSoakSnapshot(canonicalDataDir));
+	}
+	persist();
+	let pendingFault = options.expectedFault
+		? {
+				...options.expectedFault,
+				observation: createArtifactReference(options.faultObservation, dirname(options.reportPath)),
+			}
+		: undefined;
 	const sample = (activity, now) => {
-		const result = sampleReport(
-			report,
-			canonicalDataDir,
-			options.expectedFault,
-			activity,
-			now,
-			options.activity ? "paper" : undefined,
-		);
+		const result = sampleReport(report, canonicalDataDir, pendingFault, activity, now);
+		pendingFault = undefined;
 		persist();
 		return result;
 	};
