@@ -4,7 +4,6 @@ import { join } from "node:path";
 import {
 	acquireFileLock,
 	type ExecutionScope,
-	RiskLedger,
 	readJsonFile,
 	releaseFileLock,
 	superviseAccountRisk,
@@ -19,7 +18,7 @@ import {
 	monitoringScopeKey,
 	validateMonitoringScope,
 } from "../monitoring-state.ts";
-import { loadTradingConfig, loadTradingState, saveTradingState, transactTradingState } from "../state.ts";
+import { loadTradingConfig, loadTradingState } from "../state.ts";
 import { loadAutonomousConfig } from "./config.ts";
 import { ModelProcess } from "./model-process.ts";
 import { AutonomousRuntime, failureCode, withDeadline } from "./runtime.ts";
@@ -55,6 +54,8 @@ function readStatus(existing: DaemonManifest, state: AutonomousStore) {
 		control: current.control,
 		heartbeat: current.heartbeat,
 		pendingEvents: current.events.length,
+		coalescedEvents: current.coalescedEvents ?? 0,
+		droppedEvents: current.droppedEvents ?? 0,
 		currentDecision: current.decision,
 		wakes: findMonitoringScope(state.store.read(), existing.scope)?.triggers.filter((trigger) =>
 			current.triggerIds.includes(trigger.definition.id),
@@ -62,7 +63,6 @@ function readStatus(existing: DaemonManifest, state: AutonomousStore) {
 		lastDecision: current.summaries.at(-1),
 		failures: current.failures.slice(-10),
 		risk: risk.accountRisk,
-		userPause: risk[existing.scope.mode].newExposurePause,
 	};
 }
 
@@ -169,24 +169,15 @@ export async function autonomousCommand(
 		else output(JSON.stringify(status, null, 2));
 		return;
 	}
-	const config = loadTradingConfig(existing.scope.mode);
-	const risk = new RiskLedger(config, {
-		load: loadTradingState,
-		save: saveTradingState,
-		transact: transactTradingState,
-	});
 	if (command === "pause") {
-		risk.pauseNewExposure("User paused autonomous trading");
 		state.mutate((state) => {
 			state.control = "paused";
 		});
 		output(
-			"Model paused; new exposure blocked. Independent risk monitoring and existing protection remain active. No implicit cancellation or liquidation.",
+			"Model paused. Independent risk monitoring and existing protection remain active. No implicit cancellation or liquidation.",
 		);
 	} else if (command === "resume") {
 		if (!processExists(existing.pid)) throw new Error("Daemon is not running; start it before resuming");
-		const pause = risk.usage().newExposurePause;
-		if (pause) risk.resumeNewExposure(pause.id);
 		state.mutate((state) => {
 			state.control = "running";
 		});
@@ -248,6 +239,11 @@ export async function runDaemon(): Promise<void> {
 		const scope = trading.getExecutionScope();
 		if (expectedScope) assertAutonomousScope(expectedScope, scope);
 		const state = new AutonomousStore(createFileMonitoringStore(), scope);
+		// Construction no longer materializes persisted state, so create this scope before
+		// execution recovery reads it.
+		state.mutate((current) => {
+			current.heartbeat = Date.now();
+		});
 		const model = new ModelProcess(config, AGENT_DIR, new AutonomousTools(trading.tradingEngine, state, config));
 		const monitorEngine = monitor.tradingEngine;
 		runtime = new AutonomousRuntime({
@@ -274,8 +270,7 @@ export async function runDaemon(): Promise<void> {
 		const previous = state.read();
 		// An explicit stop can be restarted. A persisted pause is never cleared by startup.
 		state.mutate((state) => {
-			if (trading!.tradingEngine.risk.usage().newExposurePause) state.control = "paused";
-			else if (state.control === "stopped") state.control = "running";
+			if (state.control === "stopped") state.control = "running";
 			state.pid = process.pid;
 			state.heartbeat = Date.now();
 		});

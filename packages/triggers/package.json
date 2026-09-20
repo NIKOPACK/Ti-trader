@@ -1,6 +1,6 @@
 {
   "name": "@nikopack/ti-triggers",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Deterministic conditional trigger engine for Ti",
   "type": "module",
   "main": "./dist/index.js",

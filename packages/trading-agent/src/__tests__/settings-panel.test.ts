@@ -59,7 +59,6 @@ describe("trading settings interactions", () => {
 		f.panel.handleInput("Risk");
 		f.panel.handleInput("\r");
 		expect(f.panel.render(80).join("\n")).toContain("Read only");
-		f.panel.handleInput("\x1b[B");
 		f.panel.handleInput("\r");
 		f.panel.handleInput("\x05");
 		f.panel.handleInput("\x15");
@@ -73,7 +72,6 @@ describe("trading settings interactions", () => {
 		f.trading.patchConfig.mockRejectedValue(new Error("risk.maxOrderNotional must be positive"));
 		f.panel.handleInput("Risk");
 		f.panel.handleInput("\r");
-		f.panel.handleInput("\x1b[B");
 		f.panel.handleInput("\r");
 		f.panel.handleInput("\x05");
 		f.panel.handleInput("\x15");
@@ -92,7 +90,6 @@ describe("trading settings interactions", () => {
 		f.panel.handleInput("\x1b[B");
 		f.panel.handleInput("\x1b[B");
 		f.panel.handleInput("\x1b[B");
-		f.panel.handleInput("\x1b[B");
 		f.panel.handleInput("\r");
 		f.panel.handleInput("\x05");
 		f.panel.handleInput("\x15");
@@ -107,7 +104,6 @@ describe("trading settings interactions", () => {
 		const f = fixture();
 		f.panel.handleInput("Risk");
 		f.panel.handleInput("\r");
-		f.panel.handleInput("\x1b[B");
 		f.panel.handleInput("\r");
 		f.panel.handleInput("\x1b");
 		expect(f.trading.patchConfig).not.toHaveBeenCalled();

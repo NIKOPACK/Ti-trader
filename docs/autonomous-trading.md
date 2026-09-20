@@ -127,8 +127,8 @@ For source development, replace `ti` with:
 
 | Operation | Effect |
 | --- | --- |
-| `pause` | Persist a user new-exposure pause and stop model work. Independent risk supervision continues. No implicit blanket cancellation or liquidation. |
-| `resume` | Operator-only resume of model decisions and the captured user pause. Does not clear a loss trip, unknown order or unresolved account-setting change. |
+| `pause` | Stop model work. Independent risk supervision continues. No implicit blanket cancellation or liquidation. |
+| `resume` | Operator-only resume of model decisions. Does not clear a loss trip, unknown order or unresolved account-setting change. |
 | `stop` | Request termination of model work and the daemon. Does not cancel orders or close positions. An already-started submission can still complete. |
 | Model cancellation | Cancels a specified order through engine checks. Removing required protection is rejected. |
 | Model `close_position` | Verified full reduction; Paper atomically cancels matching protective orders and closes the position. It is not implied by `stop`. |

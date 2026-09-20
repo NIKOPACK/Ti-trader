@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { DurableWriteError } from "@nikopack/ti-trading-engine";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -93,6 +93,16 @@ afterEach(() => {
 });
 
 describe("durable monitoring state", () => {
+	it("skips the durable write when a transaction changes nothing", () => {
+		const { path, store } = fileStore();
+		store.transact(() => {});
+		expect(existsSync(path)).toBe(false);
+		seed(store);
+		expect(existsSync(path)).toBe(true);
+		const persisted = readFileSync(path, "utf8");
+		store.transact(() => {});
+		expect(readFileSync(path, "utf8")).toBe(persisted);
+	});
 	it("roundtrips scoped definitions, baselines, runtime state and guard cooldown", () => {
 		const { store, path } = fileStore();
 		seed(store);

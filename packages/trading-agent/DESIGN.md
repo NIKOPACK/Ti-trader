@@ -43,7 +43,7 @@ Ti 是一个 **AI 驱动的加密货币现货与 Binance USDⓈ-M 合约交易 a
 | 模块 | 功能 | 状态 |
 |---|---|---|
 | 交易工具 | 行情、账户、订单生命周期、下单预检、能力查询、候选市场、组合快照和风控，共 25 个 | ✅ |
-| 交易命令 | 余额、持仓、订单、市场、模式、交易所、市场类型、审批、风控（pause/resume/reconcile）、`/recovery` `/audit` `/health`、Paper、监控、实验性 `/trigger`、`/autonomous`、语言和交易所登录 | ✅ |
+| 交易命令 | 余额、持仓、订单、市场、模式、交易所、市场类型、审批、风控（reset/reconcile）、`/recovery` `/audit` `/health`、Paper、监控、实验性 `/trigger`、`/autonomous`、语言和交易所登录 | ✅ |
 | 交易引擎 | `@nikopack/ti-trading-engine`：ccxt 实盘客户端、模拟盘客户端、venue profile、规划、保护、执行日志和风控 | ✅ |
 | 模拟盘 | 真实行情撮合、手续费、均价成本、PnL、跨进程持久化；Paper 合约与现货同一套限价/条件单懒撮合 | ✅ |
 | 风控 | 单笔/单日名义限额、币种白名单、日计数持久化、未结算 reservation 对账、可选账户级硬风控 `risk.account` | ✅ |
@@ -180,7 +180,7 @@ live 模式的现货在交易历史完整且能与余额核对时返回手续费
 | `/approval [confirm\|unattended]` | 实盘订单审批 | 默认逐单确认；切到 `unattended` 需交互确认，之后 live 下单不再弹框 |
 | `/exchange [id]` | 查看/切换交易所 | ccxt 交易所 id，如 `okx` `bybit` |
 | `/market [type]` | 查看/切换市场类型 | `spot`、`usdm-futures` 或 `both`（`both` 仅 Paper） |
-| `/risk [show\|pause [reason]\|resume\|reset\|reconcile <id> commit\|release]` | 风控状态 | 限额、已用/预留额度、暂停新增敞口、未结算占用；限额与白名单也可在 `/settings` 编辑；`reset` 二次确认后手动清零（paper 额度为累计制）；`reconcile` 只结算没有执行记录的历史独立占用 |
+| `/risk [show\|reset\|reconcile <id> commit\|release]` | 风控状态 | 限额、已用/预留额度、未结算占用；限额与白名单也可在 `/settings` 编辑；`reset` 二次确认后手动清零（paper 额度为累计制）；`reconcile` 只结算没有执行记录的历史独立占用 |
 | `/recovery [run\|resolve …\|maintenance …]` | 执行对账 | 查看未决执行；有界只读对账，从不重发；人工确认后 commit/release |
 | `/audit` | 脱敏审计 | 有界执行与风控历史 |
 | `/health` | 本地健康 | 开仓阻断、未决计数、最近监控观测；不查询交易所 |
@@ -475,7 +475,7 @@ Paper 触发单按触发价成交、限价单按限价成交（与真实滑点�
 
 ## 13.10 执行日志与恢复
 
-提交前写入稳定执行 ID 与 client order/list ID；日志与额度占用同一事务。未知提交阻断同一数据目录的新增敞口，不能靠清除手动暂停或切模式绕过。`/recovery` 只做有界相关查询，从不重发。人工 `/recovery resolve` 必须先核实交易所终态。详见包 README「执行记录与重启对账」。
+提交前写入稳定执行 ID 与 client order/list ID；日志与额度占用同一事务。未知提交阻断同一数据目录的新增敞口，不能靠切模式绕过。`/recovery` 只做有界相关查询，从不重发。人工 `/recovery resolve` 必须先核实交易所终态。详见包 README「执行记录与重启对账」。
 
 ## 13.11 账户级硬风控
 

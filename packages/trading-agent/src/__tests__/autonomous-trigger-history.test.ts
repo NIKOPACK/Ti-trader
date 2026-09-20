@@ -126,6 +126,9 @@ describe("autonomous trigger history integration", () => {
 			},
 			() => NOW,
 		);
+		state.mutate((current) => {
+			current.control = "paused";
+		});
 		expect(() =>
 			state.schedule({
 				id: "side",

@@ -24,7 +24,7 @@ It is not a signal feed or a copy-trading bot. The default product is a human-co
 
 **Live is a door you open.** Binance spot and USDⓈ-M have the strongest adapter coverage. OKX and Bybit are experimental. Live defaults to per-order confirmation. Switching approval to `unattended` is an explicit, confirmed choice.
 
-**Risk is not a prompt.** Per-order and daily notional caps, a symbol allowlist, and a durable “pause new exposure” switch are enforced by the engine. Unknown submissions are never resent. Restarts reconcile; they do not silently restore entry.
+**Risk is not a prompt.** Per-order and daily notional caps and a symbol allowlist are enforced by the engine. Unknown submissions are never resent. Restarts reconcile; they do not silently restore entry.
 
 **Analysis does not fill.** Bundled market-lab indicators, screens and charts use this session's klines. An optional Freqtrade sidecar talks to a loopback webserver for backtests. None of these place orders.
 
@@ -72,7 +72,7 @@ State lives in `~/.ti-trader/agent/` (`trading.json`, `keys.json`, sessions); Pi
 | `/settings` | Language, mode, exchange, market, keys, risk, paper, monitor |
 | `/balance` `/positions` `/orders` `/trades` `/markets` | Account and market views |
 | `/mode` `/exchange` `/market` `/approval` | Runtime switches. Live needs keys. `unattended` needs confirmation |
-| `/risk pause` `/risk resume` | Block or restore **new** exposure. Resume is interactive |
+| `/risk` | Limits, used/reserved quota, legacy reservation reconcile |
 | `/recovery` `/audit` `/health` | Unresolved executions, redacted history, local admission health |
 | `/autonomous` | Control an explicit Paper autonomous daemon. Live startup is rejected |
 | `/exchange-login <id>` | Store exchange API keys |

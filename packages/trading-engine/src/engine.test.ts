@@ -161,63 +161,34 @@ const closeIntent: OrderIntent = {
 };
 
 describe("TradingEngine identity and reservations", () => {
-	it.each(["order", "oco"] as const)(
-		"rechecks a shared pause after %s confirmation and releases its claim",
-		async (kind) => {
-			const store = stateStore();
-			const exchange = client();
-			const submitOrder = vi.spyOn(exchange, "placeOrder");
-			const submitOco = vi.spyOn(exchange, "placeOcoOrder");
-			const trading = new TradingEngine(config, exchange, store);
-			const otherProcess = new TradingEngine(config, client(), store);
-			const orderPlan = await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
-			const ocoPlan = await trading.prepareOcoOrder({
-				symbol: "BTC/USDT",
-				side: "buy",
-				amount: 1,
-				stopLossPrice: 110,
-				takeProfitPrice: 90,
-			});
-			const confirm = async () => {
-				expect(trading.risk.usage().reserved).toBeGreaterThan(0);
-				otherProcess.risk.pauseNewExposure("Investigate exchange orders");
-				return true;
-			};
-			await expect(
-				kind === "order" ? trading.placeOrder(orderPlan, { confirm }) : trading.placeOco(ocoPlan, { confirm }),
-			).rejects.toThrow(/New exposure is paused/);
-			expect(submitOrder).not.toHaveBeenCalled();
-			expect(submitOco).not.toHaveBeenCalled();
-			expect(trading.risk.usage()).toMatchObject({
-				used: 0,
-				reserved: 0,
-				newExposurePause: { reason: "Investigate exchange orders" },
-			});
-			const pause = trading.risk.usage().newExposurePause;
-			if (!pause) throw new Error("Expected a persisted pause");
-			otherProcess.risk.resumeNewExposure(pause.id);
-			await (kind === "order" ? trading.placeOrder(orderPlan) : trading.placeOco(ocoPlan));
-			expect(submitOrder.mock.calls.length + submitOco.mock.calls.length).toBe(1);
-		},
-	);
-
-	it("does not read exchange state or ask for confirmation when entries are already paused", async () => {
+	it("does not read exchange state or ask for confirmation when unresolved executions already block entries", async () => {
+		const store = stateStore();
+		const other = new TradingEngine(
+			config,
+			client({
+				placeOrder: async () => {
+					throw new Error("network timeout");
+				},
+			}),
+			store,
+		);
+		await expect(
+			other.placeOrder(await other.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 })),
+		).rejects.toThrow(/unknown/);
 		const exchange = client();
-		const trading = new TradingEngine(config, exchange, stateStore());
+		const trading = new TradingEngine(config, exchange, store);
 		const plan = await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
 		const getBalances = vi.spyOn(exchange, "getBalances");
 		const submit = vi.spyOn(exchange, "placeOrder");
 		const confirm = vi.fn(async () => true);
-		trading.risk.pauseNewExposure("Manual pause");
 
-		await expect(trading.placeOrder(plan, { confirm })).rejects.toThrow(/Manual pause/);
+		await expect(trading.placeOrder(plan, { confirm })).rejects.toThrow(/unresolved executions/);
 		expect(getBalances).not.toHaveBeenCalled();
 		expect(confirm).not.toHaveBeenCalled();
 		expect(submit).not.toHaveBeenCalled();
-		expect(trading.risk.usage().reserved).toBe(0);
 	});
 
-	it("blocks submission if the final pause-state read fails", async () => {
+	it("blocks submission if the final admission-state read fails", async () => {
 		const store = stateStore();
 		const exchange = client();
 		const submit = vi.spyOn(exchange, "placeOrder");
@@ -237,14 +208,26 @@ describe("TradingEngine identity and reservations", () => {
 		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
 	});
 
-	it("keeps spot exits, protective OCOs and cancellations available while entries are paused", async () => {
+	it("keeps spot exits, protective OCOs and cancellations available while unresolved executions block entries", async () => {
+		const store = stateStore();
+		const other = new TradingEngine(
+			config,
+			client({
+				placeOrder: async () => {
+					throw new Error("network timeout");
+				},
+			}),
+			store,
+		);
+		await expect(
+			other.placeOrder(await other.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 })),
+		).rejects.toThrow(/unknown/);
 		const exchange = client();
 		const submit = vi.spyOn(exchange, "placeOrder");
 		const submitOco = vi.spyOn(exchange, "placeOcoOrder");
 		const cancel = vi.spyOn(exchange, "cancelOrder");
 		const cancelList = vi.spyOn(exchange, "cancelOrderList");
-		const trading = new TradingEngine(config, exchange, stateStore());
-		trading.risk.pauseNewExposure("Manual pause");
+		const trading = new TradingEngine(config, exchange, store);
 
 		await trading.placeOrder(await trading.prepareOrder("sell", { symbol: "BTC/USDT", type: "market", amount: 1 }));
 		await trading.placeOco(
@@ -262,29 +245,40 @@ describe("TradingEngine identity and reservations", () => {
 		expect(submitOco).toHaveBeenCalledOnce();
 		expect(cancel).toHaveBeenCalledOnce();
 		expect(cancelList).toHaveBeenCalledOnce();
-		expect(trading.risk.usage()).toMatchObject({
-			used: 0,
-			reserved: 0,
-			newExposurePause: { reason: "Manual pause" },
-		});
 	});
 
 	it("keeps validated futures reductions available while rejecting entries", async () => {
 		const symbol = "BTC/USDT:USDT";
-		const trading = makeFuturesEngine({
-			getPositions: async () => [{ symbol, asset: "BTC", amount: 1, positionSide: "LONG", quoteValue: 100 }],
+		const store = stateStore();
+		const market = {
+			getPositions: async () => [
+				{ symbol, asset: "BTC", amount: 1, positionSide: "LONG" as const, quoteValue: 100 },
+			],
 			getMarketInfo: async () => ({
 				symbol,
 				base: "BTC",
 				quote: "USDT",
-				marketType: "swap",
+				marketType: "swap" as const,
 				contract: true,
 				linear: true,
 				contractSize: 1,
 				active: true,
 			}),
-		});
-		trading.risk.pauseNewExposure("Manual pause");
+		};
+		const other = new TradingEngine(
+			futuresConfig,
+			client({
+				...market,
+				placeOrder: async () => {
+					throw new Error("network timeout");
+				},
+			}),
+			store,
+		);
+		await expect(
+			other.placeOrder(await other.prepareOrder("buy", { symbol, type: "market", amount: 1 })),
+		).rejects.toThrow(/unknown/);
+		const trading = new TradingEngine(futuresConfig, client(market), store);
 		await expect(
 			trading.placeOrder(
 				await trading.prepareOrder("sell", {
@@ -296,14 +290,8 @@ describe("TradingEngine identity and reservations", () => {
 			),
 		).resolves.toBeDefined();
 		await expect(
-			trading.placeOrder(
-				await trading.prepareOrder("buy", {
-					symbol,
-					type: "market",
-					amount: 1,
-				}),
-			),
-		).rejects.toThrow(/New exposure is paused/);
+			trading.placeOrder(await trading.prepareOrder("buy", { symbol, type: "market", amount: 1 })),
+		).rejects.toThrow(/unresolved executions/);
 	});
 
 	it("rejects a configuration whose identity differs from the attached client", () => {

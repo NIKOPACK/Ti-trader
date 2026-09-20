@@ -44,7 +44,12 @@ export interface AutonomousState {
 	events: AutonomousEvent[];
 	/** Exact receipts, retained independently of bounded diagnostic history. */
 	receipts: Record<string, true>;
+	/** Monotonic count of every event ever minted; never reset by receipt compaction. */
 	sequence: number;
+	/** Observation events folded into an already pending event of the same kind. */
+	coalescedEvents?: number;
+	/** Wake events that could not be queued; every loss is counted, never silent. */
+	droppedEvents?: number;
 	decision?: AutonomousDecision;
 	triggerIds: string[];
 	lastAccountFingerprint?: string;
@@ -102,7 +107,12 @@ export function validateAutonomousState(value: unknown): asserts value is Autono
 		typeof state.receipts !== "object" ||
 		Array.isArray(state.receipts) ||
 		Object.values(state.receipts).some((receipt) => receipt !== true) ||
-		Object.keys(state.receipts).length !== state.sequence ||
+		// `sequence` counts minted events forever, while receipts compact once an event is
+		// summarized. A receipt count above the minted count is the invalid direction.
+		state.sequence < Object.keys(state.receipts).length ||
+		(state.coalescedEvents !== undefined &&
+			(!Number.isSafeInteger(state.coalescedEvents) || state.coalescedEvents < 0)) ||
+		(state.droppedEvents !== undefined && (!Number.isSafeInteger(state.droppedEvents) || state.droppedEvents < 0)) ||
 		(state.heartbeat !== undefined && (!Number.isFinite(state.heartbeat) || state.heartbeat < 0)) ||
 		(state.pid !== undefined && (!Number.isSafeInteger(state.pid) || state.pid <= 0))
 	)
@@ -186,18 +196,58 @@ export function newAutonomousState(): AutonomousState {
 		events: [],
 		receipts: {},
 		sequence: 0,
+		coalescedEvents: 0,
+		droppedEvents: 0,
 		triggerIds: [],
 		summaries: [],
 		failures: [],
 	};
 }
 
-export function enqueueAutonomousEvent(state: AutonomousState, event: AutonomousEvent): void {
-	if (Object.hasOwn(state.receipts, event.id)) return;
-	if (state.events.length >= 256) throw new Error("Autonomous event backlog is full");
+export type EnqueueOutcome = "queued" | "duplicate" | "dropped";
+
+export function enqueueAutonomousEvent(state: AutonomousState, event: AutonomousEvent): EnqueueOutcome {
+	if (Object.hasOwn(state.receipts, event.id)) return "duplicate";
+	if (state.events.length >= 256) {
+		// A full backlog must never stop supervision or the decision loop: count the
+		// loss so operators can see it, then keep running.
+		state.droppedEvents = (state.droppedEvents ?? 0) + 1;
+		return "dropped";
+	}
 	Object.defineProperty(state.receipts, event.id, { value: true, enumerable: true, configurable: true });
 	state.events.push(event);
 	state.sequence++;
+	return "queued";
+}
+
+/**
+ * Position, fill and risk observations only report that authoritative facts changed;
+ * the model must re-query them either way. A newer observation supersedes an older
+ * pending one of the same kind, so a busy account folds into one pending wake
+ * instead of exhausting the backlog behind stale messages.
+ */
+export function noteObservationEvent(state: AutonomousState, event: AutonomousEvent): EnqueueOutcome {
+	const pending = state.events.find((candidate) => candidate.kind === event.kind);
+	if (!pending) return enqueueAutonomousEvent(state, event);
+	pending.at = event.at;
+	pending.message = event.message;
+	if (event.evidence !== undefined) pending.evidence = event.evidence;
+	state.coalescedEvents = (state.coalescedEvents ?? 0) + 1;
+	return "queued";
+}
+
+/**
+ * A receipt proves an event was observed exactly once. Once the event is consumed
+ * and summarized it is audit history rather than deduplication state, and keeping
+ * every historical receipt grows the persisted file and every durable write with
+ * it. Retain receipts only for events that can still be referenced.
+ */
+function compactReceipts(state: AutonomousState): void {
+	if (state.sequence === 0) return;
+	const retained = new Set<string>(state.events.map((event) => event.id));
+	if (state.decision) retained.add(state.decision.event.id);
+	for (const summary of state.summaries) retained.add(summary.eventId);
+	for (const id of Object.keys(state.receipts)) if (!retained.has(id)) delete state.receipts[id];
 }
 
 export class AutonomousStore {
@@ -208,7 +258,6 @@ export class AutonomousStore {
 		this.store = store;
 		this.scope = scope;
 		this.now = now;
-		this.mutate(() => {});
 	}
 	read(): AutonomousState {
 		const state = findMonitoringScope(this.store.read(), this.scope)?.autonomous;
@@ -230,6 +279,8 @@ export class AutonomousStore {
 	}
 	recordFailure(source: string, reason: string): void {
 		this.mutate((state) => {
+			// One durable write carries both the liveness heartbeat and the diagnostic.
+			state.heartbeat = this.now();
 			state.failures.push({ at: this.now(), source, reason });
 			state.failures = state.failures.slice(-100);
 		});
@@ -287,6 +338,11 @@ export class AutonomousStore {
 		});
 	}
 	beginDecision(): AutonomousDecision | undefined {
+		const current = this.read();
+		if (current.control !== "running") return undefined;
+		// Nothing pending and nothing retrying: a durable write would record no progress.
+		if (!current.decision && current.events.length === 0) return undefined;
+		if (current.decision && current.decision.nextAttemptAt > this.now()) return undefined;
 		return this.mutate((state) => {
 			if (state.control !== "running") return undefined;
 			if (!state.decision) {
@@ -327,6 +383,7 @@ export class AutonomousStore {
 			});
 			state.summaries = state.summaries.slice(-100);
 			delete state.decision;
+			compactReceipts(state);
 		});
 	}
 }

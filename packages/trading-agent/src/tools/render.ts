@@ -292,17 +292,6 @@ function summarize(tool: string, data: Fields, language: TradingLanguage): Line[
 				break;
 			case "get_risk_status": {
 				const usage = fields(data.usage);
-				field(
-					"riskEntries",
-					t(
-						language,
-						data.newExposurePaused === true
-							? "riskEntriesPaused"
-							: data.newExposurePaused === false
-								? "riskEntriesAllowed"
-								: "healthUnknown",
-					),
-				);
 				field("riskUsed", usage?.used, data.quoteCurrency);
 				field("riskMaxNotional", usage?.limit, data.quoteCurrency);
 				add(

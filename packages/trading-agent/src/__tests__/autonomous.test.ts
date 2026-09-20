@@ -7,8 +7,13 @@ import { parseTradingArgs } from "../args.ts";
 import { type AutonomousConfig, validateAutonomousConfig } from "../autonomous/config.ts";
 import { modelWorkerEnvironment, WORKER_FORCE_KILL_MS } from "../autonomous/model-process.ts";
 import { type AutonomousModel, AutonomousRuntime } from "../autonomous/runtime.ts";
-import { AutonomousStore } from "../autonomous/state.ts";
-import { createFileMonitoringStore, createMemoryMonitoringStore, type MonitoringScope } from "../monitoring-state.ts";
+import { AutonomousStore, enqueueAutonomousEvent } from "../autonomous/state.ts";
+import {
+	createFileMonitoringStore,
+	createMemoryMonitoringStore,
+	type MonitoringScope,
+	type MonitoringStore,
+} from "../monitoring-state.ts";
 
 const config: AutonomousConfig = {
 	enabled: true,
@@ -279,8 +284,8 @@ describe("headless autonomous runtime", () => {
 				{ ...scope, mode: "live" },
 				() => initialTime,
 			);
-			expect(live.read().decision).toBeUndefined();
-			expect(live.read().control).toBe("stopped");
+			// Constructing a store for another account no longer fabricates persisted state.
+			expect(() => live.read()).toThrow("Autonomous state missing");
 		} finally {
 			rmSync(directory, { recursive: true, force: true });
 		}
@@ -332,5 +337,134 @@ describe("headless autonomous runtime", () => {
 		expect(f.state.read().decision).toBeUndefined();
 		expect(f.state.read().summaries[0].outcome).toBe("failed");
 		await f.runtime.stop();
+	});
+	it("coalesces repeated observation events instead of exhausting the backlog", async () => {
+		vi.useFakeTimers();
+		let resolveModel: ((value: string) => void) | undefined;
+		const run = vi.fn(
+			() =>
+				new Promise<string>((resolve) => {
+					resolveModel = resolve;
+				}),
+		);
+		const f = fixture({
+			run,
+			stop: async () => {
+				resolveModel?.("aborted");
+			},
+		});
+		const report = (amount: number): RiskSupervisionReport => ({
+			at: initialTime,
+			reasons: [],
+			actions: [],
+			snapshot: {
+				source: "paper:fixture",
+				epoch: "one",
+				observedAt: initialTime,
+				oldestPriceAt: initialTime,
+				equity: 1000,
+				netExternalFlows: 1000,
+				marginUsed: 0,
+				positions: [{ symbol: "BTC/USDT", asset: "BTC", amount }],
+				orders: [],
+				prices: {},
+				limitations: [],
+			},
+		});
+		await f.runtime.initialize();
+		f.supervise.mockResolvedValue(report(1));
+		await f.runtime.tick();
+		expect(f.state.read().events).toHaveLength(0);
+		for (const amount of [2, 3, 4, 5]) {
+			f.supervise.mockResolvedValueOnce(report(amount));
+			f.advance(100);
+			await f.runtime.tick();
+		}
+		const read = f.state.read();
+		expect(read.events).toHaveLength(1);
+		expect(read.events[0].kind).toBe("position");
+		expect(read.coalescedEvents).toBe(2);
+		expect(run).toHaveBeenCalledTimes(1);
+		f.state.mutate((state) => {
+			state.control = "stopped";
+		});
+		await f.runtime.tick();
+		await f.runtime.stop();
+	});
+	it("counts dropped wake events instead of stopping supervision when the backlog is full", async () => {
+		const f = fixture();
+		await f.runtime.initialize();
+		f.state.mutate((state) => {
+			for (let index = 0; index < 256; index++)
+				enqueueAutonomousEvent(state, {
+					id: `backlog-${index}`,
+					kind: "timer",
+					at: initialTime,
+					message: "Queued",
+				});
+		});
+		expect(f.state.read().events).toHaveLength(256);
+		f.supervise.mockResolvedValueOnce({ at: initialTime, reasons: ["maxDailyLoss"], actions: [] });
+		await f.runtime.tick();
+		const read = f.state.read();
+		expect(read.droppedEvents).toBe(1);
+		expect(read.events.length).toBeLessThanOrEqual(256);
+		expect(read.control).toBe("running");
+		expect(f.block).not.toHaveBeenCalled();
+		expect(read.failures.at(-1)).toMatchObject({ source: "observation:risk", reason: "event-backlog-full" });
+		await f.runtime.stop();
+	});
+	it("compacts consumed receipts while the minted sequence stays monotonic", () => {
+		const store = new AutonomousStore(createMemoryMonitoringStore(), scope, () => initialTime);
+		store.mutate((state) => {
+			state.control = "running";
+		});
+		for (let index = 0; index < 120; index++) {
+			store.enqueue({ id: `event-${index}`, kind: "start", at: initialTime, message: "Act or wait" });
+			const decision = store.beginDecision();
+			expect(decision).toBeDefined();
+			store.finishDecision(decision!.id, "Waited", "completed");
+		}
+		const state = store.read();
+		expect(state.sequence).toBe(120);
+		expect(Object.keys(state.receipts).length).toBeLessThanOrEqual(101);
+		expect(state.summaries).toHaveLength(100);
+	});
+	it("persists one observation and one wake transaction per idle tick", async () => {
+		const directory = mkdtempSync(join(tmpdir(), "ti-autonomous-writes-"));
+		try {
+			const path = join(directory, "monitoring-state.json");
+			const inner = createFileMonitoringStore(path);
+			let transactions = 0;
+			const counting: MonitoringStore = {
+				read: inner.read,
+				transact: (operation) => {
+					transactions++;
+					return inner.transact(operation);
+				},
+			};
+			const state = new AutonomousStore(counting, scope, () => initialTime);
+			expect(transactions).toBe(0);
+			state.mutate((current) => {
+				current.control = "running";
+			});
+			const runtime = new AutonomousRuntime({
+				state,
+				config,
+				model: { run: vi.fn(async () => "Wait"), stop: vi.fn(async () => {}) },
+				supervise: async () => ({ at: initialTime, reasons: [], actions: [] }),
+				ticker: async () => ({ last: 100, timestamp: initialTime }),
+				block: vi.fn(),
+				recover: async () => {},
+				now: () => initialTime,
+			});
+			await runtime.initialize();
+			const started = transactions;
+			await runtime.tick();
+			expect(transactions - started).toBe(2);
+			await runtime.stop();
+		} finally {
+			rmSync(directory, { recursive: true, force: true });
+		}
 	});
 });

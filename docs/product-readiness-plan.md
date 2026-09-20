@@ -8,7 +8,7 @@ The plan prioritizes recoverable execution and clear operator controls over more
 
 | Milestone | Priority | Depends on | Deliverable | Status |
 | --- | --- | --- | --- | --- |
-| M1: Persistent entry pause | P0 | Existing atomic risk store | Durable pause, final admission check, explicit resume | Released in 0.1.9 |
+| M1: Persistent entry pause | P0 | Existing atomic risk store | Removed; leftover pause records are ignored | Withdrawn |
 | M2: Execution journal | P0 | M1 | Correlated, durable order intent and outcome records | Released in 0.1.9 / engine 0.2.0 |
 | M3: Restart reconciliation | P0 | M2 | Recover unresolved executions without resubmitting | Released in 0.1.9 |
 | M4: Supported capability matrix | P0 | Can run alongside M2; evidence required by M3 | One executable source of truth for supported combinations | Released; evidence is still offline-only |
@@ -19,26 +19,11 @@ The plan prioritizes recoverable execution and clear operator controls over more
 
 Completing M1–M6 does not authorize unattended live trading. M7–M8 are Paper-only until live adapters supply complete account-risk evidence.
 
-P0 work is required before expanding live use. P1 work is required before presenting the assistant as operationally mature. Completing M1 alone does not establish either claim.
+P0 work is required before expanding live use. P1 work is required before presenting the assistant as operationally mature.
 
 ## M1: Persistent entry pause
 
-**Scope:** `packages/trading-risk/src/risk.ts`, engine admission in `packages/trading-engine/src/engine.ts`, agent state, commands, settings, localization and risk-status tools.
-
-Implemented behavior:
-
-- `/risk pause [reason]` writes a pause immediately, without waiting for an active agent turn or querying the exchange.
-- Pause metadata contains a unique ID, reason and UTC timestamp. It shares the risk store and is scoped to Paper or live, not to one exchange or symbol.
-- Entry reservation checks the pause atomically. The engine rechecks after asynchronous confirmation and before starting submission, releasing a never-submitted claim on rejection.
-- `/risk resume` requires interactive human confirmation, the same runtime and pause ID, and no unsettled reservations in the current mode.
-- Quota resets, live midnight rollover, runtime replacement and restart preserve the pause. Validated exits and cancellations retain their existing rules.
-- `/risk show`, settings, startup warnings, the status bar and risk tools expose the control.
-
-Acceptance: persistence roundtrip and invalid-state rejection; shared-store pause during ordinary/OCO confirmation; no exchange submission on denial; claim returned; stale resume rejected; pending claims block resume; reductions and cancellations remain available; read/write failures surface explicitly.
-
-Boundaries: existing orders can still fill, already-started submissions cannot be recalled, and account-level leverage/margin changes are not blocked. This is not an exchange kill switch. All processes sharing the data directory must be upgraded or stopped before relying on pause metadata. Older writers may ignore or discard it.
-
-Operator procedure: [pause and resume](../packages/trading-agent/README.md#暂停新增敞口与恢复). Library contract: [risk pause API](../packages/trading-risk/README.md#persistent-new-exposure-pause).
+Withdrawn. `/risk pause` / `/risk resume` and `pauseNewExposure` are removed. Leftover `newExposurePause` records in stored state are ignored and dropped on the next risk write. Unresolved executions, quota, confirmation and account-risk admission remain.
 
 ## M2: Durable execution journal
 
@@ -53,7 +38,7 @@ Implemented in the engine journal and the runtime's combined durable store. Prep
 - Model at least prepared, submission-started, acknowledged, definite-rejection, unknown and reconciled outcomes. A started record without an acknowledgement remains unknown after restart.
 - Wire normal and OCO submissions through the same contract, including reducing orders that have no quota-counting claim.
 - Make journal writes and reservation changes recoverably correlated. Specify recovery for every write ordering before implementing it; two separate successful writes are not an atomic transaction.
-- If the pre-submit journal write fails, do not send. If a post-submit write fails, retain uncertainty, block new entries independently of the manual pause and expose a non-retryable operator error.
+- If the pre-submit journal write fails, do not send. If a post-submit write fails, retain uncertainty, block new entries and expose a non-retryable operator error.
 
 **Primary files:** new execution-record/store modules beside `engine.ts`; `ccxt-client.ts`, `ccxt-binance-spot.ts`, normalized adapter types; agent `state.ts`, runtime construction and order-result rendering. Final filenames follow the existing persistence boundaries.
 
@@ -67,7 +52,7 @@ Implemented with original-scope lookup, bounded attempts, confirmed manual resol
 
 **Implementation:**
 
-- On startup, enumerate unresolved records for their original account and exchange; pause entries before enabling submission.
+- On startup, enumerate unresolved records for their original account and exchange; block new entries before enabling submission.
 - Query by persisted client ID or native order/list ID using proven adapter capabilities. Never infer identity from coincidentally matching amount and time.
 - Reconcile fills, partial fills, cancellations, OCO legs and quota settlement idempotently.
 - Retry reads with bounded backoff. Unknown, unsupported, unavailable or conflicting evidence keeps the record unresolved and the entry gate closed.
@@ -112,7 +97,7 @@ Implemented in the scoped monitoring store and monitor extensions, with bilingua
 
 - Persist trigger definitions, scope, baseline/cursor, cooldown and last-delivery identity. Version and validate the schema.
 - Recover monitoring without treating a stale pre-restart observation as a fresh crossing. Define how missed intervals are handled; do not replay an unbounded backlog.
-- Record state changes, execution transitions, pause/resume and manual reconciliation in a bounded, redacted audit history.
+- Record state changes, execution transitions and manual reconciliation in a bounded, redacted audit history.
 - Expose exchange connectivity, observation age, polling failures, unresolved executions and active entry blocks through an operator health view.
 - Keep live trigger wakeups notification-only until separately reviewed. Persisted monitoring does not authorize autonomous trading.
 
@@ -126,10 +111,10 @@ Operator procedures are in the [operations runbook](trading-operations.md). The 
 
 **Implementation:**
 
-- Document installation, configuration, API permission limits, data backup/restore, upgrade/downgrade restrictions, emergency pause and manual reconciliation.
+- Document installation, configuration, API permission limits, data backup/restore, upgrade/downgrade restrictions, incident response and manual reconciliation.
 - Add a release checklist tying every supported capability to its evidence and open known limitations.
 - Make offline regression gates credential-independent. Keep explicitly authorized live/testnet exercises separate from normal CI.
-- Define rollback rules that preserve unresolved records and pauses. Never downgrade a shared-data-directory writer to a version that drops safety state.
+- Define rollback rules that preserve unresolved records. Never downgrade a shared-data-directory writer to a version that drops safety state.
 - Release risk, engine and agent in dependency order, with exact versions and maintainer authorization.
 
 **Acceptance:** all P0 acceptance cases pass, no unresolved critical execution defect, and operator recovery is reproducible from documented steps. A live pilot additionally requires the executable gate artifacts above and a separately approved account scope and notional cap.

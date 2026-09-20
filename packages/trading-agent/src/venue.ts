@@ -17,13 +17,11 @@ export interface TradingVenueInput {
 	exchangeId: string;
 	marketType: MarketType;
 	quoteCurrency: string;
-	paused?: boolean;
 	orderApproval?: OrderApprovalMode;
 }
 
 export interface TradingVenueStatus {
 	summary: string;
-	observations?: string;
 	tone: "muted" | "warning" | "error";
 	entryBlocked: boolean;
 	recoveryHint?: string;
@@ -37,16 +35,48 @@ function marketLabel(language: TradingLanguage, marketType: MarketType): string 
 
 export function formatTradingVenue(input: TradingVenueInput): TradingVenueDisplay {
 	const exchange = exchangeLabel(input.exchangeId, input.language);
-	const paused = input.paused ? `  ${t(input.language, "riskEntriesPaused")}` : "";
 	const approval =
 		input.mode === "live" && input.orderApproval
 			? `  ${orderApprovalLabel(input.language, input.orderApproval)}`
 			: "";
-	const identity = `${t(input.language, input.mode === "live" ? "venueLive" : "venuePaper")}  ${exchange}  ${marketLabel(input.language, input.marketType)}  ${input.quoteCurrency}${paused}${approval}`;
+	const identity = `${t(input.language, input.mode === "live" ? "venueLive" : "venuePaper")}  ${exchange}  ${marketLabel(input.language, input.marketType)}  ${input.quoteCurrency}${approval}`;
 	const source = translate(input.language, input.mode === "live" ? "venueLiveSource" : "venuePaperSource", {
 		exchange,
 	});
 	return { identity, source };
+}
+
+/** Live execution carries risk in its approval mode, not in the mode badge itself. */
+function modeColor(input: TradingVenueInput): "error" | "text" | "accent" {
+	if (input.mode === "paper") return "accent";
+	return input.orderApproval === "unattended" ? "error" : "text";
+}
+
+/** Paper fills are local, so the feed source carries information the identity row does not. */
+function paperSource(input: TradingVenueInput, theme: Pick<Theme, "fg" | "bold">): string | undefined {
+	return input.mode === "paper" ? theme.fg("muted", formatTradingVenue(input).source) : undefined;
+}
+
+function renderIdentity(input: TradingVenueInput, theme: Pick<Theme, "fg" | "bold">): string {
+	const mode = t(input.language, input.mode === "live" ? "venueLive" : "venuePaper");
+	const separator = theme.fg("dim", "  |  ");
+	const segments = [
+		theme.bold(theme.fg(modeColor(input), `[ ${mode} ]`)),
+		theme.fg("text", exchangeLabel(input.exchangeId, input.language)),
+		theme.fg("muted", `${marketLabel(input.language, input.marketType)}  ${input.quoteCurrency}`),
+	];
+	// Confirm is the default and safe; only unattended execution must stay visible.
+	if (input.mode === "live" && input.orderApproval === "unattended") {
+		segments.push(theme.fg("warning", orderApprovalLabel(input.language, input.orderApproval)));
+	}
+	return segments.join(separator);
+}
+
+/** Blocking state replaces the identity row content, so it needs its own single line. */
+function renderAlert(status: TradingVenueStatus, theme: Pick<Theme, "fg" | "bold">): string {
+	let alert = theme.fg(status.tone, `⚠ ${status.summary}`);
+	if (status.recoveryHint) alert += theme.fg("dim", `  ·  ${status.recoveryHint}`);
+	return `${alert}${theme.fg("muted", "  ·  /health")}`;
 }
 
 export function renderTradingVenue(
@@ -56,65 +86,39 @@ export function renderTradingVenue(
 	status?: TradingVenueStatus,
 ): string[] {
 	if (width <= 0) return [];
-	const mode = t(input.language, input.mode === "live" ? "venueLive" : "venuePaper");
-	const badge = theme.bold(theme.fg(input.mode === "live" ? "error" : "accent", `[ ${mode} ]`));
-	const pause = input.paused
-		? `  ${theme.bold(theme.fg("warning", `[ ${t(input.language, "riskEntriesPaused")} ]`))}`
-		: "";
-	const separator = theme.fg("dim", "  |  ");
-	const identity =
-		badge +
-		pause +
-		separator +
-		theme.fg("text", exchangeLabel(input.exchangeId, input.language)) +
-		separator +
-		theme.fg("muted", `${marketLabel(input.language, input.marketType)}  ${input.quoteCurrency}`) +
-		(input.mode === "live" && input.orderApproval
-			? separator +
-				theme.fg(
-					input.orderApproval === "unattended" ? "warning" : "muted",
-					orderApprovalLabel(input.language, input.orderApproval),
-				)
-			: "");
-	const source = theme.fg("muted", formatTradingVenue(input).source);
-	if (status) {
-		const pair = (left: string, right: string): string => {
-			const gap = width - 2 - visibleWidth(left) - visibleWidth(right);
-			return gap >= 2 ? `${left}${" ".repeat(gap)}${right}` : `${left}\n${right}`;
-		};
-		const blocked = status.entryBlocked || status.tone === "error";
-		const summary = theme.fg(blocked ? status.tone : "muted", status.summary);
-		const observations = status.observations && theme.fg(status.tone, status.observations);
-		const content = [
-			...(blocked ? [summary] : []),
-			...(!blocked && status.tone === "warning" && observations ? [observations] : []),
-			blocked ? pair(identity, source) : pair(identity, summary),
-			...(blocked
-				? observations
-					? [observations]
-					: []
-				: [status.tone === "muted" && observations ? pair(source, observations) : source]),
-			...(status.recoveryHint ? [theme.fg("warning", status.recoveryHint)] : []),
-		].join("\n");
-		return new Text(content, 1, 0).render(width).map((line) => truncateToWidth(line, width));
+	const identity = renderIdentity(input, theme);
+	const source = paperSource(input, theme);
+	const lines: string[] = [];
+	if (source) {
+		const gap = width - 2 - visibleWidth(identity) - visibleWidth(source);
+		if (gap >= 4) lines.push(`${identity}${" ".repeat(gap)}${source}`);
+		else lines.push(identity, source);
+	} else {
+		lines.push(identity);
 	}
-	const gap = width - 2 - visibleWidth(identity) - visibleWidth(source);
-	const content = gap >= 4 ? `${identity}${" ".repeat(gap)}${source}` : `${identity}\n${source}`;
-	return new Text(content, 1, 0).render(width).map((line) => truncateToWidth(line, width));
+	if (status && (status.entryBlocked || status.tone === "error")) {
+		lines.unshift(renderAlert(status, theme));
+	}
+	return new Text(lines.join("\n"), 1, 0).render(width).map((line) => truncateToWidth(line, width));
 }
 
 export function formatTradingStatus(input: TradingVenueInput, status: TradingVenueStatus): string[] {
-	const venue = formatTradingVenue(input);
-	const priority = status.entryBlocked || status.tone === "error";
-	return [
-		...(priority ? [status.summary] : []),
-		...(!priority && status.tone === "warning" && status.observations ? [status.observations] : []),
-		`${venue.identity}  ${priority ? venue.source : status.summary}`,
-		...(priority
-			? status.observations
-				? [status.observations]
-				: []
-			: [status.tone === "muted" && status.observations ? `${venue.source}  ${status.observations}` : venue.source]),
-		...(status.recoveryHint ? [status.recoveryHint] : []),
+	const lines: string[] = [];
+	if (status.entryBlocked || status.tone === "error") {
+		const hint = status.recoveryHint ? `  ·  ${status.recoveryHint}` : "";
+		lines.push(`⚠ ${status.summary}${hint}  ·  /health`);
+	}
+	const mode = t(input.language, input.mode === "live" ? "venueLive" : "venuePaper");
+	const segments = [
+		`[ ${mode} ]`,
+		exchangeLabel(input.exchangeId, input.language),
+		`${marketLabel(input.language, input.marketType)}  ${input.quoteCurrency}`,
 	];
+	if (input.mode === "live" && input.orderApproval === "unattended") {
+		segments.push(orderApprovalLabel(input.language, input.orderApproval));
+	}
+	const identity = segments.join("  ");
+	const source = input.mode === "paper" ? formatTradingVenue(input).source : undefined;
+	lines.push(source ? `${identity}  ${source}` : identity);
+	return lines;
 }

@@ -78,11 +78,7 @@ export function createAutonomousCommandExtension(dependencies?: AutonomousComman
 					const onStatus = (status: AutonomousStatus): void => {
 						const activeWakes = status.wakes?.filter((wake) => wake.state.status === "active") ?? [];
 						const risk = status.risk?.[accountRiskKey(current.scope)];
-						const blocks = [
-							...(status.userPause ? ["user-pause"] : []),
-							...(risk?.blockedReasons ?? []),
-							...(risk?.memory?.lossTrip ? ["lossTrip"] : []),
-						];
+						const blocks = [...(risk?.blockedReasons ?? []), ...(risk?.memory?.lossTrip ? ["lossTrip"] : [])];
 						show([
 							`${status.mode} | ${status.exchange} | ${status.marketType}`,
 							{

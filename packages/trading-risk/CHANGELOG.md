@@ -4,6 +4,12 @@ All notable changes to `@nikopack/ti-trading-risk` are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-20
+
+### Breaking Changes
+
+- Removed durable new-exposure pause (`pauseNewExposure`, `resumeNewExposure`, `usage().newExposurePause`, `isRiskNewExposurePause`). Leftover pause records in stored state are ignored and dropped on the next write. Historical `risk-pause` / `risk-resume` audit events still load.
+
 ### Added
 
 - Explicit account-wide exposure, leverage, margin, freshness, execution-price/liquidity and protection limits, with flow-adjusted loss/drawdown tracking and persistent hard-loss trips.

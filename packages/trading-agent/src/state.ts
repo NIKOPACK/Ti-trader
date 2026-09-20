@@ -5,11 +5,9 @@ import {
 	type ExecutionJournalState,
 	type FuturesMarginType,
 	type FuturesPositionMode,
-	isRiskNewExposurePause,
 	isTradingAuditState,
 	type MarketType,
 	type RiskLimits,
-	type RiskNewExposurePause,
 	type TradingAuditState,
 	type TradingMode,
 	validateAccountRiskLimits,
@@ -392,8 +390,6 @@ export interface RiskUsageState {
 	reservedDailyNotional?: number;
 	/** In-flight claims keyed by reservation id. Must round-trip with the risk ledger. */
 	reservations?: Record<string, RiskReservationRecord>;
-	/** Shared by every same-mode runtime using this state file. */
-	newExposurePause?: RiskNewExposurePause;
 	executionBlocks?: Record<string, true>;
 }
 
@@ -526,8 +522,7 @@ function isRiskUsageState(value: unknown): value is RiskUsageState {
 				!Array.isArray(candidate.executionBlocks) &&
 				Object.entries(candidate.executionBlocks).every(
 					([id, blocked]) => /^[A-Za-z0-9_-]{1,80}$/.test(id) && blocked === true,
-				))) &&
-		(candidate.newExposurePause === undefined || isRiskNewExposurePause(candidate.newExposurePause))
+				)))
 	);
 }
 

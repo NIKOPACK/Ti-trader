@@ -586,6 +586,7 @@ describe("InteractiveMode.showLoadedResources", () => {
 	function createShowLoadedResourcesThis(options: {
 		quietStartup: boolean;
 		verbose?: boolean;
+		showStartupResources?: boolean;
 		toolOutputExpanded?: boolean;
 		cwd?: string;
 		contextFiles?: Array<{ path: string; content?: string }>;
@@ -598,7 +599,10 @@ describe("InteractiveMode.showLoadedResources", () => {
 		useRealScopeGroups?: boolean;
 	}) {
 		const fakeThis: any = {
-			options: { verbose: options.verbose ?? false },
+			options: {
+				verbose: options.verbose ?? false,
+				showStartupResources: options.showStartupResources,
+			},
 			toolOutputExpanded: options.toolOutputExpanded ?? false,
 			loadedResourcesContainer: new Container(),
 			chatContainer: new Container(),
@@ -1305,6 +1309,41 @@ describe("InteractiveMode.showLoadedResources", () => {
 		expect(output).toContain("~/.pi/agent/AGENTS.md");
 		expect(output).toContain("~/Development/pi-mono/AGENTS.md");
 		expect(output).not.toContain("~/.pi/agent/AGENTS.md, AGENTS.md");
+	});
+
+	test("omits Skills and Extensions when showStartupResources is false", () => {
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			showStartupResources: false,
+			skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+			extensions: [{ path: "/tmp/extensions/answer.ts" }],
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+		});
+
+		const output = renderAll(fakeThis.loadedResourcesContainer);
+		expect(output).not.toContain("[Skills]");
+		expect(output).not.toContain("[Extensions]");
+		expect(output).not.toContain("commit");
+	});
+
+	test("verbose still lists resources when showStartupResources is false", () => {
+		const fakeThis = createShowLoadedResourcesThis({
+			quietStartup: false,
+			verbose: true,
+			showStartupResources: false,
+			skills: [{ filePath: "/tmp/skill/SKILL.md", name: "commit" }],
+		});
+
+		(InteractiveMode as any).prototype.showLoadedResources.call(fakeThis, {
+			force: false,
+		});
+
+		const output = renderAll(fakeThis.loadedResourcesContainer);
+		expect(output).toContain("[Skills]");
+		expect(output).toContain("resource-list");
 	});
 
 	test("does not show verbose listing on quiet startup during reload", () => {

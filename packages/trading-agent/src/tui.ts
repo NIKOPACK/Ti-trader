@@ -4,7 +4,13 @@ import { type MenuKey, t } from "./i18n.ts";
 import type { TradingLanguage } from "./state.ts";
 
 const TI_STEM = "    ██     ██";
-const TI_LOGO = [" ████████  ██", TI_STEM, TI_STEM, TI_STEM];
+const TI_LOGO = [" ████████  ██", TI_STEM, TI_STEM, TI_STEM] as const;
+const LOGO_GAP = "   ";
+const WORDMARK_GRAY = "\x1b[38;2;128;128;128m";
+
+function paintGray(text: string): string {
+	return `${WORDMARK_GRAY}${text}\x1b[39m`;
+}
 
 const EXPANDED_SHORTCUTS = [
 	["app.interrupt", "headerInterrupt"],
@@ -23,6 +29,22 @@ const EXPANDED_SHORTCUTS = [
 	["app.message.dequeue", "headerDequeue"],
 	["app.clipboard.pasteImage", "headerPasteImage"],
 ] as const satisfies ReadonlyArray<readonly [string, MenuKey]>;
+
+function wrapItems(items: readonly string[], separator: string, width: number): string[] {
+	const lines: string[] = [];
+	let row = "";
+	for (const item of items) {
+		const next = row ? row + separator + item : item;
+		if (row && visibleWidth(next) > width) {
+			lines.push(row);
+			row = item;
+		} else {
+			row = next;
+		}
+	}
+	if (row) lines.push(row);
+	return lines;
+}
 
 export class TradingHeader implements Component {
 	private expanded = false;
@@ -47,20 +69,23 @@ export class TradingHeader implements Component {
 	render(width: number): string[] {
 		if (width <= 0) return [];
 		const { language, theme } = this.getAppearance();
-		const separator = "   ";
-		const title = theme.bold(theme.fg("accent", "Ti")) + theme.fg("muted", `  v${this.version}`);
-		const commands = ["/settings", "/model", "/health"].map((command) => theme.fg("text", command)).join(separator);
-		const details = [title, theme.fg("muted", t(language, "headerWorkspace")), "", commands];
-		const lines =
-			width >= 64
-				? TI_LOGO.map((line, index) => {
-						const detail = details[index];
-						return detail ? `${theme.fg("muted", line)}   ${detail}` : theme.fg("muted", line);
-					})
-				: [title, theme.fg("muted", t(language, "headerWorkspace")), commands];
+		const separator = theme.fg("dim", "  ·  ");
+		const title =
+			theme.bold(paintGray("Ti")) +
+			theme.fg("muted", `  v${this.version}`) +
+			separator +
+			theme.fg("muted", t(language, "headerWorkspace"));
 		const hint = (key: string, description: string) => `${theme.fg("text", key)} ${theme.fg("muted", description)}`;
-		const clearKey = keyText("app.clear");
+		const contentWidth = Math.max(1, width - 2);
+		const showLogo = width >= 64;
+		const lines = showLogo
+			? TI_LOGO.map((line, index) => {
+					const mark = paintGray(line);
+					return index === 0 ? `${mark}${LOGO_GAP}${title}` : mark;
+				})
+			: [title];
 		if (this.expanded) {
+			const clearKey = keyText("app.clear");
 			lines.push(
 				"",
 				...EXPANDED_SHORTCUTS.map(([action, label]) => hint(keyText(action), t(language, label))),
@@ -69,22 +94,17 @@ export class TradingHeader implements Component {
 				hint(t(language, "headerDropFiles"), t(language, "headerAttach")),
 			);
 		} else {
-			const hints = [
-				hint("/", t(language, "headerCommands")),
-				hint(keyText("app.interrupt"), t(language, "headerInterrupt")),
-				hint(`${clearKey}/${keyText("app.exit")}`, t(language, "headerClearExit")),
-				hint(keyText("app.tools.expand"), t(language, "headerMore")),
-			];
-			let row = "";
-			for (const item of hints) {
-				if (row && visibleWidth(row + separator + item) > width - 2) {
-					lines.push(row);
-					row = item;
-				} else {
-					row = row ? row + separator + item : item;
-				}
-			}
-			lines.push(row);
+			lines.push(
+				...wrapItems(
+					[
+						hint("/", t(language, "headerCommands")),
+						hint(keyText("app.interrupt"), t(language, "headerInterrupt")),
+						hint(keyText("app.tools.expand"), t(language, "headerMore")),
+					],
+					separator,
+					contentWidth,
+				),
+			);
 		}
 		return new Text(lines.join("\n"), 1, 0).render(width).map((line) => truncateToWidth(line, width));
 	}

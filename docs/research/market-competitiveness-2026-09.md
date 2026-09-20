@@ -25,7 +25,7 @@ Ti 选的是「人确认的交易助手，不是无人值守赚钱服务」（�
 | 形态 | 独立 CLI + TUI。命令 `ti`。默认 paper。live 默认逐单确认 |
 | 执行 | 25 个原生交易工具；`buy`/`sell` 是一等工具，不是 shell 包装 |
 | 安全切面 | 编码工具全部禁用（`noTools: "builtin"`）；密钥本机 `600` |
-| 风控 | 单笔/每日名义额、白名单、持久化开仓暂停、未知提交不重发 |
+| 风控 | 单笔/每日名义额、白名单、未知提交不重发 |
 | 恢复 | 执行记录、启动有界对账、`/recovery` `/audit` `/health` |
 | 能力诚实 | `supported` / `unsupported` / `unknown` 分开；除 Paper 与 Binance 离线契约外，其他交易所标 experimental |
 | 未做 | 正式回测、cron 无人值守、Web UI、MCP server |

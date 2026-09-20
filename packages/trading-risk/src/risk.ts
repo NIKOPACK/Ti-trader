@@ -156,12 +156,6 @@ export function appendTradingAuditEvent(
 	state.audit = audit;
 }
 
-export interface RiskNewExposurePause {
-	id: string;
-	reason: string;
-	pausedAt: string;
-}
-
 export interface RiskUsageState {
 	date: string;
 	usedDailyNotional: number;
@@ -169,7 +163,6 @@ export interface RiskUsageState {
 	reservedDailyNotional?: number;
 	/** Claims are keyed by their stable reservation id. */
 	reservations?: Record<string, RiskReservationState>;
-	newExposurePause?: RiskNewExposurePause;
 	/** Execution journal records, including exits, that must be reconciled before new entries. */
 	executionBlocks?: Record<string, true>;
 }
@@ -292,20 +285,6 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-export function isRiskNewExposurePause(value: unknown): value is RiskNewExposurePause {
-	return (
-		isRecord(value) &&
-		typeof value.id === "string" &&
-		value.id.trim() !== "" &&
-		typeof value.reason === "string" &&
-		value.reason.trim() !== "" &&
-		value.reason.length <= 500 &&
-		typeof value.pausedAt === "string" &&
-		Number.isFinite(Date.parse(value.pausedAt)) &&
-		new Date(value.pausedAt).toISOString() === value.pausedAt
-	);
-}
-
 function cloneReservation(reservation: RiskReservationState): RiskReservationState {
 	return { ...reservation };
 }
@@ -324,7 +303,6 @@ function cloneUsage(usage: RiskUsageState): RiskUsageState {
 		...usage,
 		reservations: cloneReservations(usage.reservations),
 		...(usage.executionBlocks === undefined ? {} : { executionBlocks: { ...usage.executionBlocks } }),
-		...(usage.newExposurePause === undefined ? {} : { newExposurePause: { ...usage.newExposurePause } }),
 	};
 }
 
@@ -413,16 +391,6 @@ function normalizedUsage(usage: unknown, mode: TradingMode): RiskUsageState {
 	if (typeof usage.date !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(usage.date)) {
 		throw stateError(`Invalid ${mode} risk usage date`);
 	}
-	let newExposurePause: RiskNewExposurePause | undefined;
-	if (usage.newExposurePause !== undefined) {
-		const pause = usage.newExposurePause;
-		if (!isRiskNewExposurePause(pause)) {
-			throw stateError(
-				`${mode}.newExposurePause must contain an id, a 1 to 500 character reason and an ISO UTC timestamp`,
-			);
-		}
-		newExposurePause = { id: pause.id, reason: pause.reason, pausedAt: pause.pausedAt };
-	}
 	const used = finiteNonNegative(usage.usedDailyNotional, `${mode}.usedDailyNotional`);
 	if (
 		usage.executionBlocks !== undefined &&
@@ -466,7 +434,6 @@ function normalizedUsage(usage: unknown, mode: TradingMode): RiskUsageState {
 		usedDailyNotional: used,
 		reservedDailyNotional: sum,
 		reservations,
-		...(newExposurePause === undefined ? {} : { newExposurePause }),
 		...(usage.executionBlocks === undefined
 			? {}
 			: { executionBlocks: { ...(usage.executionBlocks as Record<string, true>) } }),
@@ -597,52 +564,14 @@ export class RiskLedger {
 		this.config = next;
 	}
 
-	pauseNewExposure(reason: string): RiskNewExposurePause {
-		if (typeof reason !== "string" || reason.trim() === "" || reason.trim().length > 500) {
-			throw new Error("New exposure pause reason must contain 1 to 500 characters");
-		}
-		return this.transact((state) => {
-			const now = this.clock.now();
-			if (!(now instanceof Date) || Number.isNaN(now.getTime())) {
-				throw new Error("Risk clock returned an invalid date");
-			}
-			const pause = { id: randomUUID(), reason: reason.trim(), pausedAt: now.toISOString() };
-			state[this.config.mode].newExposurePause = pause;
-			appendTradingAuditEvent(state, { kind: "risk-pause", mode: this.config.mode }, now.toISOString());
-			return { ...pause };
-		});
-	}
-
-	resumeNewExposure(pauseId: string): void {
-		if (typeof pauseId !== "string" || pauseId.trim() === "") {
-			throw new Error("New exposure pause id must be a non-empty string");
-		}
-		this.transact((state) => {
-			const usage = state[this.config.mode];
-			const pause = usage.newExposurePause;
-			if (pause === undefined) throw new Error("New exposure is not paused");
-			if (pause.id !== pauseId) throw new Error("New exposure pause id does not match the current pause");
-			if (Object.keys(usage.executionBlocks ?? {}).length > 0)
-				throw new Error("Cannot resume with unresolved executions; use /recovery");
-			if (Object.keys(usage.reservations ?? {}).length > 0 || (usage.reservedDailyNotional ?? 0) > 0) {
-				throw new Error("Cannot resume new exposure while reservations are in flight; reconcile them first");
-			}
-			delete usage.newExposurePause;
-			appendTradingAuditEvent(state, { kind: "risk-resume", mode: this.config.mode });
-		});
-	}
-
 	assertNewExposureAllowed(exceptExecutionId?: string): void {
 		const state = this.loadLatest();
-		const usage = state[this.config.mode];
 		if (
 			[state.paper, state.live].some((entry) =>
 				Object.keys(entry.executionBlocks ?? {}).some((id) => id !== exceptExecutionId),
 			)
 		)
 			throw new Error("New exposure is blocked by unresolved executions; use /recovery");
-		const pause = usage.newExposurePause;
-		if (pause !== undefined) throw new Error(`New exposure is paused: ${pause.reason}`);
 	}
 
 	check(symbol: string, notional: number, options: { countTowardsDailyLimit?: boolean } = {}): string | null {
@@ -657,7 +586,6 @@ export class RiskLedger {
 		const usage = state[mode];
 		if ([state.paper, state.live].some((entry) => Object.keys(entry.executionBlocks ?? {}).length > 0))
 			return "New exposure is blocked by unresolved executions; use /recovery";
-		if (usage.newExposurePause !== undefined) return `New exposure is paused: ${usage.newExposurePause.reason}`;
 		const total = addition(
 			addition(usage.usedDailyNotional, usage.reservedDailyNotional ?? 0, "risk daily usage"),
 			notional,
@@ -686,9 +614,6 @@ export class RiskLedger {
 				const usage = state[mode];
 				if ([state.paper, state.live].some((entry) => Object.keys(entry.executionBlocks ?? {}).length > 0))
 					throw new Error("New exposure is blocked by unresolved executions; use /recovery");
-				if (usage.newExposurePause !== undefined) {
-					throw new Error(`Risk limit: New exposure is paused: ${usage.newExposurePause.reason}`);
-				}
 				const reserved = usage.reservedDailyNotional ?? 0;
 				const total = addition(
 					addition(usage.usedDailyNotional, reserved, "risk daily usage"),
@@ -812,7 +737,6 @@ export class RiskLedger {
 		reserved: number;
 		limit: number;
 		resetPolicy: "daily-auto" | "manual";
-		newExposurePause?: RiskNewExposurePause;
 	} {
 		const mode = this.config.mode;
 		this.refresh(mode);
@@ -823,7 +747,6 @@ export class RiskLedger {
 			reserved: usage.reservedDailyNotional ?? 0,
 			limit: this.config.risk.maxDailyNotional,
 			resetPolicy: mode === "paper" ? "manual" : "daily-auto",
-			newExposurePause: usage.newExposurePause === undefined ? undefined : { ...usage.newExposurePause },
 		};
 	}
 

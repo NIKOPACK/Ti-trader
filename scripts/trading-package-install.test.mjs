@@ -75,12 +75,12 @@ test("rejects a workspace-linked install and accepts exact packed versions", () 
 	assert.equal(realpathSync(inspectInstalledVersions(installDir).paths.agent), realpathSync(repoPackage));
 });
 
-test("requires every install check, including restart recovery of the probe pause", () => {
+test("requires every install check, including restart recovery of the probe reservation", () => {
 	const versions = { risk: "0.2.0", engine: "0.3.0", agent: "0.1.10" };
-	const pauseId = "pause-1";
+	const reservationId = "res-1";
 	assert.deepEqual(evaluateInstallChecks({
 		versions, cleanInstall: true, cliVersion: "0.1.10", isolatedDataDir: true, homeLeak: false,
-		mode: "paper", restartMode: "paper", pauseId, restartPauseId: pauseId, restartReason: "package-install-probe",
+		mode: "paper", restartMode: "paper", reservationId, restartReservationId: reservationId, restartReason: "package-install-probe",
 		continuityAfterRestart: true, evidenceTools: true,
 	}), {
 		passed: true,
@@ -89,12 +89,12 @@ test("requires every install check, including restart recovery of the probe paus
 	});
 	assert.equal(evaluateInstallChecks({
 		versions, cleanInstall: true, cliVersion: "0.1.10", isolatedDataDir: true, homeLeak: false,
-		mode: "paper", restartMode: "paper", pauseId, restartPauseId: "other", restartReason: "package-install-probe",
+		mode: "paper", restartMode: "paper", reservationId, restartReservationId: "other", restartReason: "package-install-probe",
 		continuityAfterRestart: true, evidenceTools: true,
 	}).passed, false);
 	assert.equal(evaluateInstallChecks({
 		versions, cleanInstall: true, cliVersion: "0.1.9", isolatedDataDir: true, homeLeak: false,
-		mode: "paper", restartMode: "paper", pauseId, restartPauseId: pauseId, restartReason: "package-install-probe",
+		mode: "paper", restartMode: "paper", reservationId, restartReservationId: reservationId, restartReason: "package-install-probe",
 		continuityAfterRestart: true, evidenceTools: true,
 	}).passed, false);
 });
@@ -105,7 +105,7 @@ for (const key of ["continuityAfterRestart", "evidenceTools"]) {
 			const observation = {
 				versions: { agent: "0.1.10" }, cleanInstall: true, cliVersion: "0.1.10",
 				isolatedDataDir: true, homeLeak: false, mode: "paper", restartMode: "paper",
-				pauseId: "pause-1", restartPauseId: "pause-1", restartReason: "package-install-probe",
+				reservationId: "res-1", restartReservationId: "res-1", restartReason: "package-install-probe",
 				continuityAfterRestart: true, evidenceTools: true,
 			};
 			if (value === undefined) delete observation[key];
@@ -236,12 +236,14 @@ export async function initTrading() {
 		tradingEngine: {
 			getExecutionScope: () => scope,
 			risk: {
-				pauseNewExposure(reason) {
-					const pause = { id: "fixture-pause", reason };
-					writeFileSync(pausePath, JSON.stringify(pause));
-					return pause;
+				reserve(_symbol, _notional) {
+					const reservation = { id: "fixture-pause" };
+					writeFileSync(pausePath, JSON.stringify(reservation));
+					return reservation;
 				},
-				usage: () => ({ newExposurePause: JSON.parse(readFileSync(pausePath, "utf8")) }),
+				listPendingReservations() {
+					return [JSON.parse(readFileSync(pausePath, "utf8"))];
+				},
 			},
 		},
 		async close() { writeFileSync(join(dir, "fixture-closed-" + process.argv[2]), "closed"); },
@@ -295,7 +297,7 @@ test("probe fixture saves and reopens research across two exited processes witho
 	const reopened = JSON.parse(second.stdout);
 	assert.equal(reopened.continuityAfterRestart, true);
 	assert.equal(reopened.evidenceTools, true);
-	assert.equal(reopened.pauseId, written.pauseId);
+	assert.equal(reopened.reservationId, written.reservationId);
 	assert.equal(reopened.reason, "package-install-probe");
 	assert.deepEqual(reopened.continuity, written.continuity);
 	assert.equal(readFileSync(fixture.statePath, "utf8"), before);

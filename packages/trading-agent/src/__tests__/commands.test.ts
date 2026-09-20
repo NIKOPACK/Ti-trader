@@ -1,7 +1,7 @@
 import { stripVTControlCharacters } from "node:util";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type Component, ProcessTerminal, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
-import type { ExecutionMaintenance, ExecutionRecord, RiskNewExposurePause } from "@nikopack/ti-trading-engine";
+import type { ExecutionMaintenance, ExecutionRecord } from "@nikopack/ti-trading-engine";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { createOperationalHealthExtension } from "../health.ts";
 import * as monitoringState from "../monitoring-state.ts";
@@ -87,14 +87,7 @@ const trading = vi.hoisted(() => ({
 				limit: 2000,
 				date: "2026-01-01",
 				resetPolicy: "manual" as const,
-				newExposurePause: undefined as RiskNewExposurePause | undefined,
 			})),
-			pauseNewExposure: vi.fn((reason: string) => ({
-				id: "pause-1",
-				reason,
-				pausedAt: "2026-01-01T00:00:00.000Z",
-			})),
-			resumeNewExposure: vi.fn((_id: string) => {}),
 			reset: vi.fn(),
 			listPendingReservations: vi.fn(() => [
 				{ id: "res-1", mode: "paper" as const, symbol: "BTC/USDT", notional: 100 },
@@ -173,7 +166,6 @@ describe("trading commands", () => {
 			limit: 2000,
 			date: "2026-01-01",
 			resetPolicy: "manual",
-			newExposurePause: undefined,
 		});
 		trading.tradingEngine.listExecutions.mockReturnValue([]);
 		trading.tradingEngine.getExecutionStatus.mockReturnValue({ maintenance: undefined });
@@ -245,8 +237,8 @@ describe("trading commands", () => {
 		expect(ctx.ui.setWidget).toHaveBeenCalledWith(
 			"trading-status",
 			expect.arrayContaining([
-				"PAPER  OKX  Spot  USDT  market data: OKX public",
-				"Entry blocks: unsettled risk reservations",
+				"⚠ Entry blocks: unsettled risk reservations  ·  Inspect /recovery; do not resubmit orders.  ·  /health",
+				"[ PAPER ]  OKX  Spot  USDT  market data: OKX public",
 			]),
 		);
 	});
@@ -283,23 +275,6 @@ describe("trading commands", () => {
 		expect(ctx.ui.setWidget).toHaveBeenCalledTimes(2);
 		expect(vi.getTimerCount()).toBe(1);
 		await shutdownHandler?.({ reason: "reload" });
-	});
-
-	it("renders a pause immediately, without waiting for the refresh timer or active turn", async () => {
-		const ctx = { ...commandContext(false), mode: "rpc" as const };
-		const commands = registerCommands();
-		for (const handler of sessionStartHandlers) await handler({}, ctx);
-		const usage = trading.tradingEngine.risk.usage();
-		trading.tradingEngine.risk.pauseNewExposure.mockImplementationOnce((reason) => {
-			const pause = { id: "pause-now", reason, pausedAt: new Date().toISOString() };
-			trading.tradingEngine.risk.usage.mockReturnValue({ ...usage, newExposurePause: pause });
-			return pause;
-		});
-		await commands.get("risk")!.handler("pause Inspect orders", ctx);
-		const latest = vi.mocked(ctx.ui.setWidget).mock.calls.at(-1)?.[1];
-		expect(JSON.stringify(latest)).toContain("PAUSED");
-		expect(ctx.waitForIdle).not.toHaveBeenCalled();
-		expect(ctx.ui.confirm).not.toHaveBeenCalled();
 	});
 
 	it("does not install a venue component in headless mode", async () => {
@@ -417,104 +392,12 @@ describe("trading commands", () => {
 		]);
 	});
 
-	it("pauses immediately without waiting for the active agent turn or asking for confirmation", async () => {
-		const command = registerCommands().get("risk")!;
-		const ctx = commandContext(false);
-		await command.handler("pause Investigate exchange orders", ctx);
-		expect(trading.tradingEngine.risk.pauseNewExposure).toHaveBeenCalledWith("Investigate exchange orders");
-		expect(ctx.waitForIdle).not.toHaveBeenCalled();
-		expect(ctx.ui.confirm).not.toHaveBeenCalled();
-		expect(ctx.ui.notify).toHaveBeenCalledWith(
-			expect.stringContaining("Existing orders are not cancelled"),
-			"warning",
-		);
-	});
-
-	it("uses an explicit default reason when pausing without arguments", async () => {
-		await registerCommands().get("risk")!.handler("pause", commandContext(true));
-		expect(trading.tradingEngine.risk.pauseNewExposure).toHaveBeenCalledWith("Paused by user");
-	});
-
-	it("surfaces a failed pause write instead of reporting success", async () => {
-		trading.tradingEngine.risk.pauseNewExposure.mockImplementationOnce(() => {
-			throw new Error("disk full");
-		});
-		const ctx = commandContext(true);
-		await registerCommands().get("risk")!.handler("pause", ctx);
-		expect(ctx.ui.notify).toHaveBeenCalledWith("disk full", "error");
-		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("New exposure is paused"), "warning");
-	});
-
-	it.each([true, false])("only resumes the confirmed pause when confirmation is %s", async (confirmed) => {
-		const pause = { id: "pause-1", reason: "Investigate orders", pausedAt: "2026-01-01T00:00:00.000Z" };
-		trading.tradingEngine.risk.usage.mockReturnValueOnce({
-			...trading.tradingEngine.risk.usage(),
-			newExposurePause: pause,
-		});
-		const ctx = commandContext(false, confirmed);
-		await registerCommands().get("risk")!.handler("resume", ctx);
-		expect(ctx.ui.confirm).toHaveBeenCalledWith("Resume new exposure?", expect.stringContaining(pause.reason));
-		if (confirmed) {
-			expect(ctx.waitForIdle).toHaveBeenCalledOnce();
-			expect(trading.tradingEngine.risk.resumeNewExposure).toHaveBeenCalledWith(pause.id);
-		} else {
-			expect(ctx.waitForIdle).not.toHaveBeenCalled();
-			expect(trading.tradingEngine.risk.resumeNewExposure).not.toHaveBeenCalled();
-		}
-	});
-
-	it("requires an interactive UI to resume", async () => {
-		const ctx = { ...commandContext(true), hasUI: false };
-		await registerCommands().get("risk")!.handler("resume", ctx);
-		expect(ctx.ui.confirm).not.toHaveBeenCalled();
-		expect(trading.tradingEngine.risk.resumeNewExposure).not.toHaveBeenCalled();
-		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("interactive confirmation"), "error");
-	});
-
-	it("does not resume a replacement engine after confirming the previous runtime", async () => {
-		const oldEngine = trading.tradingEngine;
-		oldEngine.risk.usage.mockReturnValueOnce({
-			...oldEngine.risk.usage(),
-			newExposurePause: { id: "pause-1", reason: "Investigate orders", pausedAt: "2026-01-01T00:00:00.000Z" },
-		});
-		const ctx = commandContext(true);
-		vi.mocked(ctx.ui.confirm).mockImplementationOnce(async () => {
-			trading.tradingEngine = { ...oldEngine };
-			return true;
-		});
-		try {
-			await registerCommands().get("risk")!.handler("resume", ctx);
-			expect(oldEngine.risk.resumeNewExposure).not.toHaveBeenCalled();
-			expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("runtime changed"), "error");
-		} finally {
-			trading.tradingEngine = oldEngine;
-		}
-	});
-
-	it("reports a concurrent pause change or unsettled claim without clearing the pause", async () => {
-		trading.tradingEngine.risk.usage.mockReturnValueOnce({
-			...trading.tradingEngine.risk.usage(),
-			newExposurePause: { id: "pause-1", reason: "Investigate orders", pausedAt: "2026-01-01T00:00:00.000Z" },
-		});
-		trading.tradingEngine.risk.resumeNewExposure.mockImplementationOnce(() => {
-			throw new Error("Cannot resume new exposure while reservations are in flight");
-		});
-		const ctx = commandContext(true);
-		await registerCommands().get("risk")!.handler("resume", ctx);
-		expect(ctx.ui.notify).toHaveBeenCalledWith(expect.stringContaining("reservations are in flight"), "error");
-		expect(ctx.ui.notify).not.toHaveBeenCalledWith(expect.stringContaining("no longer paused"), "info");
-	});
-
-	it("shows pause metadata in the offline risk transcript", async () => {
-		trading.tradingEngine.risk.usage.mockReturnValueOnce({
-			...trading.tradingEngine.risk.usage(),
-			newExposurePause: { id: "pause-1", reason: "Investigate orders", pausedAt: "2026-01-01T00:00:00.000Z" },
-		});
+	it("shows quota in the offline risk transcript", async () => {
 		await registerCommands().get("risk")!.handler("show", commandContext(true));
 		expect(appendEntry).toHaveBeenCalledWith(
 			"trading:table",
 			expect.objectContaining({
-				lines: expect.arrayContaining(["New exposure: PAUSED", "2026-01-01T00:00:00.000Z  Investigate orders"]),
+				lines: expect.arrayContaining(["Reserved: 100.00 USDT"]),
 			}),
 		);
 	});

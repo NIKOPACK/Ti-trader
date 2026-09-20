@@ -17,21 +17,13 @@ The ledger is independent of exchange adapters, persistence formats, prompts, an
 
 Execution-aware stores also preserve journal-linked reservation identities, entry blocks, maintenance state, admission generations and bounded audit records. Their transactions must retain the full combined snapshot, not copy only the two quota counters.
 
-A reservation linked to an execution must settle atomically with its journal record through the trading engine. `reconcileReservation` rejects attempts to settle such a claim independently. Legacy standalone reservations retain their previous reconciliation path. Unresolved execution blocks remain effective even when a manual pause is removed; accounting cannot turn an unknown submission into proof that no order exists.
-
-## Persistent new-exposure pause
-
-`pauseNewExposure(reason)` atomically stores `{ id, reason, pausedAt }` in the current mode's usage state. Reasons must contain 1 to 500 characters after trimming. `usage().newExposurePause` exposes a copy; `isRiskNewExposurePause` validates the same metadata for persistence adapters.
-
-While paused, `check()` rejects quota-counting orders and `reserve()` checks the pause inside its atomic transaction. Existing claims can still settle; execution-linked claims use the engine's atomic settlement. `reset()`, live UTC rollover and ledger reconstruction do not remove the pause. Manual pauses cover every same-mode ledger sharing the store, not just one exchange or symbol; unresolved execution blocks independently span both modes.
+A reservation linked to an execution must settle atomically with its journal record through the trading engine. `reconcileReservation` rejects attempts to settle such a claim independently. Legacy standalone reservations retain their previous reconciliation path. Unresolved execution blocks span both modes; accounting cannot turn an unknown submission into proof that no order exists.
 
 Call `assertNewExposureAllowed()` again after any asynchronous confirmation and immediately before starting an entry submission. Do not repeat `check()` there: that would count the submission's own reservation twice. If this final admission check fails, release the unsubmitted reservation and surface the failure. This is not an atomic transaction with an exchange; an already-started submission cannot be recalled.
 
-`resumeNewExposure(pauseId)` requires the currently stored ID and no unsettled reservations in that mode. Capture the ID before obtaining human authorization; a newer pause then invalidates the old authorization. The ledger does not provide a UI, so the application must enforce its own authorization and confirmation policy. Resuming does not reset quotas or relax order limits.
+The caller may use `countTowardsDailyLimit: false` only for independently validated exposure-reducing orders. These bypass daily quota, but not symbol validation, allowlists or per-order limits. The ledger does not classify positions or cancel outstanding orders.
 
-The caller may use `countTowardsDailyLimit: false` only for independently validated exposure-reducing orders. These bypass the entry pause and daily quota, but not symbol validation, allowlists or per-order limits. The ledger does not classify positions or cancel outstanding orders.
-
-Every process sharing the store must understand and preserve this metadata. Stop or upgrade older writers before relying on the pause; an old binary can ignore or discard it.
+Leftover `newExposurePause` records from older writers are ignored and dropped on the next durable write.
 
 The package is independently buildable, testable, and packable:
 

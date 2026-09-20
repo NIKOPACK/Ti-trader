@@ -8,7 +8,7 @@
 	"pi": { "extensions": ["./index.ts"], "skills": ["./SKILL.md"] },
 	"peerDependencies": {
 		"@earendil-works/pi-coding-agent": "*",
-		"@nikopack/ti-trading-engine": "0.3.3",
+		"@nikopack/ti-trading-engine": "0.4.0",
 		"typebox": "*"
 	},
 	"devDependencies": { "@types/node": "22.19.19", "typescript": "5.9.3" }

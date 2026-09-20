@@ -4,9 +4,12 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-09-20
+
 ### Breaking Changes
 
 - Removed unused `createGetFundingRateTool` and `createGetFuturesPositionsTool` factory exports. Current funding is `get_contract_stats`, historical funding is `get_funding_rate_history`, and futures holdings are `get_positions`.
+- Removed `/risk pause`, `/risk resume` and the durable new-exposure pause. Leftover pause records are ignored. Autonomous `/autonomous pause` still stops the model loop and does not write a risk pause.
 
 ### Added
 
@@ -24,12 +27,12 @@ All notable changes to `ti-trader` are documented in this file.
 - Subagent and `market_research` analysis budgets are unlimited by default: no implicit time, turn, tool-call, token or batch deadline. Explicit role limits remain optional; cancellation, outer runtime deadlines, concurrency and output-size protections are unchanged.
 - `subagent` now includes technical, event, derivatives and strategy analysts alongside scanner, researcher and reviewer. Parent prompts delegate substantial analysis without requiring every specialist or repeating child history; `market_research` shares the persistent runtime with proposals disabled.
 - Documented autonomous Paper, optional `risk.account` hard limits, live protective-cancel refusal and credential-file mode-600 tightening in the design doc, package README and operator guides.
-- Replaced the interactive Ti wordmark with a compact solid block mark in muted gray.
+- Startup header uses a solid block Ti wordmark in `#808080`, lists only `/`, interrupt and more, and hides Skills/Extensions unless `--verbose`.
 - Native trading tools use compact, localized summaries with original parameters and output available through tool expansion. Warnings, incomplete data, order identifiers and ambiguous execution outcomes remain visible.
 - Live order and OCO confirmation shows localized fields from the exact prepared plan, including price provenance, reserved quota and exchange constraints. TUI review defaults to cancellation and supports configurable paging and narrow layouts; RPC retains its confirmation protocol and submission policies are unchanged.
 - Paper futures now accepts the same limit and conditional order types as Paper spot. Prompts, tool descriptions and capability output no longer describe Paper futures as market-only. Futures OCO remains unsupported.
 - Trading query cards retain labeled fields and wrap narrow layouts instead of hiding order conditions or PnL. Market charts wrap Chinese explanations and use terminal display widths for styled content.
-- Venue, approval and local health share one cached status region, prioritizing entry blocks and degraded observations while preserving source information. Actual observation ages refresh every five seconds without exchange requests; pause and configuration changes refresh immediately.
+- Venue, approval and local health share one cached status region, prioritizing entry blocks and degraded observations while preserving source information. Actual observation ages refresh every five seconds without exchange requests; configuration changes refresh immediately.
 - Slash completion keeps common commands first while showing all available commands. Risk limits and allowed symbols are editable in Settings; the Agent TUI row prepares its built-in settings command in the editor.
 - Market-lab commands accept explicit candle limits and replay horizons. Screens retain per-symbol source, closed sample time and warnings, and distinguish partial failure, total failure and mixed market sources.
 - Rule replays enter at the next candle's open after a closed-bar signal and exit at the configured candle horizon. RSI entries require an observed transition into an extreme; zero-trade statistics are unavailable rather than zero.
@@ -38,6 +41,9 @@ All notable changes to `ti-trader` are documented in this file.
 ### Fixed
 
 - Live order review shows the engine's latest confirmation snapshot when market evidence is re-quoted after the previous confirmation, including updated notional, reference price and warnings.
+- The autonomous runtime no longer writes durable state three times per poll or grows it forever: the heartbeat joins the observation transaction, an idle decision skips its write, a transaction that changes nothing performs no durable write, and consumed event receipts compact while the minted-event sequence stays monotonic.
+- A full autonomous event backlog no longer stops supervision and the decision loop. Repeated position, fill and risk observations fold into one pending wake of the same kind, wakes beyond the bound are dropped with explicit `coalescedEvents`/`droppedEvents` accounting plus a recorded failure, and `/autonomous status` reports both counts.
+- Constructing an `AutonomousStore` no longer writes persisted state, so read-only `status` and commands cannot mutate the data directory; the daemon materializes its scope before execution recovery reads it.
 - Package `repository`, `homepage`, `bugs`, changelog compare links and the OpenRouter HTTP referer now point at [NIKOPACK/Ti-trader](https://github.com/NIKOPACK/Ti-trader) instead of the 404 `NIKOPACK/Ti` URL.
 - The release gate now requires evidence schemaVersion 2: an active Paper soak (directory identity, at least seven successful round-trips, a controlled fault and later recovery), an externally verified live-capabilities artifact, and an Ed25519 signature from `scripts/release-reviewers.json` over the canonical candidate and artifact hashes. Idle soaks, offline-contract capability rows and unsigned approvals stay blocked.
 - Autonomous market-lab candle requests fetch one extra bar and keep closed candles, matching the interactive session bridge, so the 20-bar minimum is reachable during market hours. Futures vs spot source uses `isFuturesSymbol`.

@@ -476,10 +476,12 @@ export function createFileMonitoringStore(
 				`${path}.lock`,
 				() => {
 					const state = read();
+					const before = JSON.stringify(state, null, "\t");
 					const result = operation(state);
 					if (result instanceof Promise) throw new Error("Monitoring transactions must be synchronous");
 					validateMonitoringState(state);
-					writeJsonFileDurable(path, state);
+					// A transaction that changed nothing must not pay for a durable rewrite.
+					if (JSON.stringify(state, null, "\t") !== before) writeJsonFileDurable(path, state);
 					return structuredClone(result);
 				},
 				{ staleMs: Number.POSITIVE_INFINITY, reclaimDeadOwner: true },

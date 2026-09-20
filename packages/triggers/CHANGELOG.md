@@ -4,6 +4,8 @@ All notable changes to `@nikopack/ti-triggers` are documented in this file.
 
 ## [Unreleased]
 
+## [0.1.1] - 2026-09-20
+
 ### Fixed
 
 - Package `repository`, `homepage` and `bugs` now point at [NIKOPACK/Ti-trader](https://github.com/NIKOPACK/Ti-trader).

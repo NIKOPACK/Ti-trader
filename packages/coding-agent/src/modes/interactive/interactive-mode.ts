@@ -359,6 +359,8 @@ export interface InteractiveModeOptions {
 	initialMessages?: string[];
 	/** Force verbose startup (overrides quietStartup setting) */
 	verbose?: boolean;
+	/** Show Skills/Extensions/Prompts listing at startup. Defaults to true unless quietStartup. `--verbose` still shows it. */
+	showStartupResources?: boolean;
 	/** TUI layout mode. */
 	tuiMode?: TuiMode;
 	/** Initial interactive theme setting for this invocation. */
@@ -1760,7 +1762,10 @@ export class InteractiveMode {
 		// Resource rendering is idempotent; chat clears no longer clear this separate container.
 		this.loadedResourcesContainer.clear();
 
-		const showListing = options?.force || this.options.verbose || !this.settingsManager.getQuietStartup();
+		const showListing =
+			options?.force ||
+			this.options.verbose ||
+			(this.options.showStartupResources !== false && !this.settingsManager.getQuietStartup());
 		const showDiagnostics = showListing || options?.showDiagnosticsWhenQuiet === true;
 		if (!showListing && !showDiagnostics) {
 			return;

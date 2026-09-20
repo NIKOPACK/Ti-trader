@@ -195,7 +195,7 @@ export async function main(argv: string[]): Promise<void> {
 						factory: (pi) => {
 							pi.on("session_shutdown", () => uninstallResearchRuntime?.());
 							pi.on("session_start", (_event, ctx) => {
-								if (ctx.mode !== "tui" || (!parsed.verbose && runtimeSettingsManager.getQuietStartup())) return;
+								if (ctx.mode !== "tui") return;
 								const header = new TradingHeader(VERSION, () => ({
 									language: getTrading().config.language,
 									theme: ctx.ui.theme,
@@ -274,6 +274,7 @@ export async function main(argv: string[]): Promise<void> {
 	const interactiveMode = new InteractiveMode(runtime, {
 		initialMessage: parsed.message,
 		verbose: parsed.verbose,
+		showStartupResources: false,
 		changelogPath: CHANGELOG_PATH,
 		allowUserBash: false,
 		ensureManagedTools: false,

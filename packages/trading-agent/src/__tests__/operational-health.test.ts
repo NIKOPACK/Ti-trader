@@ -5,7 +5,6 @@ const input: OperationalHealthInput = {
 	mode: "paper",
 	exchange: "okx",
 	marketType: "spot",
-	newExposurePaused: false,
 	maintenanceActive: false,
 	staleRuntime: false,
 	unresolvedExecutions: 0,
@@ -24,7 +23,6 @@ describe("operational health", () => {
 			assessOperationalHealth(
 				{
 					...input,
-					newExposurePaused: true,
 					unresolvedExecutions: 2,
 					pendingReservations: 1,
 					observations: [{ source: "orders", enabled: true, lastSuccessAt: 1000, pendingNotifications: 0 }],
@@ -34,7 +32,7 @@ describe("operational health", () => {
 		).toMatchObject({
 			entryBlocked: true,
 			connectivity: "recent-observations",
-			blockers: ["new-exposure-paused", "unresolved-executions", "unsettled-risk-reservations"],
+			blockers: ["unresolved-executions", "unsettled-risk-reservations"],
 		});
 	});
 

@@ -27,34 +27,41 @@ describe("Ti startup header", () => {
 		});
 	});
 
-	it("shows a drawn Ti wordmark and a compact command row", () => {
+	it("shows a readable Ti wordmark without a slash-command catalog", () => {
 		const header = new TradingHeader("0.2.1", () => ({ language: "en-US", theme: plainTheme }));
 		const lines = renderPlain(header, 100);
-		expect(lines).toHaveLength(5);
 		expect(lines[0]).toContain(" ████████  ██");
 		expect(lines[0]).toContain("Ti  v0.2.1");
-		expect(lines[1]).toContain("██");
-		expect(lines[1]).toContain("Trading workspace");
-		expect(lines[3]).toContain("/settings   /model   /health");
-		expect(lines[4]).toContain("escape interrupt");
-		expect(lines[4]).toContain("ctrl+o more");
+		expect(lines[0]).toContain("Trading workspace");
+		expect(lines[1]).toContain("    ██     ██");
+		expect(lines[2]).toContain("    ██     ██");
+		expect(lines[3]).toContain("    ██     ██");
+		const text = lines.join("\n");
+		expect(text).toContain("/ commands");
+		expect(text).toContain("escape interrupt");
+		expect(text).toContain("ctrl+o more");
+		expect(text).not.toContain("/settings");
+		expect(text).not.toContain("/model");
+		expect(text).not.toContain("/health");
+		expect(text).not.toContain("ctrl+c");
+		expect(text).not.toContain("_");
 	});
 
-	it("uses a compact wordmark on narrow terminals without losing command hints", () => {
+	it("uses a compact title on narrow terminals without losing command hints", () => {
 		const header = new TradingHeader("0.2.1", () => ({ language: "en-US", theme: plainTheme }));
 		const text = renderPlain(header, 40).join("\n");
 		expect(text).not.toContain(" ████████  ██");
 		expect(text).toContain("Ti  v0.2.1");
-		for (const command of ["/settings", "/model", "/health"]) expect(text).toContain(command);
+		expect(text).toContain("/ commands");
 		expect(text).toContain("ctrl+o more");
 	});
 
-	it("paints the wordmark muted gray instead of accent", () => {
+	it("paints the solid wordmark in #808080, not accent", () => {
 		const theme = getThemeByName("light");
 		if (!theme) throw new Error("Missing light theme");
 		const rendered = new TradingHeader("0.2.1", () => ({ language: "en-US", theme })).render(100).join("\n");
 		const wordmark = " ████████  ██";
-		expect(rendered).toContain(theme.fg("muted", wordmark));
+		expect(rendered).toContain(`\x1b[38;2;128;128;128m${wordmark}\x1b[39m`);
 		expect(rendered).not.toContain(theme.fg("accent", wordmark));
 	});
 

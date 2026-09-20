@@ -22,12 +22,13 @@ const status: AutonomousStatus = {
 	control: "paused",
 	heartbeat: 1000,
 	pendingEvents: 2,
+	coalescedEvents: 0,
+	droppedEvents: 1,
 	currentDecision: undefined,
 	wakes: [],
 	lastDecision: { id: "decision", eventId: "event", at: 1000, text: "Wait for new evidence", outcome: "completed" },
 	failures: [{ at: 1000, source: "model", reason: "timeout" }],
 	risk: undefined,
-	userPause: undefined,
 };
 
 function setup() {

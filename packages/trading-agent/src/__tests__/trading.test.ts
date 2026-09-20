@@ -54,7 +54,7 @@ import {
 	transactTradingState,
 	validateTradingConfig,
 } from "../state.ts";
-import { createCheckOrderTool, createGetRiskStatusTool, createTradingTools } from "../tools/index.ts";
+import { createGetRiskStatusTool, createTradingTools } from "../tools/index.ts";
 
 const today = (): string => new Date().toISOString().slice(0, 10);
 
@@ -406,7 +406,7 @@ describe("market data tool registration", () => {
 });
 
 describe("risk accounting", () => {
-	it("reports a persisted pause through the risk-status tool", async () => {
+	it("reports used quota through the risk-status tool", async () => {
 		const runtime = runtimeWithState(
 			DEFAULT_CONFIG,
 			{
@@ -419,65 +419,11 @@ describe("risk accounting", () => {
 				getOrderHistory: async () => [],
 			},
 		);
-		const pause = runtime.tradingEngine.risk.pauseNewExposure("Investigate exchange orders");
 		const tool = createGetRiskStatusTool(() => runtime);
 		const result = await tool.execute("risk-status", {}, undefined, undefined, { hasUI: false } as ExtensionContext);
 		expect(result.details).toMatchObject({
-			newExposurePaused: true,
-			usage: { used: 100, newExposurePause: pause },
-			warnings: expect.arrayContaining([
-				expect.stringContaining("New exposure is paused: Investigate exchange orders"),
-			]),
+			usage: { used: 100 },
 		});
-	});
-
-	it("rejects paused entry previews without reserving quota but still previews spot exits", async () => {
-		const runtime = runtimeWithState(
-			DEFAULT_CONFIG,
-			{
-				paper: { date: today(), usedDailyNotional: 0 },
-				live: { date: today(), usedDailyNotional: 0 },
-			},
-			{
-				getTicker: async () => ({ symbol: "BTC/USDT", last: 100, timestamp: Date.now() }),
-				getMarketInfo: async () => ({
-					symbol: "BTC/USDT",
-					base: "BTC",
-					quote: "USDT",
-					contract: false,
-					marketType: "spot",
-					active: true,
-					orderTypes: ["MARKET"],
-				}),
-				getBalances: async () => [
-					{ asset: "USDT", free: 1000, used: 0, total: 1000 },
-					{ asset: "BTC", free: 10, used: 0, total: 10 },
-				],
-			},
-		);
-		runtime.tradingEngine.risk.pauseNewExposure("Investigate exchange orders");
-		const tool = createCheckOrderTool(() => runtime);
-		const ctx = { hasUI: false } as ExtensionContext;
-		const buy = await tool.execute(
-			"entry",
-			{ side: "buy", symbol: "BTC/USDT", type: "market", amount: 1 },
-			undefined,
-			undefined,
-			ctx,
-		);
-		expect(buy.details).toMatchObject({
-			status: "rejected",
-			risk: { allowed: false, reason: expect.stringContaining("New exposure is paused"), usage: { reserved: 0 } },
-		});
-		const sell = await tool.execute(
-			"exit",
-			{ side: "sell", symbol: "BTC/USDT", type: "market", amount: 1 },
-			undefined,
-			undefined,
-			ctx,
-		);
-		expect(sell.details).toMatchObject({ risk: { allowed: true, countTowardsDailyLimit: false } });
-		expect(runtime.tradingEngine.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
 	});
 
 	it("allows protective sell orders when the entry quota is exhausted", () => {
@@ -544,55 +490,36 @@ describe("risk symbol validation", () => {
 });
 
 describe("risk state", () => {
-	it("persists pauses through runtime reconstruction, quota reset and exchange changes", () => {
-		const createEngine = (exchange: string) =>
-			new TradingEngine(
-				{
-					...DEFAULT_CONFIG,
-					risk: { ...DEFAULT_CONFIG.risk, allowedSymbols: [...DEFAULT_CONFIG.risk.allowedSymbols] },
-				},
-				testExchangeClient({ ...DEFAULT_CONFIG, exchange }),
-				{
-					load: loadTradingState,
-					save: saveTradingState,
-					transact: transactTradingState,
-				},
-			);
-		const first = createEngine("okx");
-		first.risk.record(100);
-		const pause = first.risk.pauseNewExposure("Investigate exchange orders");
-		expect(loadTradingState().paper.newExposurePause).toEqual(pause);
-		const second = createEngine("binance");
-		expect(second.risk.check("BTC/USDT", 100)).toContain("New exposure is paused");
-		second.risk.reset();
-		const restarted = createEngine("okx");
-		expect(restarted.risk.usage()).toMatchObject({ used: 0, newExposurePause: pause });
-		restarted.risk.resumeNewExposure(pause.id);
-		expect(loadTradingState().paper.newExposurePause).toBeUndefined();
-		expect(first.risk.check("BTC/USDT", 100)).toBeNull();
-	});
-
-	it.each([
-		null,
-		[],
-		{},
-		{ id: "", reason: "Investigate", pausedAt: "2026-01-01T00:00:00.000Z" },
-		{ id: "pause-1", reason: " ", pausedAt: "2026-01-01T00:00:00.000Z" },
-		{ id: "pause-1", reason: "Investigate", pausedAt: "2026-01-01" },
-		{ id: "pause-1", reason: "Investigate", pausedAt: "invalid" },
-	])("rejects malformed pause metadata without replacing stored state: %j", (pause) => {
+	it("ignores leftover pause metadata so a restart does not keep entries blocked", () => {
 		const stored = {
-			paper: { date: today(), usedDailyNotional: 0, newExposurePause: pause },
+			paper: {
+				date: today(),
+				usedDailyNotional: 100,
+				newExposurePause: {
+					id: "pause-1",
+					reason: "upgrade to ti-trader 0.2.1",
+					pausedAt: "2026-01-01T00:00:00.000Z",
+				},
+			},
 			live: { date: today(), usedDailyNotional: 0 },
 		};
 		configFiles.set(TRADING_STATE_PATH, stored);
-		expect(() => loadTradingState()).toThrow(/Invalid trading risk state/);
-		expect(() =>
-			transactTradingState((draft) => {
-				draft.paper.usedDailyNotional = 0;
-			}),
-		).toThrow(/Invalid trading risk state/);
-		expect(configFiles.get(TRADING_STATE_PATH)).toEqual(stored);
+		expect(loadTradingState().paper.usedDailyNotional).toBe(100);
+		const engine = new TradingEngine(
+			{
+				...DEFAULT_CONFIG,
+				risk: { ...DEFAULT_CONFIG.risk, allowedSymbols: [...DEFAULT_CONFIG.risk.allowedSymbols] },
+			},
+			testExchangeClient(DEFAULT_CONFIG),
+			{
+				load: loadTradingState,
+				save: saveTradingState,
+				transact: transactTradingState,
+			},
+		);
+		expect(engine.risk.check("BTC/USDT", 100)).toBeNull();
+		engine.risk.record(1);
+		expect((loadTradingState().paper as unknown as Record<string, unknown>).newExposurePause).toBeUndefined();
 	});
 
 	it("rejects invalid counters instead of allowing a daily-limit bypass", () => {

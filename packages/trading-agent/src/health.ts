@@ -15,7 +15,6 @@ import { renderTradingTable, type TableData } from "./table.ts";
 import { formatTradingStatus, renderTradingVenue, type TradingVenueInput, type TradingVenueStatus } from "./venue.ts";
 
 const HEALTH_LABELS: Readonly<Partial<Record<string, MenuKey>>> = {
-	"new-exposure-paused": "healthPaused",
 	"account-maintenance": "healthMaintenance",
 	"stale-runtime": "healthStaleRuntime",
 	"unresolved-executions": "healthExecutionBlock",
@@ -41,14 +40,12 @@ function healthLabel(language: TradingLanguage, value: string): string {
 export function readOperationalHealth(store: MonitoringStore = createFileMonitoringStore(), plans?: PlanStore) {
 	const trading = getTrading();
 	const execution = trading.getExecutionStatus();
-	const pause = trading.tradingEngine.risk.usage().newExposurePause;
 	const pending = trading.tradingEngine.risk.listPendingReservations();
 	const observations = readMonitoringHealth(store, monitoringScopeForRuntime(trading));
 	return assessOperationalHealth({
 		mode: trading.mode,
 		exchange: trading.config.exchange,
 		marketType: trading.config.marketType,
-		newExposurePaused: pause !== undefined,
 		maintenanceActive: execution.maintenance !== undefined,
 		staleRuntime: execution.admission.stale,
 		unresolvedExecutions: execution.unresolved.length,
@@ -92,34 +89,17 @@ function readTradingStatus(readHealth: typeof readOperationalHealth) {
 	};
 	let health: ReturnType<typeof readHealth>;
 	try {
-		// Keep identity and a successfully read pause even when monitoring state is untrusted.
-		input.paused = trading.tradingEngine.risk.usage().newExposurePause !== undefined;
 		health = readHealth();
 	} catch {
 		return {
 			input,
 			status: {
-				summary: `${t(language, "healthUnavailable")}  /health`,
+				summary: t(language, "healthUnavailable"),
 				tone: "error",
 				entryBlocked: false,
 			} satisfies TradingVenueStatus,
 		};
 	}
-	input.paused = health.blockers.includes("new-exposure-paused");
-	const active = health.observations.filter((item) => item.enabled);
-	const observations = active
-		.map((item) =>
-			[
-				`${healthLabel(language, item.source)}: ${healthLabel(language, item.status)}`,
-				observationAge(language, item.ageMs),
-				...(item.pendingNotifications
-					? [translate(language, "healthPendingShort", { count: item.pendingNotifications })]
-					: []),
-			]
-				.filter(Boolean)
-				.join(", "),
-		)
-		.join(" · ");
 	return {
 		input,
 		status: {
@@ -128,8 +108,7 @@ function readTradingStatus(readHealth: typeof readOperationalHealth) {
 						blocks: health.blockers.map((block) => healthLabel(language, block)).join(", "),
 					})
 				: t(language, "healthNoEntryBlocks"),
-			observations: `${t(language, "monitor")}: ${observations || t(language, "healthDisabled")}  /health`,
-			tone: health.entryBlocked || active.some((item) => item.status !== "recent") ? "warning" : "muted",
+			tone: health.entryBlocked ? "warning" : "muted",
 			entryBlocked: health.entryBlocked,
 			recoveryHint:
 				health.unresolvedExecutions > 0 ||

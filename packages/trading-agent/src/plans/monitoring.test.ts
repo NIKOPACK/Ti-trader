@@ -224,7 +224,6 @@ describe("durable non-waking plan notifications", () => {
 				mode: "paper",
 				exchange: "binance",
 				marketType: "spot",
-				newExposurePaused: true,
 				maintenanceActive: false,
 				staleRuntime: false,
 				unresolvedExecutions: 1,
@@ -234,7 +233,7 @@ describe("durable non-waking plan notifications", () => {
 			},
 			now,
 		);
-		expect(health.blockers).toEqual(["new-exposure-paused", "unresolved-executions"]);
+		expect(health.blockers).toEqual(["unresolved-executions"]);
 		expect(health.observations[0].status).toBe("degraded");
 	});
 });

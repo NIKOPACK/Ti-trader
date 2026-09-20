@@ -26,7 +26,7 @@ ISO/IEC 25010:2023 产品模型有九项特性。对本仓库的映射：
 | 特性 | 对本仓库 | 用什么分析 |
 |---|---|---|
 | Functional correctness | 准入、journal、CAS、TTL | 不变量测试、对抗审查、变异、属性测试 |
-| Safety / fail-safe | 过期、pause、unknown 不重发 | 故障注入回归（已有 combo-fault）、fail-closed 断言 |
+| Safety / fail-safe | 过期、unknown 不重发 | 故障注入回归（已有 combo-fault）、fail-closed 断言 |
 | Reliability / recoverability | 重启只查询不 place | 恢复测试、execution journal 不变量 |
 | Security | 密钥权限、模型无 bash/write | gitleaks、CodeQL、现有工具边界 |
 | Maintainability | 次要 | Knip 一次清理即可，不当主门 |

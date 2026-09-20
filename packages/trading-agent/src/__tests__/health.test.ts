@@ -1,6 +1,5 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type Component, ProcessTerminal, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
-import type { RiskNewExposurePause } from "@nikopack/ti-trading-engine";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createOperationalHealthExtension, createTradingStatus, readOperationalHealth } from "../health.ts";
 import * as monitoringState from "../monitoring-state.ts";
@@ -25,7 +24,7 @@ const runtime = vi.hoisted(() => ({
 	}),
 	tradingEngine: {
 		risk: {
-			usage: () => ({ newExposurePause: undefined as RiskNewExposurePause | undefined }),
+			usage: () => ({ used: 0, reserved: 0, limit: 1000, date: "2026-01-01", resetPolicy: "manual" as const }),
 			listPendingReservations: () => [],
 		},
 	},
@@ -82,7 +81,11 @@ describe("health command", () => {
 		status.update(ctx);
 		if (!widget) throw new Error("Missing status widget");
 		const originalWidget = widget;
-		expect(widget.render(80).join("\n")).toContain("未知");
+		// A routine snapshot renders venue identity only: no alert row and no monitor noise.
+		const routine = widget.render(80).join("\n");
+		expect(routine).toContain("模拟盘");
+		expect(routine).toContain("行情来源：OKX 公开接口");
+		expect(routine).not.toContain("⚠");
 		status.update(ctx);
 		expect(ctx.ui.setWidget).toHaveBeenCalledOnce();
 		readHealth.mockClear();
@@ -123,9 +126,7 @@ describe("health command", () => {
 		expect(readHealth).not.toHaveBeenCalled();
 	});
 
-	it("keeps pause and identity visible when monitoring state cannot be trusted", () => {
-		const pause = { id: "pause-1", reason: "Inspect orders", pausedAt: new Date().toISOString() };
-		vi.spyOn(runtime.tradingEngine.risk, "usage").mockReturnValue({ newExposurePause: pause });
+	it("keeps identity visible when monitoring state cannot be trusted", () => {
 		const status = createTradingStatus(() => {
 			throw new Error("secret monitoring fixture");
 		});
@@ -136,7 +137,6 @@ describe("health command", () => {
 			ui: { setStatus: vi.fn(), setWidget },
 		} as unknown as ExtensionCommandContext);
 		const text = JSON.stringify(setWidget.mock.calls);
-		expect(text).toContain("PAUSED");
 		expect(text).toContain("PAPER");
 		expect(text).toContain("OKX");
 		expect(text).toContain("market data: OKX public");
@@ -146,7 +146,7 @@ describe("health command", () => {
 	});
 
 	it("keeps configured identity visible even when the risk state read fails", () => {
-		vi.spyOn(runtime.tradingEngine.risk, "usage").mockImplementation(() => {
+		vi.spyOn(runtime.tradingEngine.risk, "listPendingReservations").mockImplementation(() => {
 			throw new Error("secret risk fixture");
 		});
 		const readHealth = vi.fn(() => readOperationalHealth(createMemoryMonitoringStore()));
@@ -162,7 +162,7 @@ describe("health command", () => {
 		expect(text).toContain("OKX");
 		expect(text).toContain("Health unavailable");
 		expect(text).not.toContain("secret risk fixture");
-		expect(readHealth).not.toHaveBeenCalled();
+		expect(readHealth).toHaveBeenCalled();
 		status.dispose();
 	});
 
@@ -170,34 +170,41 @@ describe("health command", () => {
 		[12_000, "en-US", "observed 12s ago"],
 		[125_000, "en-US", "observed 2m ago"],
 		[7_200_000, "zh-CN", "2 小时前观测"],
-	] as const)("shows persisted observation age %s in the widget and health command", async (age, language, label) => {
-		vi.useFakeTimers();
-		vi.setSystemTime(10_000_000);
-		runtime.config.language = language;
-		const store = createMemoryMonitoringStore();
-		store.transact((state) => {
-			const scope = ensureMonitoringScope(state, monitoringState.monitoringScopeForRuntime(runtime), Date.now());
-			scope.health.orders = { lastObservationAt: Date.now() - age, lastPollAt: Date.now() };
-		});
-		const readHealth = () => readOperationalHealth(store);
-		const status = createTradingStatus(readHealth);
-		const setWidget = vi.fn();
-		const ctx = {
-			mode: "rpc",
-			hasUI: true,
-			ui: { setStatus: vi.fn(), setWidget },
-		} as unknown as ExtensionCommandContext;
-		status.update(ctx);
-		expect(JSON.stringify(setWidget.mock.calls)).toContain(label);
-		const f = fixture(readHealth, () => language);
-		await f.handler("", f.ctx);
-		expect(JSON.stringify(f.appendEntry.mock.calls)).toContain(label);
-		vi.advanceTimersByTime(age >= 3_600_000 ? 3_600_000 : 60_000);
-		expect(setWidget).toHaveBeenCalledOnce();
-		status.update(ctx);
-		expect(setWidget).toHaveBeenCalledTimes(2);
-		status.dispose();
-	});
+	] as const)(
+		"shows persisted observation age %s in the health command while the status widget stays quiet",
+		async (age, language, label) => {
+			vi.useFakeTimers();
+			vi.setSystemTime(10_000_000);
+			runtime.config.language = language;
+			const store = createMemoryMonitoringStore();
+			store.transact((state) => {
+				const scope = ensureMonitoringScope(state, monitoringState.monitoringScopeForRuntime(runtime), Date.now());
+				scope.health.orders = { lastObservationAt: Date.now() - age, lastPollAt: Date.now() };
+			});
+			const readHealth = () => readOperationalHealth(store);
+			const status = createTradingStatus(readHealth);
+			const setWidget = vi.fn();
+			const ctx = {
+				mode: "rpc",
+				hasUI: true,
+				ui: { setStatus: vi.fn(), setWidget },
+			} as unknown as ExtensionCommandContext;
+			status.update(ctx);
+			// Monitoring observations now belong to /health, so the widget must stay free of them.
+			const widgetText = JSON.stringify(setWidget.mock.calls);
+			expect(widgetText).not.toContain(label);
+			expect(widgetText).toContain(language === "zh-CN" ? "行情来源：OKX 公开接口" : "market data: OKX public");
+			const f = fixture(readHealth, () => language);
+			await f.handler("", f.ctx);
+			expect(JSON.stringify(f.appendEntry.mock.calls)).toContain(label);
+			vi.advanceTimersByTime(age >= 3_600_000 ? 3_600_000 : 60_000);
+			expect(setWidget).toHaveBeenCalledOnce();
+			status.update(ctx);
+			// Observation ageing must not push a new status widget: the rendered text is unchanged.
+			expect(setWidget).toHaveBeenCalledOnce();
+			status.dispose();
+		},
+	);
 
 	it("ages the last observation while idle rather than treating each local refresh as a new observation", () => {
 		vi.useFakeTimers();
@@ -225,9 +232,12 @@ describe("health command", () => {
 		} as unknown as ExtensionCommandContext;
 		status.update(ctx);
 		if (!widget) throw new Error("Missing status widget");
-		expect(widget.render(140).join("\n")).toContain("observed 12s ago");
+		const first = widget.render(140).join("\n");
+		expect(first).toContain("[ PAPER ]");
+		expect(first).not.toContain("observed ");
 		vi.advanceTimersByTime(5_000);
-		expect(widget.render(140).join("\n")).toContain("observed 17s ago");
+		// Idle refreshes re-read health but must not churn the status row with new ages.
+		expect(widget.render(140).join("\n")).toBe(first);
 		expect(readHealth).toHaveBeenCalledTimes(2);
 		expect(ctx.ui.setWidget).toHaveBeenCalledOnce();
 		status.dispose();
@@ -251,19 +261,19 @@ describe("health command", () => {
 				ui: { setStatus: vi.fn(), setWidget },
 			} as unknown as ExtensionCommandContext);
 			const text = JSON.stringify(setWidget.mock.calls);
-			expect(text).toContain(at === undefined ? "unknown" : "stale");
+			expect(text).not.toContain(at === undefined ? "unknown" : "stale");
 			expect(text).not.toContain("observed ");
+			expect(text).toContain("market data: OKX public");
 			status.dispose();
 		},
 	);
 
-	it("shows degraded delivery, pending counts and recovery guidance without claiming authorization", () => {
+	it("shows entry blocks and recovery guidance without claiming authorization", () => {
 		const health = assessOperationalHealth(
 			{
 				mode: "paper",
 				exchange: "okx",
 				marketType: "spot",
-				newExposurePaused: false,
 				maintenanceActive: false,
 				staleRuntime: false,
 				unresolvedExecutions: 1,
@@ -283,9 +293,11 @@ describe("health command", () => {
 			ui: { setStatus: vi.fn(), setWidget },
 		} as unknown as ExtensionCommandContext);
 		const lines: string[] = setWidget.mock.calls[0][1];
-		expect(lines[0]).toContain("Entry blocks: unresolved executions");
-		expect(lines.join("\n")).toContain("degraded, observed 2s ago, pending 2");
-		expect(lines.join("\n")).toContain("Inspect /recovery; do not resubmit orders.");
+		expect(lines).toHaveLength(2);
+		expect(lines[0]).toBe(
+			"⚠ Entry blocks: unresolved executions  ·  Inspect /recovery; do not resubmit orders.  ·  /health",
+		);
+		expect(lines[1]).toBe("[ PAPER ]  OKX  Spot  USDT  market data: OKX public");
 		expect(lines.join("\n")).not.toMatch(/authorized|safe to trade/i);
 		status.dispose();
 	});
@@ -322,7 +334,6 @@ describe("health command", () => {
 			mode: "paper",
 			exchange: "binance",
 			marketType: "spot",
-			newExposurePaused: true,
 			maintenanceActive: false,
 			staleRuntime: false,
 			unresolvedExecutions: 1,
@@ -335,10 +346,7 @@ describe("health command", () => {
 		expect(f.appendEntry).toHaveBeenCalledWith(
 			"trading:health",
 			expect.objectContaining({
-				lines: expect.arrayContaining([
-					"Entry blocks: new exposure paused, unresolved executions",
-					"Connectivity: unknown",
-				]),
+				lines: expect.arrayContaining(["Entry blocks: unresolved executions", "Connectivity: unknown"]),
 				warning: expect.any(String),
 			}),
 		);

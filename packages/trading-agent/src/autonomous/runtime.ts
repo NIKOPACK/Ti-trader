@@ -10,7 +10,12 @@ import {
 	transitionObservedTrigger,
 } from "../trigger-facts.ts";
 import type { AutonomousConfig } from "./config.ts";
-import { type AutonomousDecision, type AutonomousStore, enqueueAutonomousEvent } from "./state.ts";
+import {
+	type AutonomousDecision,
+	type AutonomousStore,
+	enqueueAutonomousEvent,
+	noteObservationEvent,
+} from "./state.ts";
 
 export { failureCode };
 
@@ -75,9 +80,6 @@ export class AutonomousRuntime {
 		if (!this.initialized) throw new Error("Reconcile before autonomous trading");
 		const { state, config } = this.deps;
 		const control = state.read().control;
-		state.mutate((state) => {
-			state.heartbeat = this.now();
-		});
 		if (control !== "running" && this.modelTask) {
 			this.modelAbort?.abort(new Error(`Autonomous model ${control}`));
 			await this.deps.model.stop();
@@ -149,6 +151,7 @@ export class AutonomousRuntime {
 	private observe(report: RiskSupervisionReport): void {
 		const state = this.deps.state;
 		state.mutate((current) => {
+			current.heartbeat = this.now();
 			const emitChange = (
 				field: "lastAccountFingerprint" | "lastOrdersFingerprint" | "lastRiskFingerprint",
 				value: unknown,
@@ -159,7 +162,7 @@ export class AutonomousRuntime {
 				if (before !== fingerprint) {
 					current[field] = fingerprint;
 					if (before !== undefined || (kind === "risk" && report.reasons.length > 0)) {
-						enqueueAutonomousEvent(current, {
+						const queued = noteObservationEvent(current, {
 							id: `${kind}-${current.sequence}-${fingerprint}`,
 							kind,
 							at: this.now(),
@@ -177,6 +180,12 @@ export class AutonomousRuntime {
 									}
 								: {}),
 						});
+						if (queued === "dropped")
+							current.failures.push({
+								at: this.now(),
+								source: `observation:${kind}`,
+								reason: "event-backlog-full",
+							});
 					}
 				}
 			};
@@ -265,14 +274,23 @@ export class AutonomousRuntime {
 				);
 				trigger.state = result.state;
 				trigger.updatedAt = this.now();
-				if (result.shouldFire)
-					enqueueAutonomousEvent(entry.autonomous, {
-						id: `${trigger.revision}-${result.state.lastFiredAt}`,
+				if (result.shouldFire) {
+					const id = `${trigger.revision}-${result.state.lastFiredAt}`;
+					const outcome = enqueueAutonomousEvent(entry.autonomous, {
+						id,
 						kind: trigger.definition.when.kind === "time" ? "timer" : "condition",
 						at: this.now(),
 						message: trigger.definition.then.message,
 					});
+					if (outcome === "dropped")
+						entry.autonomous.failures.push({
+							at: this.now(),
+							source: `wake:${trigger.definition.id}`,
+							reason: "event-backlog-full",
+						});
+				}
 			}
+			entry.autonomous.failures = entry.autonomous.failures.slice(-100);
 		});
 	}
 	private async runDecision(decision: AutonomousDecision, abort: AbortController): Promise<void> {

@@ -268,15 +268,12 @@ describe("durable execution protocol", () => {
 		expect(engine.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
 	});
 
-	it("retains a reducing unknown and blocks entries independently of manual pause and quota", async () => {
+	it("retains a reducing unknown and blocks entries independently of quota", async () => {
 		const f = fixture();
 		const engine = f.engine();
 		f.submit.mockRejectedValueOnce(new Error("apiKey=PRIVATE secret=PRIVATE network timeout"));
 		await expect(engine.placeOrder(await engine.prepareOrder("sell", orderIntent))).rejects.toThrow(/unknown/);
 		expect(engine.risk.usage()).toMatchObject({ reserved: 0, used: 0 });
-		const pause = engine.risk.pauseNewExposure("Review");
-		expect(() => engine.risk.resumeNewExposure(pause.id)).toThrow(/unresolved executions/);
-		delete f.state().paper.newExposurePause;
 		await expect(engine.placeOrder(await engine.prepareOrder("buy", orderIntent))).rejects.toThrow(
 			/unresolved executions/,
 		);

@@ -114,13 +114,6 @@ export function createTradingExtension() {
 			observeMode(ctx);
 			const pending = getTrading().tradingEngine.risk.listPendingReservations();
 			const trading = getTrading();
-			const pause = trading.tradingEngine.risk.usage().newExposurePause;
-			if (pause && ctx.hasUI) {
-				ctx.ui.notify(
-					translate(trading.config.language, "riskPauseNotice", { mode: trading.mode, reason: pause.reason }),
-					"warning",
-				);
-			}
 			if (pending.length > 0 && ctx.hasUI) {
 				ctx.ui.notify(
 					translate(trading.config.language, "unsettledReservationsNotice", { count: pending.length }),
@@ -157,7 +150,6 @@ export function createTradingExtension() {
 				exchangeId: trading.config.exchange,
 				marketType: trading.config.marketType,
 				quoteCurrency: trading.config.quoteCurrency,
-				paused: trading.tradingEngine.risk.usage().newExposurePause !== undefined,
 				orderApproval: trading.config.orderApproval,
 			};
 		};
@@ -594,8 +586,7 @@ export function createTradingExtension() {
 		});
 
 		pi.registerCommand("risk", {
-			description:
-				"Risk limits and entry pause: /risk [show|pause [reason]|resume|reset|reconcile <id> commit|release]",
+			description: "Risk limits: /risk [show|reset|reconcile <id> commit|release]",
 			handler: async (args, ctx) => {
 				const trading = getTrading();
 				const arg = args?.trim();
@@ -605,59 +596,6 @@ export function createTradingExtension() {
 				}
 				const parts = arg.split(/\s+/).filter(Boolean);
 				const language = trading.config.language;
-				if (parts[0] === "pause") {
-					try {
-						// Pausing must not wait for a turn whose order is awaiting confirmation.
-						const pause = trading.tradingEngine.risk.pauseNewExposure(
-							arg.slice("pause".length).trim() || t(language, "riskPauseDefaultReason"),
-						);
-						updateStatus(ctx);
-						ctx.ui.notify(
-							translate(language, "riskPauseNotice", { mode: trading.mode, reason: pause.reason }),
-							"warning",
-						);
-					} catch (error) {
-						ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-					}
-					return;
-				}
-				if (arg === "resume") {
-					if (!ctx.hasUI) {
-						ctx.ui.notify(t(language, "riskResumeUiRequired"), "error");
-						return;
-					}
-					try {
-						const engine = trading.tradingEngine;
-						const pause = engine.risk.usage().newExposurePause;
-						if (!pause) {
-							ctx.ui.notify(t(language, "riskNotPaused"), "info");
-							return;
-						}
-						const confirmed = await ctx.ui.confirm(
-							t(language, "riskResumeTitle"),
-							translate(language, "riskResumeMessage", {
-								mode: trading.mode,
-								pausedAt: pause.pausedAt,
-								reason: pause.reason,
-							}),
-						);
-						if (!confirmed) {
-							ctx.ui.notify(t(language, "riskResumeCancelled"), "info");
-							return;
-						}
-						await waitForIdleBeforeMutation(ctx);
-						const current = getTrading();
-						if (current !== trading || current.tradingEngine !== engine) {
-							throw new Error(t(language, "riskRuntimeChanged"));
-						}
-						engine.risk.resumeNewExposure(pause.id);
-						updateStatus(ctx);
-						ctx.ui.notify(t(language, "riskResumeDone"), "info");
-					} catch (error) {
-						ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-					}
-					return;
-				}
 				if (arg === "reset") {
 					const usage = trading.tradingEngine.risk.usage();
 					const ok = await ctx.ui.confirm(
@@ -747,11 +685,6 @@ export function createTradingExtension() {
 								date: usage.date,
 							});
 				show(t(language, "titleRisk"), [
-					`${t(language, "riskEntries")}: ${t(language, usage.newExposurePause ? "riskEntriesPaused" : "riskEntriesAllowed")}`,
-					...(usage.newExposurePause
-						? [`${usage.newExposurePause.pausedAt}  ${usage.newExposurePause.reason}`]
-						: []),
-					t(language, "riskPauseControls"),
 					translate(language, "riskMaxOrderLine", {
 						value: fmt(risk.maxOrderNotional),
 						quote: trading.config.quoteCurrency,

@@ -1,6 +1,6 @@
 {
   "name": "@nikopack/ti-trading-engine",
-  "version": "0.3.3",
+  "version": "0.4.0",
   "description": "Framework-independent trading engine for Ti exchange integrations",
   "type": "module",
   "main": "./dist/index.js",
@@ -20,7 +20,7 @@
     "prepublishOnly": "npm run build"
   },
   "dependencies": {
-    "@nikopack/ti-trading-risk": "0.2.0",
+    "@nikopack/ti-trading-risk": "0.3.0",
     "ccxt": "4.5.77"
   },
   "devDependencies": {

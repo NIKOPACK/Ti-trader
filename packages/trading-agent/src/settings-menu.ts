@@ -547,7 +547,7 @@ export class TradingSettingsPanel implements Component {
 				id: "risk",
 				label: t(language, "risk"),
 				description: t(language, "riskDesc"),
-				currentValue: `${usage.used}/${usage.limit} ${cfg.quoteCurrency}${usage.newExposurePause ? ` · ${t(language, "riskEntriesPaused")}` : ""}`,
+				currentValue: `${usage.used}/${usage.limit} ${cfg.quoteCurrency}`,
 				submenu: (_current, done) => this.riskSubmenu(done),
 			},
 			{
@@ -606,14 +606,6 @@ export class TradingSettingsPanel implements Component {
 			cfg.risk.allowedSymbols.length > 0 ? cfg.risk.allowedSymbols.join(", ") : t(language, "riskAllowedAll");
 		return this.nestedList(
 			[
-				{
-					id: "risk-entries",
-					label: `${t(language, "riskEntries")} (${t(language, "settingsReadOnly")})`,
-					description: t(language, "riskPauseControls"),
-					currentValue: usage.newExposurePause
-						? `${t(language, "riskEntriesPaused")}: ${usage.newExposurePause.reason}`
-						: t(language, "riskEntriesAllowed"),
-				},
 				{
 					id: "risk-max-order",
 					label: t(language, "riskMaxOrder"),

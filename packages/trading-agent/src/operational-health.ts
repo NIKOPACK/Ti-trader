@@ -14,7 +14,6 @@ export interface OperationalHealthInput {
 	mode: TradingMode;
 	exchange: string;
 	marketType: string;
-	newExposurePaused: boolean;
 	maintenanceActive: boolean;
 	staleRuntime: boolean;
 	unresolvedExecutions: number;
@@ -28,14 +27,13 @@ export function assessOperationalHealth(input: OperationalHealthInput, now = Dat
 	if (!Number.isFinite(now) || !Number.isFinite(input.maxObservationAgeMs) || input.maxObservationAgeMs <= 0) {
 		throw new Error("Invalid health observation clock or age limit");
 	}
-	for (const flag of [input.newExposurePaused, input.maintenanceActive, input.staleRuntime]) {
+	for (const flag of [input.maintenanceActive, input.staleRuntime]) {
 		if (typeof flag !== "boolean") throw new Error("Invalid health admission state");
 	}
 	for (const count of [input.unresolvedExecutions, input.pendingReservations]) {
 		if (!Number.isSafeInteger(count) || count < 0) throw new Error("Invalid health accounting count");
 	}
 	const blockers = [
-		...(input.newExposurePaused ? ["new-exposure-paused"] : []),
 		...(input.maintenanceActive ? ["account-maintenance"] : []),
 		...(input.staleRuntime ? ["stale-runtime"] : []),
 		...(input.unresolvedExecutions > 0 ? ["unresolved-executions"] : []),

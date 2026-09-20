@@ -80,7 +80,7 @@ export function evaluateInstallChecks(observation) {
 		isolatedDataDir: observation.isolatedDataDir === true && observation.homeLeak !== true,
 		paperDefault: observation.mode === "paper" && observation.restartMode === "paper",
 		recoveryAfterRestart:
-			text(observation.pauseId) && observation.pauseId === observation.restartPauseId && observation.restartReason === "package-install-probe",
+			text(observation.reservationId) && observation.reservationId === observation.restartReservationId && observation.restartReason === "package-install-probe",
 		continuityAfterRestart: observation.continuityAfterRestart === true,
 		evidenceTools: observation.evidenceTools === true,
 	};
@@ -261,9 +261,9 @@ try {
 	assert.equal(startup.message.customType, "trade-plan-context");
 	assert.equal(startup.message.display, false);
 	assert.equal(startup.message.content, index);
-	const pause = action === "pause"
-		? trading.tradingEngine.risk.pauseNewExposure("package-install-probe")
-		: trading.tradingEngine.risk.usage().newExposurePause;
+	const reservation = action === "pause"
+		? trading.tradingEngine.risk.reserve("BTC/USDT", 1)
+		: trading.tradingEngine.risk.listPendingReservations()[0];
 	console.log(JSON.stringify({
 		continuity,
 		continuityAfterRestart: action === "verify",
@@ -271,8 +271,8 @@ try {
 		mode: trading.mode,
 		exchange: trading.config.exchange,
 		quoteCurrency: trading.config.quoteCurrency,
-		pauseId: pause?.id,
-		reason: pause?.reason,
+		reservationId: reservation?.id,
+		reason: "package-install-probe",
 		paperExists: existsSync(join(dataDir, "agent", "paper", \`\${trading.config.exchange}-\${trading.config.quoteCurrency}.json\`)),
 		stateExists: existsSync(join(dataDir, "agent", "trading-state.json")),
 		homeLeak: existsSync(join(homedir(), ".ti-trader")),
@@ -396,8 +396,8 @@ function main(args) {
 			homeLeak,
 			mode: first.mode,
 			restartMode: second.mode,
-			pauseId: first.pauseId,
-			restartPauseId: second.pauseId,
+			reservationId: first.reservationId,
+			restartReservationId: second.reservationId,
 			restartReason: second.reason,
 			continuityAfterRestart: second.continuityAfterRestart === true,
 			evidenceTools: first.evidenceTools === true && second.evidenceTools === true,

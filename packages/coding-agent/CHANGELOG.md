@@ -15,6 +15,7 @@
 - Improved the built-in dark theme's Markdown contrast for headings, links, code, lists, quotes, and separators on light terminal backgrounds.
 - Changed built-in light and dark warning colors from yellow to orange so warnings stay readable on light terminal backgrounds.
 - Compact startup no longer repeats the ctrl+o help line. Empty `startupAssistantText` hides the onboarding paragraph. Extension compact labels omit a redundant `:dist` package path, tag colliding user extensions as `(user)`, and collapse duplicate-tool issues to one line.
+- Interactive mode accepts `showStartupResources: false` to hide the Skills/Extensions/Prompts listing unless `--verbose`.
 
 ### Fixed
 

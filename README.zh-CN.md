@@ -24,7 +24,7 @@
 
 **实盘是一扇你自己开的门。** Binance 现货和 USDⓈ-M 的适配覆盖最完整；OKX、Bybit 仍标 experimental。实盘默认逐单确认。把审批改成 `unattended` 必须显式确认。
 
-**风控不靠提示词。** 单笔/每日名义上限、币种白名单、持久化「暂停新开仓」由引擎强制。未知提交不会自动重发。重启只对账，不会悄悄恢复开仓权限。
+**风控不靠提示词。** 单笔/每日名义上限和币种白名单由引擎强制。未知提交不会自动重发。重启只对账，不会悄悄恢复开仓权限。
 
 **分析不会成交。** 内置 market-lab 指标、筛选和图表走本会话 K 线。可选 Freqtrade 侧车连本机 webserver 做回测。这些路径都不下单。
 
@@ -72,7 +72,7 @@ ti --autonomous status      # 显式启用的 Paper 自主运行时（需独立�
 | `/settings` | 语言、模式、交易所、市场、密钥、风控、模拟账户、监控 |
 | `/balance` `/positions` `/orders` `/trades` `/markets` | 账户与市场 |
 | `/mode` `/exchange` `/market` `/approval` | 切换运行时。live 需要密钥。`unattended` 需要确认 |
-| `/risk pause` `/risk resume` | 暂停或恢复**新增**敞口。恢复必须交互确认 |
+| `/risk` | 限额、已用/预占额度、历史独立占用对账 |
 | `/recovery` `/audit` `/health` | 未决执行、脱敏审计、本地开仓健康 |
 | `/autonomous` | 控制显式启用的 Paper 自主运行时。live 启动拒绝 |
 | `/exchange-login <id>` | 写入交易所 API key |

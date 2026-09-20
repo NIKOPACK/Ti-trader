@@ -4,9 +4,12 @@ All notable changes to `@nikopack/ti-trading-engine` are documented in this file
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-20
+
 ### Breaking Changes
 
 - Stopped exporting `countsTowardsDailyLimit` and `futuresContractLotStep`. Both remain internal to order planning.
+- Stopped re-exporting `pauseNewExposure` types and helpers. Entry admission no longer consults a manual pause; unresolved executions, quota and account-risk checks remain.
 
 ### Added
 
