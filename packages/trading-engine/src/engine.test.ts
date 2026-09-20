@@ -904,6 +904,120 @@ describe("TradingEngine identity and reservations", () => {
 		await expect(trading.placeOrder(plan)).rejects.toBeInstanceOf(PreparedPlanError);
 	});
 
+	it.each(["order", "oco"] as const)("expires stale %s plans after confirmation", async (kind) => {
+		let now = 0;
+		const clock: RiskClock = { now: () => new Date(now) };
+		const exchange = client();
+		const placeOrder = vi.spyOn(exchange, "placeOrder");
+		const placeOco = vi.spyOn(exchange, "placeOcoOrder");
+		const trading = new TradingEngine(config, exchange, stateStore(), clock);
+		const plan =
+			kind === "order"
+				? await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 })
+				: await trading.prepareOcoOrder({
+						symbol: "BTC/USDT",
+						side: "buy",
+						amount: 1,
+						stopLossPrice: 110,
+						takeProfitPrice: 90,
+					});
+		const confirm = async () => {
+			now = 30_001;
+			return true;
+		};
+
+		await expect(
+			"side" in plan ? trading.placeOrder(plan, { confirm }) : trading.placeOco(plan, { confirm }),
+		).rejects.toThrow(/plan expired; prepare and confirm a new plan/);
+		expect(placeOrder).not.toHaveBeenCalled();
+		expect(placeOco).not.toHaveBeenCalled();
+		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
+	});
+
+	it("accepts a plan at the expiry boundary", async () => {
+		let now = 0;
+		const clock: RiskClock = { now: () => new Date(now) };
+		const exchange = client();
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine(config, exchange, stateStore(), clock);
+		const plan = await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
+
+		await trading.placeOrder(plan, {
+			confirm: async () => {
+				now = 30_000;
+				return true;
+			},
+		});
+		expect(submit).toHaveBeenCalledOnce();
+	});
+
+	it("preserves cancellation when confirmation crosses the plan TTL", async () => {
+		let now = 0;
+		const clock: RiskClock = { now: () => new Date(now) };
+		const exchange = client();
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine(config, exchange, stateStore(), clock);
+		const plan = await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
+
+		await expect(
+			trading.placeOrder(plan, {
+				confirm: async () => {
+					now = 30_001;
+					return false;
+				},
+			}),
+		).rejects.toThrow(/cancelled by user/);
+		expect(submit).not.toHaveBeenCalled();
+		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
+	});
+
+	it("retains an expired plan reservation when release fails", async () => {
+		let now = 0;
+		const clock: RiskClock = { now: () => new Date(now) };
+		const store = stateStore();
+		const exchange = client();
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine(config, exchange, store, clock);
+		const plan = await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
+		const failure = trading.placeOrder(plan, {
+			confirm: async () => {
+				now = 30_001;
+				vi.spyOn(store, "transact").mockImplementationOnce(() => {
+					throw new Error("disk unavailable");
+				});
+				return true;
+			},
+		});
+
+		await expect(failure).rejects.toMatchObject({
+			name: "AggregateError",
+			errors: [
+				expect.objectContaining({ message: expect.stringMatching(/plan expired/) }),
+				expect.objectContaining({ message: "disk unavailable" }),
+			],
+		});
+		expect(submit).not.toHaveBeenCalled();
+		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 100 });
+		await expect(trading.placeOrder(plan)).rejects.toBeInstanceOf(PreparedPlanError);
+	});
+
+	it("rejects a stale unattended paper plan before exchange reads", async () => {
+		let now = 0;
+		const clock: RiskClock = { now: () => new Date(now) };
+		const exchange = client();
+		const market = vi.spyOn(exchange, "getMarketInfo");
+		const submit = vi.spyOn(exchange, "placeOrder");
+		const trading = new TradingEngine(config, exchange, stateStore(), clock);
+		const plan = await trading.prepareOrder("buy", { symbol: "BTC/USDT", type: "market", amount: 1 });
+		market.mockClear();
+		now = 30_001;
+
+		await expect(trading.placeOrder(plan)).rejects.toThrow(/plan expired; prepare and confirm a new plan/);
+		expect(market).not.toHaveBeenCalled();
+		expect(submit).not.toHaveBeenCalled();
+		expect(trading.risk.usage()).toMatchObject({ used: 0, reserved: 0 });
+	});
+
 	it("releases a reservation when the exchange rejects the order", async () => {
 		const store = stateStore();
 		const placeOrder = vi.fn(async () => {
