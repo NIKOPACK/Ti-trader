@@ -51,6 +51,7 @@
 		"prepublishOnly": "npm run build"
 	},
 	"dependencies": {
+		"@earendil-works/pi-telemetry": "0.84.3",
 		"@nikopack/ti-trading-engine": "0.3.3",
 		"@nikopack/ti-triggers": "0.1.0",
 		"@earendil-works/pi-coding-agent": "0.84.3",

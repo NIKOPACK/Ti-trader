@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { resolve } from "node:path";
+import { NOOP_TELEMETRY_CONTEXT, type TelemetryContext } from "@earendil-works/pi-telemetry";
 import {
 	CcxtExchangeClient,
 	createMarketDataView,
@@ -37,6 +38,12 @@ import {
 	transactTradingState,
 	validateTradingConfig,
 } from "./state.ts";
+import {
+	marketFamilyForTradingType,
+	setTradingSpanAttributes,
+	startTradingSpan,
+	type TradingTelemetrySpan,
+} from "./telemetry.ts";
 
 export interface TradingConfigPatch {
 	language?: TradingLanguage;
@@ -138,6 +145,7 @@ export class TradingRuntime {
 	private lifecycle: "active" | "closing" | "closed" = "active";
 	private configOperationTail: Promise<void> = Promise.resolve();
 	private recoveryReport: RecoveryReport | undefined;
+	private readonly telemetryContext: TelemetryContext;
 	private readonly accountIds = new WeakMap<ExchangeClient, string>();
 	private readonly stateStore: RiskStateStore = {
 		load: () => loadTradingState(),
@@ -145,17 +153,23 @@ export class TradingRuntime {
 		transact: (mutator) => transactTradingState(mutator),
 	};
 
-	private constructor(config: TradingConfig) {
+	private constructor(config: TradingConfig, telemetryContext: TelemetryContext) {
 		this.currentConfig = freezeConfig(config);
+		this.telemetryContext = telemetryContext;
 	}
 
 	get config(): ReadonlyTradingConfig {
 		return this.currentConfig;
 	}
 
+	get telemetry(): TelemetryContext {
+		return this.telemetryContext;
+	}
+
 	static async init(
 		overrides: { mode?: TradingMode; exchange?: string } = {},
 		installation?: ExecutionMaintenance,
+		telemetryContext: TelemetryContext = NOOP_TELEMETRY_CONTEXT,
 	): Promise<TradingRuntime> {
 		if (installation && !runtimeInstallations.delete(installation))
 			throw new Error("Runtime installation is reserved for the maintenance owner");
@@ -172,30 +186,63 @@ export class TradingRuntime {
 		if (overrides.exchange) config.exchange = overrides.exchange;
 		const normalized = normalizeTradingConfig(config);
 		validateTradingConfig(normalized);
-		const runtime = new TradingRuntime(normalized);
-		const client = await runtime.createClient();
-		try {
-			const marketDataView = createMarketDataView(client);
-			const engine = runtime.createEngine(normalized, client, installation?.nextGeneration ?? generation);
-			runtime.recoveryReport = await engine.recoverExecutions();
-			const currentState = loadTradingState();
-			if (
-				(currentState.executions?.admissionGeneration ?? 0) !== generation ||
-				(installation && currentState.executions?.maintenance?.id !== installation.id)
-			)
-				throw new Error("Trading admission generation changed during initialization; reinitialize");
-			runtime.client = client;
-			runtime.marketDataView = marketDataView;
-			runtime.engine = engine;
-		} catch (error) {
-			try {
-				await client.close();
-			} catch (closeError) {
-				throw new AggregateError([error, closeError], "Failed to initialize trading runtime");
-			}
-			throw error;
-		}
-		return runtime;
+		return startTradingSpan(
+			telemetryContext,
+			installation ? "ti.trading.runtime.replace" : "ti.trading.runtime.init",
+			{
+				"ti.trading.mode": normalized.mode,
+				"ti.trading.market_family": marketFamilyForTradingType(normalized.marketType),
+			},
+			"runtime",
+			async (runtimeSpan) => {
+				const runtime = new TradingRuntime(normalized, telemetryContext);
+				const client = await runtime.createClient();
+				try {
+					const marketDataView = createMarketDataView(client);
+					const engine = runtime.createEngine(normalized, client, installation?.nextGeneration ?? generation);
+					runtime.recoveryReport = await startTradingSpan(
+						runtimeSpan,
+						"ti.trading.execution.recovery",
+						{
+							"ti.trading.mode": normalized.mode,
+							"ti.trading.market_family": marketFamilyForTradingType(normalized.marketType),
+						},
+						"recovery",
+						async (recoverySpan) => {
+							const report = await engine.recoverExecutions();
+							setTradingSpanAttributes(recoverySpan, {
+								"ti.trading.examined_count": report.examined,
+								"ti.trading.reconciled_count": report.reconciled,
+								"ti.trading.unresolved_count": report.unresolved,
+							});
+							return report;
+						},
+					);
+					setTradingSpanAttributes(runtimeSpan, {
+						"ti.trading.examined_count": runtime.recoveryReport.examined,
+						"ti.trading.reconciled_count": runtime.recoveryReport.reconciled,
+						"ti.trading.unresolved_count": runtime.recoveryReport.unresolved,
+					});
+					const currentState = loadTradingState();
+					if (
+						(currentState.executions?.admissionGeneration ?? 0) !== generation ||
+						(installation && currentState.executions?.maintenance?.id !== installation.id)
+					)
+						throw new Error("Trading admission generation changed during initialization; reinitialize");
+					runtime.client = client;
+					runtime.marketDataView = marketDataView;
+					runtime.engine = engine;
+				} catch (error) {
+					try {
+						await client.close();
+					} catch (closeError) {
+						throw new AggregateError([error, closeError], "Failed to initialize trading runtime");
+					}
+					throw error;
+				}
+				return runtime;
+			},
+		);
 	}
 
 	/** Explicit read-only market-data boundary; trading operations go through tradingEngine. */
@@ -229,7 +276,24 @@ export class TradingRuntime {
 	async recoverExecutions(options?: RecoveryOptions): Promise<RecoveryReport> {
 		return this.enqueueConfigOperation(async () => {
 			this.assertActive();
-			this.recoveryReport = await this.tradingEngine.recoverExecutions(options);
+			this.recoveryReport = await startTradingSpan(
+				this.telemetryContext,
+				"ti.trading.execution.recovery",
+				{
+					"ti.trading.mode": this.config.mode,
+					"ti.trading.market_family": marketFamilyForTradingType(this.config.marketType),
+				},
+				"recovery",
+				async (span) => {
+					const report = await this.tradingEngine.recoverExecutions(options);
+					setTradingSpanAttributes(span, {
+						"ti.trading.examined_count": report.examined,
+						"ti.trading.reconciled_count": report.reconciled,
+						"ti.trading.unresolved_count": report.unresolved,
+					});
+					return report;
+				},
+			);
 			return this.recoveryReport;
 		});
 	}
@@ -474,6 +538,23 @@ export class TradingRuntime {
 	}
 
 	private async installConfiguration(nextConfig: TradingConfig, confirmAccountSwitch?: boolean): Promise<void> {
+		await startTradingSpan(
+			this.telemetryContext,
+			"ti.trading.runtime.replace",
+			{
+				"ti.trading.mode": nextConfig.mode,
+				"ti.trading.market_family": marketFamilyForTradingType(nextConfig.marketType),
+			},
+			"runtime",
+			(runtimeSpan) => this.installConfigurationInternal(nextConfig, confirmAccountSwitch, runtimeSpan),
+		);
+	}
+
+	private async installConfigurationInternal(
+		nextConfig: TradingConfig,
+		confirmAccountSwitch: boolean | undefined,
+		runtimeSpan: TradingTelemetrySpan<"ti.trading.runtime.replace">,
+	): Promise<void> {
 		validateTradingConfig(nextConfig);
 		if (this.tradingEngine.getExecutionStatus().unresolved.length > 0)
 			throw new Error("Cannot replace the trading engine with unresolved executions; inspect /recovery");
@@ -499,7 +580,29 @@ export class TradingRuntime {
 		let nextMarketDataView: MarketDataClient;
 		try {
 			nextEngine = this.createEngine(nextConfig, nextClient, maintenance.nextGeneration);
-			this.recoveryReport = await nextEngine.recoverExecutions();
+			this.recoveryReport = await startTradingSpan(
+				runtimeSpan,
+				"ti.trading.execution.recovery",
+				{
+					"ti.trading.mode": nextConfig.mode,
+					"ti.trading.market_family": marketFamilyForTradingType(nextConfig.marketType),
+				},
+				"recovery",
+				async (span) => {
+					const report = await nextEngine.recoverExecutions();
+					setTradingSpanAttributes(span, {
+						"ti.trading.examined_count": report.examined,
+						"ti.trading.reconciled_count": report.reconciled,
+						"ti.trading.unresolved_count": report.unresolved,
+					});
+					setTradingSpanAttributes(runtimeSpan, {
+						"ti.trading.examined_count": report.examined,
+						"ti.trading.reconciled_count": report.reconciled,
+						"ti.trading.unresolved_count": report.unresolved,
+					});
+					return report;
+				},
+			);
 			nextMarketDataView = createMarketDataView(nextClient);
 		} catch (error) {
 			try {
@@ -661,12 +764,15 @@ let runtime: TradingRuntime | undefined;
 const runtimeInstallations = new WeakSet<ExecutionMaintenance>();
 let initializationTail: Promise<void> = Promise.resolve();
 
-export async function initTrading(overrides: { mode?: TradingMode; exchange?: string } = {}): Promise<TradingRuntime> {
+export async function initTrading(
+	overrides: { mode?: TradingMode; exchange?: string } = {},
+	telemetryContext: TelemetryContext = NOOP_TELEMETRY_CONTEXT,
+): Promise<TradingRuntime> {
 	const initialize = async (): Promise<TradingRuntime> => {
 		const previous = runtime;
 		const maintenance = previous?.tradingEngine.beginMaintenance("runtime-replacement");
 		if (maintenance) runtimeInstallations.add(maintenance);
-		const next = await TradingRuntime.init(overrides, maintenance);
+		const next = await TradingRuntime.init(overrides, maintenance, telemetryContext);
 		if (previous) {
 			previous.tradingEngine.retireSubmissions();
 			try {

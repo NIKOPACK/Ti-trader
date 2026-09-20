@@ -1,4 +1,5 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { NOOP_TELEMETRY_CONTEXT, type TelemetryContext } from "@earendil-works/pi-telemetry";
 import { type Order, type Position, protectionCoverage, reduceSide } from "@nikopack/ti-trading-engine";
 import { getTrading } from "./context.ts";
 import { failureCode } from "./failure-code.ts";
@@ -19,6 +20,13 @@ import {
 	recordMonitoringObservation,
 } from "./monitoring-state.ts";
 import { openTradingSettings } from "./settings-menu.ts";
+import {
+	marketFamilyForTradingType,
+	markTradingSpanAborted,
+	setTradingSpanAttributes,
+	startTradingSpan,
+	type TradingTelemetrySpan,
+} from "./telemetry.ts";
 
 const MAX_MISSING_HISTORY_CHECKS = 3;
 const MAX_TRACKED_UNRESOLVED_ORDERS = 256;
@@ -60,6 +68,7 @@ function orderIdentity(order: MonitoredOrder): string {
 export interface OrderMonitorOptions {
 	store?: MonitoringStore;
 	getScope?: (runtime: ReturnType<typeof getTrading>) => MonitoringScope;
+	telemetryContext?: TelemetryContext;
 }
 
 /** Durable observations and bounded notification retries do not authorize trading. */
@@ -213,45 +222,70 @@ export function createOrderMonitorExtension(options: OrderMonitorOptions = {}) {
 			scope: MonitoringScope,
 			ctx: ExtensionContext,
 			isCurrent: () => boolean,
+			trading: Trading,
+			parent: TradingTelemetrySpan<"ti.trading.monitor.poll">,
 			freshDeliveries = new Set<string>(),
-		): void => {
-			const report = deliverMonitoringNotifications(
-				store,
-				scope,
-				"orders",
-				(event) => {
-					for (const notice of event.notices) if (ctx.hasUI) ctx.ui.notify(notice, event.level);
-					const wake =
-						event.wake &&
-						freshDeliveries.has(event.id) &&
-						event.attempts === 1 &&
-						ctx.hasUI &&
-						ctx.mode !== "print";
-					pi.sendMessage(
-						{
-							customType: event.customType,
-							content: event.content,
-							details: { monitoringEventId: event.id },
-							display: true,
-						},
-						wake ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: false },
-					);
-					return true;
+		): Promise<void> =>
+			startTradingSpan(
+				parent,
+				"ti.trading.monitor.delivery",
+				{
+					"ti.trading.mode": trading.config.mode,
+					"ti.trading.market_family": marketFamilyForTradingType(trading.config.marketType),
 				},
-				isCurrent,
-			);
-			for (const failure of report.failures) {
-				try {
-					reportError(
-						ctx,
-						`notification ${failure.eventId} delivery failed`,
-						failure.error ?? "notification transport unavailable",
+				() => (isCurrent() ? "delivery" : "aborted"),
+				(span) => {
+					const report = deliverMonitoringNotifications(
+						store,
+						scope,
+						"orders",
+						(event) => {
+							for (const notice of event.notices) if (ctx.hasUI) ctx.ui.notify(notice, event.level);
+							const wake =
+								event.wake &&
+								freshDeliveries.has(event.id) &&
+								event.attempts === 1 &&
+								ctx.hasUI &&
+								ctx.mode !== "print";
+							pi.sendMessage(
+								{
+									customType: event.customType,
+									content: event.content,
+									details: { monitoringEventId: event.id },
+									display: true,
+								},
+								wake ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: false },
+							);
+							return true;
+						},
+						isCurrent,
 					);
-				} catch (error) {
-					console.error("[order monitor] delivery diagnostic failed:", failureCode(error));
-				}
-			}
-		};
+					setTradingSpanAttributes(span, {
+						"ti.trading.attempted_count": report.attempted,
+						"ti.trading.delivered_count": report.delivered,
+						"ti.trading.failure_count": report.failures.length,
+					});
+					if (!isCurrent()) {
+						markTradingSpanAborted(span);
+						return;
+					}
+					if (report.failures.length > 0) {
+						setTradingSpanAttributes(span, { "ti.trading.error_type": "delivery" });
+						span.setStatus({ status: "error" });
+					}
+					for (const failure of report.failures) {
+						try {
+							reportError(
+								ctx,
+								`notification ${failure.eventId} delivery failed`,
+								failure.error ?? "notification transport unavailable",
+							);
+						} catch (error) {
+							console.error("[order monitor] delivery diagnostic failed:", failureCode(error));
+						}
+					}
+				},
+			);
 
 		const recordGuards = (
 			entry: MonitoringScopeState,
@@ -356,7 +390,7 @@ export function createOrderMonitorExtension(options: OrderMonitorOptions = {}) {
 			freshDeliveries.add(id);
 		};
 
-		const poll = async (ctx: ExtensionContext, token = lifecycleToken): Promise<void> => {
+		const pollCore = async (ctx: ExtensionContext, token = lifecycleToken): Promise<void> => {
 			let isCurrent = (): boolean => token === lifecycleToken;
 			let scope: MonitoringScope | undefined;
 			let key: typeof pollingKey;
@@ -386,76 +420,122 @@ export function createOrderMonitorExtension(options: OrderMonitorOptions = {}) {
 				key = { token, engine };
 				pollingKey = key;
 				lastPollAt = startedAt;
-				deliver(scope, ctx, isCurrent);
-				const baseline = findMonitoringScope(store.read(), scope)?.orders;
-				const open = await engine.getOpenOrders();
-				if (!isCurrent()) return;
-				const openObservedAt = Date.now();
-				const openIds = new Set(open.map(orderIdentity));
-				const disappeared = baseline?.known.filter((order) => !openIds.has(orderIdentity(order))) ?? [];
-				const histories = new Map<string, Order[] | Error>();
-				let failed = false;
-				for (const symbol of new Set(disappeared.map((order) => order.symbol))) {
-					try {
-						histories.set(symbol, await engine.getOrderHistory(symbol, 50));
-					} catch (error) {
-						if (!isCurrent()) return;
-						failed = true;
-						reportError(ctx, `history query failed for ${symbol}`, error);
-						histories.set(symbol, new Error("history query failed"));
-					}
-					if (!isCurrent()) return;
-				}
-				let positions: Position[] | undefined;
-				if (cfg.guardPositions) {
-					try {
-						positions = await engine.getPositions();
-					} catch (error) {
-						if (!isCurrent()) return;
-						failed = true;
-						reportError(ctx, "positions query failed", error);
-					}
-				}
-				if (!isCurrent()) return;
-				const now = Date.now();
-				if (now < openObservedAt || now - openObservedAt > MONITORING_MAX_AGE_MS)
-					throw new Error("Open-order observation became stale during collection");
-				for (const [id, observedAt] of openEvidence) {
-					if (observedAt > now || now - observedAt > MONITORING_MAX_AGE_MS) openEvidence.delete(id);
-				}
-				for (const order of open) {
-					if (order.status === "open") openEvidence.set(orderIdentity(order), openObservedAt);
-				}
-				const freshDeliveries = new Set<string>();
-				const observation = store.transact((state) => {
-					const entry = ensureMonitoringScope(state, capturedScope, now);
-					if (entry.orders.cursor !== undefined && entry.orders.cursor >= startedAt) return undefined;
-					const warnings: string[] = [];
-					const uninterrupted =
-						observedScope === scopeKey &&
-						entry.orders.cursor !== undefined &&
-						now - entry.orders.cursor <= MONITORING_MAX_AGE_MS;
-					const wakeGuards = cfg.wakeAgent && (uninterrupted || !entry.orders.seeded);
-					// Merge observations into the latest state, never a pre-await copy.
-					recordFills(entry, open, histories, now, cfg.wakeAgent, warnings, freshDeliveries);
-					if (positions) recordGuards(entry, trading, open, positions, now, wakeGuards, freshDeliveries);
-					entry.orders.cursor = startedAt;
-					recordMonitoringObservation(
-						entry,
-						"orders",
-						now,
-						openObservedAt,
-						failed || warnings.length > 0 || entry.orders.missing.length > 0,
-					);
-					return { warnings, knownIds: entry.orders.known.map(orderIdentity) };
-				});
-				if (observation !== undefined) {
-					observedScope = scopeKey;
-					const knownIds = new Set(observation.knownIds);
-					for (const id of openEvidence.keys()) if (!knownIds.has(id)) openEvidence.delete(id);
-				}
-				for (const message of observation?.warnings ?? []) reportError(ctx, message, "observation unresolved");
-				deliver(scope, ctx, isCurrent, freshDeliveries);
+				const telemetryContext = options.telemetryContext ?? trading.telemetry ?? NOOP_TELEMETRY_CONTEXT;
+				await startTradingSpan(
+					telemetryContext,
+					"ti.trading.monitor.poll",
+					{
+						"ti.trading.mode": trading.config.mode,
+						"ti.trading.market_family": marketFamilyForTradingType(trading.config.marketType),
+					},
+					() => (isCurrent() ? "poll" : "aborted"),
+					async (span) => {
+						const abort = (): void => markTradingSpanAborted(span);
+						await deliver(capturedScope, ctx, isCurrent, trading, span);
+						if (!isCurrent()) {
+							abort();
+							return;
+						}
+						const baseline = findMonitoringScope(store.read(), capturedScope)?.orders;
+						const open = await engine.getOpenOrders();
+						if (!isCurrent()) {
+							abort();
+							return;
+						}
+						const openObservedAt = Date.now();
+						const openIds = new Set(open.map(orderIdentity));
+						const disappeared = baseline?.known.filter((order) => !openIds.has(orderIdentity(order))) ?? [];
+						const histories = new Map<string, Order[] | Error>();
+						let failed = false;
+						for (const symbol of new Set(disappeared.map((order) => order.symbol))) {
+							try {
+								histories.set(symbol, await engine.getOrderHistory(symbol, 50));
+							} catch (error) {
+								if (!isCurrent()) {
+									abort();
+									return;
+								}
+								failed = true;
+								reportError(ctx, `history query failed for ${symbol}`, error);
+								histories.set(symbol, new Error("history query failed"));
+							}
+							if (!isCurrent()) {
+								abort();
+								return;
+							}
+						}
+						let positions: Position[] | undefined;
+						if (cfg.guardPositions) {
+							try {
+								positions = await engine.getPositions();
+							} catch (error) {
+								if (!isCurrent()) {
+									abort();
+									return;
+								}
+								failed = true;
+								reportError(ctx, "positions query failed", error);
+							}
+						}
+						if (!isCurrent()) {
+							abort();
+							return;
+						}
+						const now = Date.now();
+						if (now < openObservedAt || now - openObservedAt > MONITORING_MAX_AGE_MS)
+							throw new Error("Open-order observation became stale during collection");
+						for (const [id, observedAt] of openEvidence) {
+							if (observedAt > now || now - observedAt > MONITORING_MAX_AGE_MS) openEvidence.delete(id);
+						}
+						for (const order of open) {
+							if (order.status === "open") openEvidence.set(orderIdentity(order), openObservedAt);
+						}
+						const freshDeliveries = new Set<string>();
+						const observation = store.transact((state) => {
+							const entry = ensureMonitoringScope(state, capturedScope, now);
+							if (entry.orders.cursor !== undefined && entry.orders.cursor >= startedAt) return undefined;
+							const warnings: string[] = [];
+							const uninterrupted =
+								observedScope === scopeKey &&
+								entry.orders.cursor !== undefined &&
+								now - entry.orders.cursor <= MONITORING_MAX_AGE_MS;
+							const wakeGuards = cfg.wakeAgent && (uninterrupted || !entry.orders.seeded);
+							// Merge observations into the latest state, never a pre-await copy.
+							recordFills(entry, open, histories, now, cfg.wakeAgent, warnings, freshDeliveries);
+							if (positions) recordGuards(entry, trading, open, positions, now, wakeGuards, freshDeliveries);
+							entry.orders.cursor = startedAt;
+							recordMonitoringObservation(
+								entry,
+								"orders",
+								now,
+								openObservedAt,
+								failed || warnings.length > 0 || entry.orders.missing.length > 0,
+							);
+							return {
+								warnings,
+								knownIds: entry.orders.known.map(orderIdentity),
+								unresolvedCount: entry.orders.missing.length,
+							};
+						});
+						if (observation !== undefined) {
+							observedScope = scopeKey;
+							const knownIds = new Set(observation.knownIds);
+							for (const id of openEvidence.keys()) if (!knownIds.has(id)) openEvidence.delete(id);
+						}
+						for (const message of observation?.warnings ?? [])
+							reportError(ctx, message, "observation unresolved");
+						setTradingSpanAttributes(span, {
+							"ti.trading.open_order_count": open.length,
+							"ti.trading.unresolved_count": observation?.unresolvedCount ?? 0,
+						});
+						if (failed) {
+							setTradingSpanAttributes(span, { "ti.trading.error_type": "poll" });
+							span.setStatus({ status: "error" });
+						}
+						await deliver(capturedScope, ctx, isCurrent, trading, span, freshDeliveries);
+						if (!isCurrent()) abort();
+					},
+				);
 			} catch (error) {
 				if (isCurrent()) {
 					reportError(ctx, "poll failed", error);
@@ -476,6 +556,10 @@ export function createOrderMonitorExtension(options: OrderMonitorOptions = {}) {
 			} finally {
 				if (pollingKey === key) pollingKey = undefined;
 			}
+		};
+
+		const poll = async (ctx: ExtensionContext, token = lifecycleToken): Promise<void> => {
+			await pollCore(ctx, token);
 		};
 
 		pi.registerCommand("monitor", {
