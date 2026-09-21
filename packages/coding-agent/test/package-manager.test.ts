@@ -1,7 +1,8 @@
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "node:events";
-import { existsSync, mkdirSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, relative } from "node:path";
+import { basename, dirname, join, relative } from "node:path";
 import { PassThrough } from "node:stream";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DefaultPackageManager, type ProgressEvent, type ResolvedResource } from "../src/core/package-manager.ts";
@@ -13,6 +14,21 @@ function normalizeForMatch(value: string): string {
 
 function pathEndsWith(actualPath: string, suffix: string): boolean {
 	return normalizeForMatch(actualPath).endsWith(normalizeForMatch(suffix));
+}
+
+function managedGitSentinelPath(targetDir: string): string {
+	return join(dirname(targetDir), `.${basename(targetDir)}.pi-managed-git`);
+}
+
+function writeManagedGitSentinel(targetDir: string, identity = "git:github.com/user/repo"): void {
+	const checkoutId = randomUUID();
+	mkdirSync(join(targetDir, ".git"), { recursive: true });
+	writeFileSync(join(targetDir, ".git", "pi-managed-checkout-id"), `${checkoutId}\n`, "utf-8");
+	writeFileSync(
+		managedGitSentinelPath(targetDir),
+		`${JSON.stringify({ version: 1, identity, checkoutId })}\n`,
+		"utf-8",
+	);
 }
 
 class MockSpawnedProcess extends EventEmitter {
@@ -910,7 +926,7 @@ Content`,
 				.mockImplementation(async (...callArgs: unknown[]) => {
 					const [command, args] = callArgs as [string, string[]];
 					if (command === "git" && args[0] === "clone") {
-						mkdirSync(targetDir, { recursive: true });
+						mkdirSync(join(targetDir, ".git"), { recursive: true });
 						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 					}
 				});
@@ -1004,7 +1020,7 @@ Content`,
 				.mockImplementation(async (...callArgs: unknown[]) => {
 					const [command, args] = callArgs as [string, string[]];
 					if (command === "git" && args[0] === "clone") {
-						mkdirSync(targetDir, { recursive: true });
+						mkdirSync(join(targetDir, ".git"), { recursive: true });
 						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 					}
 				});
@@ -1013,6 +1029,10 @@ Content`,
 
 			expect(runCommandSpy).toHaveBeenCalledWith("npm", ["install", "--omit=dev", "--ignore-scripts"], {
 				cwd: targetDir,
+			});
+			expect(JSON.parse(readFileSync(managedGitSentinelPath(targetDir), "utf-8"))).toMatchObject({
+				version: 1,
+				identity: source,
 			});
 		});
 
@@ -1038,7 +1058,7 @@ Content`,
 			vi.spyOn(packageManager as any, "runCommand").mockImplementation(async (...callArgs: unknown[]) => {
 				const [command, args] = callArgs as [string, string[]];
 				if (command === "git" && args[0] === "clone") {
-					mkdirSync(targetDir, { recursive: true });
+					mkdirSync(join(targetDir, ".git"), { recursive: true });
 					writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 					return;
 				}
@@ -1050,6 +1070,7 @@ Content`,
 			await expect(packageManager.install(source)).rejects.toThrow("simulated dependency install failure");
 
 			expect(existsSync(targetDir)).toBe(false);
+			expect(existsSync(managedGitSentinelPath(targetDir))).toBe(false);
 		});
 
 		it("should reconcile an existing git checkout to a pinned ref during install", async () => {
@@ -1057,9 +1078,13 @@ Content`,
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			mkdirSync(targetDir, { recursive: true });
 			writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+			writeManagedGitSentinel(targetDir);
 
 			const managerWithInternals = packageManager as unknown as PackageManagerInternals;
 			vi.spyOn(managerWithInternals, "runCommandCapture").mockImplementation(async (_command, args) => {
+				if (args[0] === "status") {
+					return "";
+				}
 				if (args[0] === "rev-parse" && args[1] === "HEAD") {
 					return "old-head";
 				}
@@ -1087,6 +1112,7 @@ Content`,
 			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
 			const fetchArgs = ["fetch", "--prune", "--no-tags", "origin", "+refs/heads/main:refs/remotes/origin/main"];
 			mkdirSync(targetDir, { recursive: true });
+			writeManagedGitSentinel(targetDir);
 
 			const managerWithInternals = packageManager as unknown as PackageManagerInternals;
 			vi.spyOn(managerWithInternals, "getLocalGitUpdateTarget").mockResolvedValue({
@@ -1095,6 +1121,9 @@ Content`,
 				fetchArgs,
 			});
 			vi.spyOn(managerWithInternals, "runCommandCapture").mockImplementation(async (_command, args) => {
+				if (args[0] === "status") {
+					return "";
+				}
 				if (args[0] === "rev-parse" && args[1] === "HEAD") {
 					return "old-head";
 				}
@@ -1131,7 +1160,7 @@ Content`,
 				.mockImplementation(async (...callArgs: unknown[]) => {
 					const [command, args] = callArgs as [string, string[]];
 					if (command === "git" && args[0] === "clone") {
-						mkdirSync(targetDir, { recursive: true });
+						mkdirSync(join(targetDir, ".git"), { recursive: true });
 						writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
 					}
 				});
@@ -1146,10 +1175,14 @@ Content`,
 			const targetDir = join(tempDir, ".pi", "git", "github.com", "user", "repo");
 			mkdirSync(targetDir, { recursive: true });
 			writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+			writeManagedGitSentinel(targetDir);
 			settingsManager.setProjectPackages([source]);
 
 			vi.spyOn(packageManager as any, "runCommandCapture").mockImplementation(async (...callArgs: unknown[]) => {
 				const [_command, args] = callArgs as [string, string[]];
+				if (args[0] === "status") {
+					return "";
+				}
 				if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "@{upstream}") {
 					return "origin/main";
 				}
@@ -1179,6 +1212,7 @@ Content`,
 				join(targetDir, "package.json"),
 				JSON.stringify({ name: "repo", version: "1.0.0", dependencies: { dependency: "1.0.0" } }),
 			);
+			writeManagedGitSentinel(targetDir);
 			settingsManager.setPackages([source]);
 
 			const managerWithInternals = packageManager as unknown as PackageManagerInternals;
@@ -1207,6 +1241,7 @@ Content`,
 				join(targetDir, "package.json"),
 				JSON.stringify({ name: "repo", version: "1.0.0", dependencies: { dependency: "1.0.0" } }),
 			);
+			writeManagedGitSentinel(targetDir);
 			settingsManager.setPackages([source]);
 
 			const managerWithInternals = packageManager as unknown as PackageManagerInternals;
@@ -1245,10 +1280,14 @@ Content`,
 			const targetDir = join(tempDir, ".pi", "git", "github.com", "user", "repo");
 			mkdirSync(targetDir, { recursive: true });
 			writeFileSync(join(targetDir, "package.json"), JSON.stringify({ name: "repo", version: "1.0.0" }));
+			writeManagedGitSentinel(targetDir);
 			settingsManager.setProjectPackages([source]);
 
 			vi.spyOn(packageManager as any, "runCommandCapture").mockImplementation(async (...callArgs: unknown[]) => {
 				const [_command, args] = callArgs as [string, string[]];
+				if (args[0] === "status") {
+					return "";
+				}
 				if (args[0] === "rev-parse" && args[1] === "--abbrev-ref" && args[2] === "@{upstream}") {
 					return "origin/main";
 				}
@@ -1271,6 +1310,53 @@ Content`,
 					cwd: targetDir,
 				},
 			);
+		});
+
+		it("should reject destructive refresh without a managed checkout sentinel", async () => {
+			const source = "git:github.com/user/repo";
+			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+			mkdirSync(targetDir, { recursive: true });
+			writeFileSync(join(targetDir, "local.txt"), "keep");
+			settingsManager.setPackages([source]);
+
+			const managerWithInternals = packageManager as unknown as PackageManagerInternals;
+			vi.spyOn(managerWithInternals, "getLocalGitUpdateTarget").mockResolvedValue({
+				ref: "origin/main",
+				head: "new-head",
+				fetchArgs: ["fetch", "origin", "main"],
+			});
+			vi.spyOn(managerWithInternals, "runCommandCapture").mockResolvedValue("old-head");
+			const runCommandSpy = vi.spyOn(managerWithInternals, "runCommand").mockResolvedValue(undefined);
+
+			await expect(packageManager.update(source)).rejects.toThrow("managed Git sentinel");
+
+			expect(readFileSync(join(targetDir, "local.txt"), "utf-8")).toBe("keep");
+			expect(runCommandSpy).not.toHaveBeenCalled();
+		});
+
+		it("should reject managed checkout symlinks that escape the install root", async () => {
+			const source = "git:github.com/user/repo";
+			const targetDir = join(agentDir, "git", "github.com", "user", "repo");
+			const outsideDir = join(tempDir, "outside-repo");
+			mkdirSync(dirname(targetDir), { recursive: true });
+			mkdirSync(outsideDir, { recursive: true });
+			writeFileSync(join(outsideDir, "local.txt"), "keep");
+			symlinkSync(outsideDir, targetDir, process.platform === "win32" ? "junction" : "dir");
+			writeManagedGitSentinel(targetDir);
+			settingsManager.setPackages([source]);
+
+			const managerWithInternals = packageManager as unknown as PackageManagerInternals;
+			vi.spyOn(managerWithInternals, "getLocalGitUpdateTarget").mockResolvedValue({
+				ref: "origin/main",
+				head: "new-head",
+				fetchArgs: ["fetch", "origin", "main"],
+			});
+			const runCommandSpy = vi.spyOn(managerWithInternals, "runCommand").mockResolvedValue(undefined);
+
+			await expect(packageManager.update(source)).rejects.toThrow("outside managed Git root");
+
+			expect(readFileSync(join(outsideDir, "local.txt"), "utf-8")).toBe("keep");
+			expect(runCommandSpy).not.toHaveBeenCalled();
 		});
 
 		it("should use npmCommand argv for npm root lookup and invalidate cached root when npmCommand changes", () => {
@@ -1473,6 +1559,23 @@ Content`,
 
 			expect(runCommand).toHaveBeenCalledWith("git", ["clone", source, expect.any(String)]);
 			expect(events.some((e) => e.type === "start" && e.action === "install")).toBe(true);
+		});
+
+		it("should redact credentials from git clone failures", async () => {
+			const events: ProgressEvent[] = [];
+			packageManager.setProgressCallback((event) => events.push(event));
+			const source = "git:https://user:secret@github.com/user/repo";
+			vi.spyOn(packageManager as unknown as PackageManagerInternals, "runCommand").mockRejectedValue(
+				new Error("git clone https://user:secret@github.com/user/repo failed with code 128"),
+			);
+
+			await expect(packageManager.install(source)).rejects.toMatchObject({
+				message: "git clone git:github.com/user/repo failed with code 128",
+			});
+
+			const output = JSON.stringify(events);
+			expect(output).toContain("git:github.com/user/repo");
+			expect(output).not.toContain("user:secret");
 		});
 
 		it("should parse package source types from docs examples", () => {

@@ -7,11 +7,12 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { DefaultPackageManager } from "../src/core/package-manager.ts";
+import { DefaultPackageManager, type ProgressEvent } from "../src/core/package-manager.ts";
 import { SettingsManager } from "../src/core/settings-manager.ts";
 import { allowNetwork } from "./test-network-env.ts";
 
@@ -31,6 +32,8 @@ function initGitRepo(repoDir: string): void {
 	git(["init", "--initial-branch=main"], repoDir);
 	git(["config", "--local", "user.email", "test@test.com"], repoDir);
 	git(["config", "--local", "user.name", "Test"], repoDir);
+	git(["config", "--local", "commit.gpgsign", "false"], repoDir);
+	git(["config", "--local", "tag.gpgsign", "false"], repoDir);
 }
 
 // Helper to create a commit with a file
@@ -49,6 +52,17 @@ function getCurrentCommit(repoDir: string): string {
 // Helper to get file content
 function getFileContent(repoDir: string, filename: string): string {
 	return readFileSync(join(repoDir, filename), "utf-8");
+}
+
+function writeManagedGitSentinel(checkoutDir: string, identity = "git:github.com/test/extension"): void {
+	const checkoutId = randomUUID();
+	mkdirSync(join(checkoutDir, ".git"), { recursive: true });
+	writeFileSync(join(checkoutDir, ".git", "pi-managed-checkout-id"), `${checkoutId}\n`, "utf-8");
+	writeFileSync(
+		join(checkoutDir, "..", ".extension.pi-managed-git"),
+		`${JSON.stringify({ version: 1, identity, checkoutId })}\n`,
+		"utf-8",
+	);
 }
 
 type GitSourceForTest = {
@@ -116,6 +130,7 @@ describe("DefaultPackageManager git update", () => {
 		git(["clone", remoteDir, installedDir], tempDir);
 		git(["config", "--local", "user.email", "test@test.com"], installedDir);
 		git(["config", "--local", "user.name", "Test"], installedDir);
+		writeManagedGitSentinel(installedDir);
 
 		// Add to global packages so update() processes this source
 		settingsManager.setPackages([gitSource]);
@@ -130,6 +145,7 @@ describe("DefaultPackageManager git update", () => {
 
 			mkdirSync(join(agentDir, "git", "github.com", "test"), { recursive: true });
 			git(["clone", remoteDir, installedDir], tempDir);
+			writeManagedGitSentinel(installedDir);
 			settingsManager.setPackages([gitSource]);
 
 			const executedCommands: string[] = [];
@@ -214,6 +230,7 @@ describe("DefaultPackageManager git update", () => {
 			mkdirSync(join(agentDir, "git", "github.com", "test"), { recursive: true });
 			git(["clone", remoteDir, installedDir], tempDir);
 			git(["checkout", "v1"], installedDir);
+			writeManagedGitSentinel(installedDir);
 			expect(getCurrentCommit(installedDir)).toBe(v1Commit);
 
 			const pinnedSource = `${gitSource}@v2`;
@@ -234,6 +251,17 @@ describe("DefaultPackageManager git update", () => {
 	});
 
 	describe("temporary git sources", () => {
+		it("should reject cached temporary git sources without a managed sentinel", async () => {
+			const managerWithPaths = packageManager as unknown as PackageManagerPathInternals;
+			const cachedDir = managerWithPaths.getGitInstallPath(managerWithPaths.parseSource(gitSource), "temporary");
+			mkdirSync(cachedDir, { recursive: true });
+			writeFileSync(join(cachedDir, "package.json"), JSON.stringify({ pi: { extensions: [] } }));
+
+			await expect(packageManager.resolveExtensionSources([gitSource], { temporary: true })).rejects.toThrow(
+				"managed Git sentinel",
+			);
+		});
+
 		it("should refresh cached temporary git sources when resolving", async () => {
 			const managerWithPaths = packageManager as unknown as PackageManagerPathInternals;
 			const cachedDir = managerWithPaths.getGitInstallPath(managerWithPaths.parseSource(gitSource), "temporary");
@@ -246,6 +274,7 @@ describe("DefaultPackageManager git update", () => {
 				JSON.stringify({ pi: { extensions: ["./pi-extensions"] } }, null, 2),
 			);
 			writeFileSync(extensionFile, "// stale");
+			writeManagedGitSentinel(cachedDir);
 
 			const executedCommands: string[] = [];
 			const managerWithInternals = packageManager as unknown as {
@@ -278,5 +307,60 @@ describe("DefaultPackageManager git update", () => {
 			);
 			expect(getFileContent(cachedDir, "pi-extensions/session-breakdown.ts")).toBe("// fresh");
 		});
+	});
+
+	it("should summarize destructive cleanup without exposing credential-bearing sources", async () => {
+		setupRemoteAndInstall();
+		writeFileSync(join(installedDir, "local-secret.txt"), "discard me");
+		createCommit(remoteDir, "extension.ts", "// v2", "Second commit");
+
+		const credentialSource = "git:https://user:secret@github.com/test/extension";
+		settingsManager.setPackages([credentialSource]);
+		const events: ProgressEvent[] = [];
+		packageManager.setProgressCallback((event) => events.push(event));
+
+		await packageManager.update();
+
+		const cleanup = events.find((event) => event.type === "progress" && event.message?.includes("Discarding"));
+		expect(cleanup).toMatchObject({
+			type: "progress",
+			action: "update",
+			source: gitSource,
+			message: "Discarding 1 local path from managed Git checkout",
+		});
+		expect(JSON.stringify(events)).not.toContain("user:secret");
+		expect(existsSync(join(installedDir, "local-secret.txt"))).toBe(false);
+	});
+
+	it("should reject a replacement repository left behind a stale managed sentinel", async () => {
+		setupRemoteAndInstall();
+		rmSync(installedDir, { recursive: true, force: true });
+		mkdirSync(installedDir, { recursive: true });
+		initGitRepo(installedDir);
+		createCommit(installedDir, "replacement.txt", "keep", "Replacement repository");
+
+		await expect(packageManager.update(gitSource)).rejects.toThrow("sentinel does not match checkout");
+
+		expect(getFileContent(installedDir, "replacement.txt")).toBe("keep");
+	});
+
+	it("should redact credential-bearing Git URLs from install progress", async () => {
+		setupRemoteAndInstall();
+		const credentialSource = "git:https://user:secret@github.com/test/extension";
+		const events: ProgressEvent[] = [];
+		packageManager.setProgressCallback((event) => events.push(event));
+
+		await packageManager.install(credentialSource);
+
+		expect(events).toEqual([
+			{
+				type: "start",
+				action: "install",
+				source: gitSource,
+				message: `Installing ${gitSource} (lifecycle scripts disabled for ${gitSource}; run pi allow-scripts ${gitSource} or add the exact identity to global packageLifecycleScriptAllowlist)...`,
+			},
+			{ type: "complete", action: "install", source: gitSource },
+		]);
+		expect(JSON.stringify(events)).not.toContain("user:secret");
 	});
 });

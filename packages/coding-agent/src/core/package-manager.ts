@@ -1,5 +1,5 @@
 import type { ChildProcess, ChildProcessByStdio } from "node:child_process";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import {
 	chmodSync,
 	existsSync,
@@ -7,6 +7,7 @@ import {
 	mkdirSync,
 	readdirSync,
 	readFileSync,
+	realpathSync,
 	rmSync,
 	statSync,
 	writeFileSync,
@@ -49,6 +50,15 @@ import type { PackageSource, SettingsManager } from "./settings-manager.ts";
 const NETWORK_TIMEOUT_MS = 10000;
 const UPDATE_CHECK_CONCURRENCY = 4;
 const GIT_UPDATE_CONCURRENCY = 4;
+const MANAGED_GIT_SENTINEL_SUFFIX = ".pi-managed-git";
+const MANAGED_GIT_SENTINEL_VERSION = 1;
+const MANAGED_GIT_CHECKOUT_ID_FILE = "pi-managed-checkout-id";
+
+interface ManagedGitSentinel {
+	version: typeof MANAGED_GIT_SENTINEL_VERSION;
+	identity: string;
+	checkoutId: string;
+}
 
 function isOfflineModeEnabled(): boolean {
 	const value = process.env.PI_OFFLINE;
@@ -1030,11 +1040,12 @@ export class DefaultPackageManager implements PackageManager {
 		const parsed = this.parseSource(source);
 		const scope: SourceScope = options?.local ? "project" : "user";
 		this.assertProjectTrustedForScope(scope);
+		const progressSource = parsed.type === "git" ? this.getGitIdentity(parsed) : source;
 		const message =
 			parsed.type === "local"
 				? `Installing ${source}...`
-				: this.packageOperationMessage("Installing", source, parsed, scope);
-		await this.withProgress("install", source, message, async () => {
+				: this.packageOperationMessage("Installing", progressSource, parsed, scope);
+		await this.withProgress("install", progressSource, message, async () => {
 			if (parsed.type === "npm") {
 				await this.installNpm(parsed, scope, false);
 				return;
@@ -1163,12 +1174,12 @@ export class DefaultPackageManager implements PackageManager {
 			tasks.push(this.updateNpmBatch(projectNpmUpdates, "project"));
 		}
 		if (gitCandidates.length > 0) {
-			const gitTasks = gitCandidates.map(
-				(entry) => async () =>
-					this.withProgress("update", entry.source, `Updating ${entry.source}...`, async () => {
-						await this.updateGit(entry.parsed, entry.scope);
-					}),
-			);
+			const gitTasks = gitCandidates.map((entry) => async () => {
+				const identity = this.getGitIdentity(entry.parsed);
+				return this.withProgress("update", identity, `Updating ${identity}...`, async () => {
+					await this.updateGit(entry.parsed, entry.scope);
+				});
+			});
 			tasks.push(this.runWithConcurrency(gitTasks, GIT_UPDATE_CONCURRENCY).then(() => {}));
 		}
 
@@ -1354,7 +1365,7 @@ export class DefaultPackageManager implements PackageManager {
 					const installed = await installMissing();
 					if (!installed) continue;
 				} else if (resolvedScope === "temporary" && !parsed.pinned && !isOfflineModeEnabled()) {
-					await this.refreshTemporaryGitSource(parsed, resolvedSource);
+					await this.refreshTemporaryGitSource(parsed);
 				}
 				metadata.baseDir = installedPath;
 				this.collectPackageResources(installedPath, accumulator, filter, metadata);
@@ -1922,12 +1933,13 @@ export class DefaultPackageManager implements PackageManager {
 		const allowScripts = this.canRunLifecycleScripts(source, scope);
 		const targetDir = this.getGitInstallPath(source, scope);
 		if (existsSync(targetDir)) {
+			const managedTarget = this.assertManagedGitCheckout(targetDir, source, scope);
 			if (source.ref) {
-				await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD", allowScripts);
+				await this.ensureGitRef(source, scope, ["fetch", "origin", source.ref], "FETCH_HEAD", allowScripts);
 				return;
 			}
-			const target = await this.getLocalGitUpdateTarget(targetDir);
-			await this.ensureGitRef(targetDir, target.fetchArgs, target.ref, allowScripts);
+			const target = await this.getLocalGitUpdateTarget(managedTarget);
+			await this.ensureGitRef(source, scope, target.fetchArgs, target.ref, allowScripts);
 			return;
 		}
 		const gitRoot = this.getGitInstallRoot(scope);
@@ -1936,20 +1948,27 @@ export class DefaultPackageManager implements PackageManager {
 		}
 		mkdirSync(dirname(targetDir), { recursive: true });
 		rmSync(this.getGitUpdateMarkerPath(targetDir), { force: true });
+		rmSync(this.getManagedGitSentinelPath(targetDir), { force: true });
 
 		try {
 			await this.runCommand("git", ["clone", source.repo, targetDir]);
+			const managedTarget = this.writeManagedGitSentinel(targetDir, source, scope);
 			if (source.ref) {
-				await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
+				await this.runCommand("git", ["checkout", source.ref], { cwd: managedTarget });
 			}
-			const packageJsonPath = join(targetDir, "package.json");
+			const packageJsonPath = join(managedTarget, "package.json");
 			if (existsSync(packageJsonPath)) {
-				await this.runNpmCommand(this.getGitDependencyInstallArgs(allowScripts), { cwd: targetDir });
+				await this.runNpmCommand(this.getGitDependencyInstallArgs(allowScripts), { cwd: managedTarget });
 			}
 		} catch (error) {
-			rmSync(targetDir, { recursive: true, force: true });
+			try {
+				this.resolveManagedGitCheckout(targetDir, scope);
+				rmSync(targetDir, { recursive: true, force: true });
+			} catch {}
+			rmSync(this.getManagedGitSentinelPath(targetDir), { force: true });
 			this.pruneEmptyGitParents(targetDir, gitRoot);
-			throw error;
+			const message = error instanceof Error ? error.message : String(error);
+			throw new Error(message.replaceAll(source.repo, this.getGitIdentity(source)));
 		}
 	}
 
@@ -1961,13 +1980,14 @@ export class DefaultPackageManager implements PackageManager {
 			return;
 		}
 
+		const managedTarget = this.assertManagedGitCheckout(targetDir, source, scope);
 		if (source.ref) {
-			await this.ensureGitRef(targetDir, ["fetch", "origin", source.ref], "FETCH_HEAD", allowScripts);
+			await this.ensureGitRef(source, scope, ["fetch", "origin", source.ref], "FETCH_HEAD", allowScripts);
 			return;
 		}
 
-		const target = await this.getLocalGitUpdateTarget(targetDir);
-		await this.ensureGitRef(targetDir, target.fetchArgs, target.ref, allowScripts);
+		const target = await this.getLocalGitUpdateTarget(managedTarget);
+		await this.ensureGitRef(source, scope, target.fetchArgs, target.ref, allowScripts);
 	}
 
 	private hasMissingGitDependencies(targetDir: string): boolean {
@@ -2000,6 +2020,104 @@ export class DefaultPackageManager implements PackageManager {
 		await this.runNpmCommand(this.getGitDependencyInstallArgs(allowScripts), { cwd: targetDir });
 	}
 
+	private getManagedGitSentinelPath(targetDir: string): string {
+		return join(dirname(targetDir), `.${basename(targetDir)}${MANAGED_GIT_SENTINEL_SUFFIX}`);
+	}
+
+	private getManagedGitCheckoutIdPath(checkout: string): string {
+		return join(checkout, ".git", MANAGED_GIT_CHECKOUT_ID_FILE);
+	}
+
+	private getGitIdentity(source: GitSource): string {
+		return `git:${source.host}/${source.path}`;
+	}
+
+	private getManagedGitRoot(scope: SourceScope): string {
+		return this.getGitInstallRoot(scope) ?? getExtensionTempFolder(this.agentDir);
+	}
+
+	private resolveManagedGitCheckout(targetDir: string, scope: SourceScope): string {
+		const root = realpathSync(this.getManagedGitRoot(scope));
+		const checkout = realpathSync(targetDir);
+		if (checkout === root || !checkout.startsWith(`${root}${sep}`)) {
+			throw new Error(`Refusing to refresh checkout outside managed Git root: ${targetDir}`);
+		}
+		return checkout;
+	}
+
+	private writeManagedGitSentinel(targetDir: string, source: GitSource, scope: SourceScope): string {
+		const checkout = this.resolveManagedGitCheckout(targetDir, scope);
+		const sentinel: ManagedGitSentinel = {
+			version: MANAGED_GIT_SENTINEL_VERSION,
+			identity: this.getGitIdentity(source),
+			checkoutId: randomUUID(),
+		};
+		writeFileSync(this.getManagedGitCheckoutIdPath(checkout), `${sentinel.checkoutId}\n`, {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		writeFileSync(this.getManagedGitSentinelPath(targetDir), `${JSON.stringify(sentinel)}\n`, {
+			encoding: "utf-8",
+			mode: 0o600,
+		});
+		return checkout;
+	}
+
+	private assertManagedGitCheckout(targetDir: string, source: GitSource, scope: SourceScope): string {
+		const checkout = this.resolveManagedGitCheckout(targetDir, scope);
+		const sentinelPath = this.getManagedGitSentinelPath(targetDir);
+		if (!existsSync(sentinelPath)) {
+			throw new Error(`Refusing to refresh checkout without managed Git sentinel: ${targetDir}`);
+		}
+		const expectedIdentity = this.getGitIdentity(source);
+		let sentinel: ManagedGitSentinel;
+		try {
+			const parsed: unknown = JSON.parse(readFileSync(sentinelPath, "utf-8"));
+			if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error();
+			const value = parsed as Record<string, unknown>;
+			if (
+				value.version !== MANAGED_GIT_SENTINEL_VERSION ||
+				typeof value.identity !== "string" ||
+				typeof value.checkoutId !== "string" ||
+				value.checkoutId.length === 0
+			) {
+				throw new Error();
+			}
+			sentinel = value as unknown as ManagedGitSentinel;
+		} catch {
+			throw new Error(`Managed Git sentinel is invalid for ${expectedIdentity}`);
+		}
+		if (sentinel.identity !== expectedIdentity) {
+			throw new Error(`Managed Git sentinel does not match ${expectedIdentity}`);
+		}
+		let checkoutId: string;
+		try {
+			checkoutId = readFileSync(this.getManagedGitCheckoutIdPath(checkout), "utf-8").trim();
+		} catch {
+			throw new Error(`Managed Git sentinel does not match checkout for ${expectedIdentity}`);
+		}
+		if (checkoutId !== sentinel.checkoutId) {
+			throw new Error(`Managed Git sentinel does not match checkout for ${expectedIdentity}`);
+		}
+		return checkout;
+	}
+
+	private async reportGitCleanup(targetDir: string, source: GitSource): Promise<void> {
+		const status = await this.runCommandCapture(
+			"git",
+			["status", "--porcelain=v1", "--untracked-files=all", "--ignored=matching"],
+			{ cwd: targetDir, timeoutMs: NETWORK_TIMEOUT_MS },
+		);
+		const count = status.split(/\r?\n/).filter(Boolean).length;
+		if (count === 0) return;
+		this.emitProgress({
+			type: "progress",
+			action: "update",
+			source: this.getGitIdentity(source),
+			message: `Discarding ${count} local ${count === 1 ? "path" : "paths"} from managed Git checkout`,
+		});
+	}
+
 	private getGitUpdateMarkerPath(targetDir: string): string {
 		return join(dirname(targetDir), `.${basename(targetDir)}.pi-update-incomplete`);
 	}
@@ -2007,8 +2125,13 @@ export class DefaultPackageManager implements PackageManager {
 	private async cleanAndInstallGitDependencies(
 		targetDir: string,
 		markerPath: string,
+		source: GitSource,
+		reportCleanup: boolean,
 		allowScripts: boolean,
 	): Promise<void> {
+		if (reportCleanup) {
+			await this.reportGitCleanup(targetDir, source);
+		}
 		// Clean untracked files (extensions should be pristine). If this fails after
 		// deleting dependencies, repair them so the existing extension still loads.
 		try {
@@ -2026,44 +2149,51 @@ export class DefaultPackageManager implements PackageManager {
 	}
 
 	private async ensureGitRef(
-		targetDir: string,
+		source: GitSource,
+		scope: SourceScope,
 		fetchArgs: string[],
 		ref: string,
 		allowScripts: boolean,
 	): Promise<void> {
+		const targetDir = this.getGitInstallPath(source, scope);
+		let managedTarget = this.assertManagedGitCheckout(targetDir, source, scope);
 		// Fetch only the ref we will reset to, avoiding unrelated branch/tag noise.
-		await this.runCommand("git", fetchArgs, { cwd: targetDir });
+		await this.runCommand("git", fetchArgs, { cwd: managedTarget });
 
 		const localHead = await this.runCommandCapture("git", ["rev-parse", "HEAD"], {
-			cwd: targetDir,
+			cwd: managedTarget,
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
 		const commitRef = `${ref}^{commit}`;
 		const targetHead = await this.runCommandCapture("git", ["rev-parse", commitRef], {
-			cwd: targetDir,
+			cwd: managedTarget,
 			timeoutMs: NETWORK_TIMEOUT_MS,
 		});
 		const markerPath = this.getGitUpdateMarkerPath(targetDir);
 		if (localHead.trim() === targetHead.trim()) {
 			if (existsSync(markerPath)) {
-				await this.cleanAndInstallGitDependencies(targetDir, markerPath, allowScripts);
+				await this.cleanAndInstallGitDependencies(managedTarget, markerPath, source, true, allowScripts);
 			} else {
-				await this.repairMissingGitDependencies(targetDir, allowScripts);
+				await this.repairMissingGitDependencies(managedTarget, allowScripts);
 			}
 			return;
 		}
 
+		managedTarget = this.assertManagedGitCheckout(targetDir, source, scope);
 		writeFileSync(markerPath, "", "utf-8");
-		await this.runCommand("git", ["reset", "--hard", commitRef], { cwd: targetDir });
-		await this.cleanAndInstallGitDependencies(targetDir, markerPath, allowScripts);
+		await this.reportGitCleanup(managedTarget, source);
+		await this.runCommand("git", ["reset", "--hard", commitRef], { cwd: managedTarget });
+		await this.cleanAndInstallGitDependencies(managedTarget, markerPath, source, false, allowScripts);
 	}
 
-	private async refreshTemporaryGitSource(source: GitSource, sourceStr: string): Promise<void> {
+	private async refreshTemporaryGitSource(source: GitSource): Promise<void> {
 		if (isOfflineModeEnabled()) {
 			return;
 		}
+		const identity = this.getGitIdentity(source);
+		this.assertManagedGitCheckout(this.getGitInstallPath(source, "temporary"), source, "temporary");
 		try {
-			await this.withProgress("pull", sourceStr, `Refreshing ${sourceStr}...`, async () => {
+			await this.withProgress("pull", identity, `Refreshing ${identity}...`, async () => {
 				await this.updateGit(source, "temporary");
 			});
 		} catch {
@@ -2075,6 +2205,7 @@ export class DefaultPackageManager implements PackageManager {
 		const targetDir = this.getGitInstallPath(source, scope);
 		rmSync(targetDir, { recursive: true, force: true });
 		rmSync(this.getGitUpdateMarkerPath(targetDir), { force: true });
+		rmSync(this.getManagedGitSentinelPath(targetDir), { force: true });
 		this.pruneEmptyGitParents(targetDir, this.getGitInstallRoot(scope));
 	}
 
