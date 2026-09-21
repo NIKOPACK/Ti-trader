@@ -10,12 +10,8 @@ import {
 	transitionObservedTrigger,
 } from "../trigger-facts.ts";
 import type { AutonomousConfig } from "./config.ts";
-import {
-	type AutonomousDecision,
-	type AutonomousStore,
-	enqueueAutonomousEvent,
-	noteObservationEvent,
-} from "./state.ts";
+import type { AutonomousDecision } from "./schema.ts";
+import { type AutonomousStore, enqueueAutonomousEvent, noteObservationEvent } from "./state.ts";
 
 export { failureCode };
 

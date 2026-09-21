@@ -48,7 +48,7 @@ Ti 与 Pi 的配置完全隔离。首次启动创建 `~/.ti-trader/agent/`，不
 
 交易所：Binance（现货与 USDⓈ-M 覆盖最完整）、OKX、Bybit（后两者 experimental）。语言、模式、市场类型在 `/settings`，写入 `~/.ti-trader/agent/trading.json`。模型认证 `auth.json`，交易所 key `keys.json`（权限 600）。手建的 `keys.json`、知乎密钥文件或 freqtrade 认证文件若 group/other 可读，读取前会收紧为 600。
 
-可选扩展在仓库 `extensions/`，发布时打进 `ti-trader/dist/`。默认只自动加载 `market-lab` 和 `market-chart`（只读，不下单）。其余按环境变量或 `--extension` 加载；`--no-extensions` 关掉用户扩展发现：
+可选扩展在仓库 `extensions/`，发布时打进 `ti-trader/dist/`。默认只自动加载 `market-lab`（只读，不下单）。其余按环境变量或 `--extension` 加载；`--no-extensions` 关掉用户扩展发现：
 
 - `web-search`：`TAVILY_API_KEY` 非空
 - `zhihu-research`：`ZHIHU_ACCESS_SECRET` 非空，或密钥文件有内容。默认 `~/.ti-trader/agent/zhihu-access-secret`，可用 `TI_ZHIHU_ACCESS_SECRET_FILE` 覆盖
@@ -56,7 +56,7 @@ Ti 与 Pi 的配置完全隔离。首次启动创建 `~/.ti-trader/agent/`，不
 - `subagent`：`TI_SUBAGENT` 为 `1` / `true` / `yes`。只读隔离子代理，不能交易
 - `freqtrade`：`TI_FREQTRADE_URL` 非空。本机 Freqtrade webserver 回测侧车，不下单；仅 `--extension` 时 URL 才回落到 `http://127.0.0.1:8080`
 
-默认 25 个原生交易工具（行情、账户、预检、买卖、风控）加上 market-lab / market-chart。清单与参数见 [DESIGN.md](DESIGN.md)。交易所连接、规划、风控在 `@nikopack/ti-trading-engine`。
+默认 25 个原生交易工具（行情、账户、预检、买卖、风控）加上 market-lab。清单与参数见 [DESIGN.md](DESIGN.md)。交易所连接、规划、风控在 `@nikopack/ti-trading-engine`。
 
 ### 专业子代理与历史续接
 
@@ -115,7 +115,7 @@ node packages/trading-agent/dist/cli.js --mode live --exchange binance
 
 实盘 API key：`/exchange-login okx` 交互录入，或编辑 `~/.ti-trader/agent/keys.json`（权限 600）。API key 只应授予必要的交易权限，不要授予提现权限；不要将 key、token 或账户敏感信息提交到仓库或贴入 issue。
 
-自主 Paper 不是默认产品。要跑无头循环，须在同一 `TI_DATA_DIR` 配置完整 `risk.account`、`orderApproval: "unattended"` 和 `autonomous.json`，再用 `ti --autonomous` 或 `/autonomous` 控制。自主 live 启动会被拒绝。步骤见 [autonomous-trading.md](../../docs/autonomous-trading.md)。
+自主 Paper 不是默认产品。在 Ti TUI 里运行 `/autonomous` 会打开初始化引导：确认模型、目标、硬性风控限额和无人值守下单审批后写入 `risk.account`、`orderApproval: "unattended"` 和 `autonomous.json` 并启动守护进程。自主 live 启动会被拒绝。步骤见 [autonomous-trading.md](../../docs/autonomous-trading.md)。
 
 ## 保存计划，明天继续
 
@@ -140,7 +140,7 @@ node packages/trading-agent/dist/cli.js --mode live --exchange binance
 
 跟踪还观察当前版本的关联订单变化及同标的账户保护覆盖。保护覆盖复用 `monitor.protectionCoveragePct`，但不把多个不完整止损或 OCO 腿相加来宣称保护完整；缺少数量、方向或触发价时显示未知。账户观测时间是读取完成时间，不冒充交易所事件发生时间。同一轮最多刷新 20 条关联执行，包括挂单及仍在引擎日志中、已成交但费用缺失的订单；游标跨重启轮转，未轮到的记录明确标为待刷新。
 
-事件与待发送通知在同一个计划事务内保存。每个计划成功通知后冷却 60 秒；冷却期间保留历史事件，并合并尚未发送的摘要。失败通知使用同一 ID 重试，30 秒租约、五分钟过期，状态见 `/health` 的“计划”项。归档、启用新版或 Paper 重置取消旧通知。发送后、确认落盘前退出仍可能重复通知，不保证严格只送一次；任何计划通知及重试都不会唤醒模型。原有成交监控和仓位守护的唤醒策略不变。
+事件与待发送通知在同一个计划事务内保存。每个计划成功通知后冷却 60 秒；冷却期间保留历史事件，并合并尚未发送的摘要。失败通知使用同一 ID 重试，30 秒租约、五分钟过期，状态见 `/show health` 的“计划”项。归档、启用新版或 Paper 重置取消旧通知。发送后、确认落盘前退出仍可能重复通知，不保证严格只送一次；任何计划通知及重试都不会唤醒模型。原有成交监控和仓位守护的唤醒策略不变。
 
 `check_order`、`buy`、`sell`、`place_oco` 可带 `plan: { id, version, intentId }`。模型应为同一拟议动作保持相同 `intentId`，不能用新 ID 重试结果未知的订单。开仓必须使用当前已启用、未到期、条件明确满足的版本；提交前再次校验。归档不撤销已存在订单，经引擎验证的减仓仍可关联原批准版本。计划关联的 live 订单始终要求逐单确认，即使直接交易配置为 `unattended`。
 
@@ -250,7 +250,7 @@ Paper 现货和 Paper 合约的触发在每次账户读取时懒惰撮合：所�
 - **裸仓告警**：持仓没有任何止损类保护单（stop/移动止损/OCO 止损腿）且超过一个轮询周期宽限期时，注入 `[position guard]` 消息唤醒 agent——要么立刻设置保护，要么向用户说明为何不保护。
 - **浮亏告警**：持仓未实现亏损达到 `alertLossPct`（默认 5%）时唤醒 agent 重新评估：砍仓、收紧止损或说明持有理由。同一仓位的告警受 `alertCooldownSec`（默认 900s）冷却限制，不会刷屏。
 
-`/monitor` 查看状态，`/monitor on|off` 开关本次会话的监控。`/paper reset [金额]` 重置模拟账户。`/autonomous` 控制显式启用的 Paper 自主运行时，不替代交互会话。
+`/monitor` 查看状态，`/monitor on|off` 开关本次会话的监控；`/monitor trigger add|list|remove|clear` 管理持久化触发器。`/paper reset [金额]` 重置模拟账户。`/autonomous` 控制显式启用的 Paper 自主运行时，不替代交互会话。
 
 未配置 `risk.account` 时，live 的 `cancel_order` / `cancel_order_list` 会拒绝撤销仍保护开仓的止损类挂单；应保留保护或走受控平仓。配置了账户硬风控后，由硬风控仲裁撤单。
 
@@ -261,8 +261,8 @@ Paper 现货和 Paper 合约的触发在每次账户读取时懒惰撮合：所�
 ```text
 /recovery
 /recovery run
-/audit
-/health
+/show audit
+/show health
 ```
 
 恢复按记录中的原始账户和客户端标识查询，只使用已有契约覆盖的查询方式。暂时查无订单、权限错误、账户不匹配、部分 OCO 证据和不完整成交数据不会被当作拒单；它们保持未决，不自动重发。已确认的挂单按保守名义额记账，后续订单变化不是每日额度的自动退款。
@@ -271,13 +271,13 @@ Paper 现货和 Paper 合约的触发在每次账户读取时懒惰撮合：所�
 
 账户替换和 Paper 重置使用持久化维护阻断，避免与另一个进程的提交交错。失败后若仍有维护记录，先停止其他写入者并核对账户与风险状态，再按 `/recovery` 显示的维护 ID 执行 `/recovery maintenance <ID> <证据引用>` 并确认。不要把清除维护记录当作完成对账。
 
-维护成功后会推进持久化准入代次，旧进程不能在阻断解除后继续提交旧计划。`/health` 若提示运行时已过期，应使用当前配置重启该进程，再重新规划和确认；账户身份和已有执行记录不会因此改变。
+维护成功后会推进持久化准入代次，旧进程不能在阻断解除后继续提交旧计划。`/show health` 若提示运行时已过期，应使用当前配置重启该进程，再重新规划和确认；账户身份和已有执行记录不会因此改变。
 
 风险/执行状态的文件锁不会因时间过长自动被接管。崩溃遗留锁需要核实所有写入者已停止后由操作者清理；状态文件损坏或同步失败会阻断操作，不会重建空账户来绕过错误。
 
 ## 持久化监控与实验性触发器
 
-`/trigger add|list|remove|clear` 的定义、状态、观测基线、冷却和通知标识存入 `monitoring-state.json`，按实际账户、模式、交易所、市场、报价币和持仓模式隔离。求值只读价格与持仓，不会直接下单。缺失、非法或超过五分钟的行情时间戳视为未知，不补算未观测到的跨越。
+`/monitor trigger add|list|remove|clear` 的定义、状态、观测基线、冷却和通知标识存入 `monitoring-state.json`，按实际账户、模式、交易所、市场、报价币和持仓模式隔离。求值只读价格与持仓，不会直接下单。缺失、非法或超过五分钟的行情时间戳视为未知，不补算未观测到的跨越。
 
 通知通过有界待发送队列交付，携带稳定的 `monitoringEventId`；租约为 30 秒，事件五分钟后过期，过期事件只保留诊断信息，不补执行动作。同一作用域最多保留 256 条通知，终态通知按七天期限清理。
 
@@ -326,18 +326,17 @@ src/
   tools/index.ts         25 个原生交易工具（行情读取与交易引擎编排）
   autonomous/            显式启用的 Paper 自主运行时（live 启动 fail-closed）
   monitor.ts              后台成交监控 + 仓位守护（裸仓/浮亏告警，唤醒 agent）
-  trigger-monitor.ts      实验性 /trigger：持久化条件与状态；live 只通知
+  trigger-monitor.ts      实验性触发器（/monitor trigger）：持久化条件与状态；live 只通知
   monitoring-state.ts     账户作用域、监控状态、通知队列和健康快照
   plans/                  私密版本化计划、只读跟踪、关联档案与分页复盘
   decisions/              公开决策理由、观测证据和分组评估
-  health.ts               /health 本地执行阻断和监控健康
-  commands.ts             交易 slash 命令、/recovery 对账和 /audit 审计
+  health.ts               状态栏与 /show health 本地执行阻断和监控健康
+  commands.ts             交易 slash 命令（/show、设置类）、/recovery 对账
   prompt.ts               交易系统提示词（整体替换编码提示词）
 
 packages/trading-engine/  独立交易引擎：规范化合约、ccxt/paper 适配器、规划、风控和保护逻辑
 extensions/
-  market-lab/           默认只读量化（指标、筛选、回放）
-  market-chart/         默认只读图表（show_market_view /chart）
+  market-lab/           默认只读量化与图表（指标、筛选、回放、show_market_view，/lab）
   market-research/      按需加载的市场研究子代理（TI_MARKET_RESEARCH）
   subagent/             按需加载的只读隔离子代理（TI_SUBAGENT）
   web-search/           按需加载的公开互联网研究（TAVILY_API_KEY）

@@ -1266,6 +1266,21 @@ describe("trading order tools", () => {
 	it("confirms live order and order-list cancellations before submitting", async () => {
 		const { cancelOrder, cancelOrderList, runtime } = createRuntime({
 			config: { ...DEFAULT_CONFIG, mode: "live", orderApproval: "confirm" },
+			openOrders: [
+				{
+					id: "order-1",
+					symbol: "BTC/USDT",
+					side: "sell",
+					type: "limit",
+					price: 110,
+					amount: 1,
+					filled: 0,
+					remaining: 1,
+					cost: 0,
+					status: "open",
+					timestamp: 1,
+				},
+			],
 		});
 		const confirm = vi.fn(async () => true);
 		const liveContext = { hasUI: true, ui: { confirm, notify: vi.fn() } } as unknown as ExtensionContext;

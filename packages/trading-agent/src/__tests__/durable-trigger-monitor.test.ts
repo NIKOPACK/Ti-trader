@@ -20,7 +20,7 @@ import {
 	type MonitoringStore,
 	readMonitoringHealth,
 } from "../monitoring-state.ts";
-import { createTriggerMonitorExtension } from "../trigger-monitor.ts";
+import { createTriggerCommandHandler, createTriggerMonitorExtension } from "../trigger-monitor.ts";
 
 const NOW = Date.parse("2026-01-01T00:00:00Z");
 const SCOPE: MonitoringScope = {
@@ -47,7 +47,6 @@ function definition(
 
 function harness(store: MonitoringStore, scope = SCOPE) {
 	const handlers = new Map<string, (event: unknown, ctx: ExtensionContext) => Promise<void>>();
-	let command: ((args: string, ctx: ExtensionCommandContext) => Promise<void>) | undefined;
 	const sendMessage = vi.fn<ExtensionAPI["sendMessage"]>();
 	const notify = vi.fn();
 	const ctx = {
@@ -57,15 +56,15 @@ function harness(store: MonitoringStore, scope = SCOPE) {
 		ui: { notify },
 	} as unknown as ExtensionCommandContext;
 	const api: Partial<ExtensionAPI> = {
-		registerCommand: (_name, options) => {
-			command = options.handler;
-		},
+		registerCommand: () => {},
 		on: (event, handler) => {
 			handlers.set(event, handler as (event: unknown, ctx: ExtensionContext) => Promise<void>);
 		},
 		sendMessage,
 	};
-	createTriggerMonitorExtension({ store, getScope: () => ({ ...scope, mode: runtime.mode }) })(api as ExtensionAPI);
+	const options = { store, getScope: () => ({ ...scope, mode: runtime.mode }) };
+	createTriggerMonitorExtension(options)(api as ExtensionAPI);
+	const command = createTriggerCommandHandler(options);
 	return {
 		sendMessage,
 		notify,

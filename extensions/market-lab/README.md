@@ -17,9 +17,10 @@ ti --extension ./extensions/market-lab/index.ts
 ## 工具
 
 - `calculate_indicators`：用当前 session 的已收盘 K 线计算快/慢 EMA、RSI、MACD、ATR、Bollinger Bands，以及成交量均值和成交量比率。可选 `emaFast`、`emaSlow`、`rsiPeriod`、`atrPeriod`（整数 2–200）；默认仍是 EMA20/50、RSI14、ATR14。样本不够的字段为 `null`，不编造。每条结果带 `source`。
-- `evaluate_strategy`：对命名预设评分：`ema-cross`、`rsi-revert`、`macd-hist`。内部分析路径与 `/indicators`、`/signal` 相同，只返回 `bias`、`event`、`reasons` 和失效参考，不下单。
+- `evaluate_strategy`：对命名预设评分：`ema-cross`、`rsi-revert`、`macd-hist`。内部分析路径与 `/lab indicators`、`/lab signal` 相同，只返回 `bias`、`event`、`reasons` 和失效参考，不下单。
 - `screen_markets`：对最多 8 个 session 市场标的做只读扫描，支持现货 `BTC/USDT` 与合约 `BTC/USDT:USDT`。重复标的会按大小写归一化后跳过并报告；每行保留数据源、收盘时间、样本数量和警告。单个标的失败不影响其余结果，全部失败或数据源混合时总览 `source` 为 `null`，以各行的来源为准。
 - `simulate_rule`：在已收盘 K 线上回放命名预设。信号只使用信号 K 线及之前的数据；入场用下一根 K 线开盘价，退出用信号后第 `horizon` 根 K 线收盘价（默认 5）。EMA/MACD 只按交叉开仓，RSI 只在进入超买/超卖区间时开仓，连续极值不会重复开仓。返回交易次数、胜率和平均收益；零交易时胜率、均值、最好/最差收益为 `null`。不含手续费、滑点、资金费或成交撮合；不是完整交易所回测，也不下单。
+- `show_market_view`：在 TUI 里渲染只读市场快照图，标的、周期与价位水平（entry/wait/invalidation/targets）全部由调用方提供。只在交互 TUI 可用，不推断信号、不生成价位、不下单。
 
 所有工具都使用 TypeBox schema，默认读取 100 根、最多读取 200 根 K 线，`limit` 必须是 20–200 的整数，不会静默截断非法输入。响应体最多 256 KiB，并排除当前尚未收盘的 K 线。扩展还校验 OHLCV 数值、时间顺序和高低价关系。数据不足、请求失败或数据非法时会报错，不伪造指标。
 
@@ -28,15 +29,16 @@ ti --extension ./extensions/market-lab/index.ts
 ## 命令
 
 ```text
-/indicators BTC/USDT 1h
-/signal BTC/USDT 4h
-/signal BTC/USDT 1h rsi-revert
-/signal BTC/USDT 1h ema-cross limit=120
-/screen BTC/USDT ETH/USDT 1h ema-cross limit=80
-/replay BTC/USDT 1h rsi-revert limit=120 horizon=5
+/lab indicators BTC/USDT 1h
+/lab signal BTC/USDT 4h
+/lab signal BTC/USDT 1h rsi-revert
+/lab signal BTC/USDT 1h ema-cross limit=120
+/lab screen BTC/USDT ETH/USDT 1h ema-cross limit=80
+/lab replay BTC/USDT 1h rsi-revert limit=120 horizon=5
+/lab chart BTC/USDT 1h
 ```
 
-命令只显示分析摘要，不触发模型回合或交易。`/screen` 支持 `limit=20-200`，`/replay` 支持 `limit=20-200` 和 `horizon=1-20`。预设为 `ema-cross`（默认）、`rsi-revert`、`macd-hist`。
+命令只显示分析摘要，不触发模型回合或交易。`/lab screen` 支持 `limit=20-200`，`/lab replay` 支持 `limit=20-200` 和 `horizon=1-20`。预设为 `ema-cross`（默认）、`rsi-revert`、`macd-hist`。`/lab chart` 打开只读 TUI 行情快照图（标的 + 周期）。
 
 ## 安全限制
 

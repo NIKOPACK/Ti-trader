@@ -7,6 +7,7 @@ import {
 	type RiskStateStore,
 } from "@nikopack/ti-trading-risk";
 import { AccountRiskGuard, isProtectiveExit } from "./account-risk.ts";
+import { boundedLookup } from "./bounded-lookup.ts";
 import { getTradingCapabilities, supportsCorrelatedLookup } from "./capabilities.ts";
 import type { FuturesPositionMode } from "./client-types.ts";
 import {
@@ -20,7 +21,6 @@ import {
 	isUnresolvedExecution,
 } from "./execution-journal.ts";
 import {
-	boundedLookup,
 	executionEvidence,
 	type ManualExecutionResolution,
 	manuallyResolveExecution,
@@ -125,6 +125,20 @@ function toPreparedPlanConfirmation(
 		warnings,
 		requote,
 	};
+}
+
+interface SubmissionRequest<T extends PlaceOrderResult | PlaceOcoOrderResult> {
+	plan: object;
+	label: string;
+	notional: number;
+	countTowardsDailyLimit: boolean;
+	preparedEvidence: Pick<OrderConfirmationEvidence, "referencePrice" | "amount" | "notional" | "riskNotional">;
+	summarize: (evidence: OrderConfirmationEvidence, warnings: string[]) => string;
+	intent: ExecutionRecord["intent"];
+	submit: () => Promise<T>;
+	preflight: () => Promise<OrderPreflightResult>;
+	policy: TradingEngineSubmissionPolicy;
+	signal?: AbortSignal;
 }
 
 const LIVE_CANCELLATION_REQUIRES_OPEN_IDENTITY =
@@ -546,18 +560,18 @@ export class TradingEngine {
 		) {
 			throw new Error("Atomic replacement requires a reducing order, account hard risk and adapter support");
 		}
-		return this.submitWithReservation(
+		return this.submitWithReservation({
 			plan,
-			"Order",
-			prepared.notional,
-			prepared.countTowardsDailyLimit,
-			{
+			label: "Order",
+			notional: prepared.notional,
+			countTowardsDailyLimit: prepared.countTowardsDailyLimit,
+			preparedEvidence: {
 				referencePrice: prepared.referencePrice,
 				amount: prepared.amount,
 				notional: prepared.notional,
 				riskNotional: prepared.notional,
 			},
-			(evidence, warnings) =>
+			summarize: (evidence, warnings) =>
 				withConfirmationWarnings(
 					formatPreparedOrderSummary(
 						prepared.side,
@@ -569,15 +583,15 @@ export class TradingEngine {
 					),
 					warnings,
 				),
-			{ kind: "order", input, ...(replacementIds ? { replacementIds } : {}) },
-			() =>
+			intent: { kind: "order", input, ...(replacementIds ? { replacementIds } : {}) },
+			submit: () =>
 				replacementIds
 					? this.exchangeClient.replaceProtectiveOrders!(input, replacementIds)
 					: this.exchangeClient.placeOrder(input),
-			() => this.preflightPreparedOrder(prepared, replacementIds),
+			preflight: () => this.preflightPreparedOrder(prepared, replacementIds),
 			policy,
 			signal,
-		);
+		});
 	}
 
 	async placeOco(
@@ -590,25 +604,25 @@ export class TradingEngine {
 		if (!prepared) throw new PreparedPlanError("OCO plan was not prepared by this trading engine");
 		const { listClientOrderId, aboveClientOrderId, belowClientOrderId } = executionClientIds(policy.intentId);
 		const input = { ...prepared.input, listClientOrderId, aboveClientOrderId, belowClientOrderId };
-		return this.submitWithReservation(
+		return this.submitWithReservation({
 			plan,
-			"OCO order",
-			prepared.riskNotional,
-			prepared.countTowardsDailyLimit,
-			{
+			label: "OCO order",
+			notional: prepared.riskNotional,
+			countTowardsDailyLimit: prepared.countTowardsDailyLimit,
+			preparedEvidence: {
 				referencePrice: prepared.referencePrice,
 				amount: prepared.input.amount,
 				notional: prepared.observedNotional,
 				riskNotional: prepared.riskNotional,
 			},
-			(evidence, warnings) =>
+			summarize: (evidence, warnings) =>
 				withConfirmationWarnings(
 					formatPreparedOcoSummary(prepared.input, this.quoteCurrency, evidence.notional, evidence.riskNotional),
 					warnings,
 				),
-			{ kind: "oco", input },
-			() => this.exchangeClient.placeOcoOrder(input),
-			async () => {
+			intent: { kind: "oco", input },
+			submit: () => this.exchangeClient.placeOcoOrder(input),
+			preflight: async () => {
 				const result = await preflightOco(prepared, {
 					getMarketInfo: (symbol) => this.marketDataClient.getMarketInfo(symbol),
 					getBalances: () => this.marketDataClient.getBalances(),
@@ -621,7 +635,7 @@ export class TradingEngine {
 			},
 			policy,
 			signal,
-		);
+		});
 	}
 
 	private throwIfAborted(signal?: AbortSignal): void {
@@ -645,14 +659,12 @@ export class TradingEngine {
 	}
 
 	private async revalidatePreparedPlan(
-		plan: object,
-		label: string,
-		preflight: () => Promise<OrderPreflightResult>,
-		intent: ExecutionRecord["intent"],
-		countTowardsDailyLimit: boolean,
-		policy: TradingEngineSubmissionPolicy,
-		signal?: AbortSignal,
+		request: Pick<
+			SubmissionRequest<PlaceOrderResult | PlaceOcoOrderResult>,
+			"plan" | "label" | "preflight" | "intent" | "countTowardsDailyLimit" | "policy" | "signal"
+		>,
 	) {
+		const { plan, label, preflight, intent, countTowardsDailyLimit, policy, signal } = request;
 		this.throwIfAborted(signal);
 		this.assertPreparedPlanFresh(plan, label);
 		const executionPreflight = await preflight();
@@ -664,18 +676,20 @@ export class TradingEngine {
 	}
 
 	private async submitWithReservation<T extends PlaceOrderResult | PlaceOcoOrderResult>(
-		plan: object,
-		label: string,
-		notional: number,
-		countTowardsDailyLimit: boolean,
-		preparedEvidence: Pick<OrderConfirmationEvidence, "referencePrice" | "amount" | "notional" | "riskNotional">,
-		summarize: (evidence: OrderConfirmationEvidence, warnings: string[]) => string,
-		intent: ExecutionRecord["intent"],
-		submit: () => Promise<T>,
-		preflight: () => Promise<OrderPreflightResult>,
-		policy: TradingEngineSubmissionPolicy,
-		signal?: AbortSignal,
+		request: SubmissionRequest<T>,
 	): Promise<T> {
+		const {
+			plan,
+			label,
+			notional,
+			countTowardsDailyLimit,
+			preparedEvidence,
+			summarize,
+			intent,
+			submit,
+			policy,
+			signal,
+		} = request;
 		this.throwIfAborted(signal);
 		const journal = this.executionJournal();
 		if (this.consumedPlans.has(plan)) {
@@ -690,15 +704,7 @@ export class TradingEngine {
 		let execution: ExecutionRecord;
 		let riskRevision: number | undefined;
 		try {
-			initial = await this.revalidatePreparedPlan(
-				plan,
-				label,
-				preflight,
-				intent,
-				countTowardsDailyLimit,
-				policy,
-				signal,
-			);
+			initial = await this.revalidatePreparedPlan(request);
 			if (this.submissionsRetired) throw new Error("Trading engine was replaced; prepare with the active runtime");
 			if (!policy.confirm && marketEvidenceChanged(preparedEvidence, initial.preflight)) {
 				throw new PreparedPlanError(
@@ -761,15 +767,7 @@ export class TradingEngine {
 					);
 				}
 				try {
-					const current = await this.revalidatePreparedPlan(
-						plan,
-						label,
-						preflight,
-						intent,
-						countTowardsDailyLimit,
-						policy,
-						signal,
-					);
+					const current = await this.revalidatePreparedPlan(request);
 					if (countTowardsDailyLimit && current.account && current.account.notional > execution.notional) {
 						throw new PreparedPlanError("Account notional increased after reservation; prepare a fresh intent");
 					}
@@ -866,7 +864,7 @@ export class TradingEngine {
 	}
 
 	async cancelOrder(id: string, symbol: string, signal?: AbortSignal, intentId?: string): Promise<void> {
-		if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled");
+		this.throwIfAborted(signal);
 		if (this.mode === "live" && !this.accountRisk?.state()) {
 			await this.assertLiveCancellationKeepsProtection([await this.requireLiveOpenOrder(id, symbol)]);
 		}
@@ -881,7 +879,7 @@ export class TradingEngine {
 	}
 
 	async cancelOrderList(orderListId: string, symbol: string, signal?: AbortSignal): Promise<void> {
-		if (signal?.aborted) throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled");
+		this.throwIfAborted(signal);
 		let mutationId: string | undefined;
 		if (this.accountRisk?.state()) {
 			const list = await this.exchangeClient.getOrderList(orderListId);

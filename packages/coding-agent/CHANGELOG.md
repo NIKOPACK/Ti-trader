@@ -7,6 +7,7 @@
 - Added RPC `clear_queue` to retrieve and remove queued steering and follow-up messages ([#8432](https://github.com/earendil-works/pi/issues/8432)).
 - Added masked extension input dialogs via `ctx.ui.input(..., { secret: true })`, including an RPC hint for clients.
 - Added `/tui-settings` and `/settings tui` so an extension can own `/settings` while the agent TUI settings remain reachable.
+- `/model` now shows each model's per-model thinking level as a bar plus label, and Left/Right arrows adjust the highlighted model's level (persisted as a per-model override; adjusting the active model applies immediately).
 
 ### Changed
 

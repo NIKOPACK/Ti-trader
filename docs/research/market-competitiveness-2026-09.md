@@ -26,7 +26,7 @@ Ti 选的是「人确认的交易助手，不是无人值守赚钱服务」（�
 | 执行 | 25 个原生交易工具；`buy`/`sell` 是一等工具，不是 shell 包装 |
 | 安全切面 | 编码工具全部禁用（`noTools: "builtin"`）；密钥本机 `600` |
 | 风控 | 单笔/每日名义额、白名单、未知提交不重发 |
-| 恢复 | 执行记录、启动有界对账、`/recovery` `/audit` `/health` |
+| 恢复 | 执行记录、启动有界对账、`/recovery` `/show audit` `/show health` |
 | 能力诚实 | `supported` / `unsupported` / `unknown` 分开；除 Paper 与 Binance 离线契约外，其他交易所标 experimental |
 | 未做 | 正式回测、cron 无人值守、Web UI、MCP server |
 | 发布声明 | 已发布 CLI ≠ 生产验收。授权实盘试点仍缺证据 |
@@ -137,7 +137,7 @@ Ti 目前唯一站得住的差异是表里第 2–4 行：**密钥与 shell 隔�
 
 ### 4. 把已有 journal 做成「人能复核的决策记录」
 
-OpenAlice 的 Trading as Git 是审单 UX。Ti 已有执行记录和 `/audit`，缺的是用户能打开的「为什么下、预检说了什么、谁确认的」。这比新交易所更能支撑「助手」定位。不要为此重开 `write` 工具（见 `docs/research/agent-memory-patterns.md`）。
+OpenAlice 的 Trading as Git 是审单 UX。Ti 已有执行记录和 `/show audit`，缺的是用户能打开的「为什么下、预检说了什么、谁确认的」。这比新交易所更能支撑「助手」定位。不要为此重开 `write` 工具（见 `docs/research/agent-memory-patterns.md`）。
 
 ### 5. 一条实盘路径的外部验证，而不是第 N 个 experimental 所
 
@@ -147,7 +147,7 @@ OpenAlice 的 Trading as Git 是审单 UX。Ti 已有执行记录和 `/audit`，
 
 - 不做 Web Autopilot / 公开收益榜（NOFX 已占，且与人确认定位冲突）
 - 不做全市场回测引擎（Jesse/Freqtrade；以后若要，优先互操作而不是重写）
-- 不把 live `/trigger` 升级成自动拉起交易回合（现文档已经禁止）
+- 不把 live `/monitor trigger` 升级成自动拉起交易回合（现文档已经禁止）
 - 不靠「更多工具数量」对抗交易所 MCP
 
 ## 来源

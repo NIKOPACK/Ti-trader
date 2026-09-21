@@ -46,7 +46,7 @@ Implemented in the engine journal and the runtime's combined durable store. Prep
 
 ## M3: Startup and bounded automatic reconciliation
 
-Implemented with original-scope lookup, bounded attempts, confirmed manual resolution and persistent maintenance. Maintenance fences exposure inspection before replacement/reset. Successful maintenance advances a durable admission generation; stale and during-maintenance runtimes cannot reuse old plans afterward. Startup captures the generation before configuration/client construction and rejects crossed generations. `/health` identifies stale runtimes requiring reinitialization.
+Implemented with original-scope lookup, bounded attempts, confirmed manual resolution and persistent maintenance. Maintenance fences exposure inspection before replacement/reset. Successful maintenance advances a durable admission generation; stale and during-maintenance runtimes cannot reuse old plans afterward. Startup captures the generation before configuration/client construction and rejects crossed generations. `/show health` identifies stale runtimes requiring reinitialization.
 
 **Problem:** a durable record is only useful if a subsequent process can resolve it safely. A single not-found response may reflect exchange indexing delay, not proof of rejection.
 
@@ -91,7 +91,7 @@ Implemented in `packages/trading-engine/src/capabilities.ts` and consumed by cap
 
 ## M5: Durable monitoring, audit and health
 
-Implemented in the scoped monitoring store and monitor extensions, with bilingual `/health` and journal-linked `/audit`. Notification callback failures do not stop observation collection. Unknown observations invalidate stable-for continuity, and independent time conditions remain evaluable. Queue selection considers eligibility and fair retry order before the bounded attempt budget. Live order-fill wakes require actual recent open-order evidence from the current lifecycle; persisted missing orders cannot become fresh merely because another poll completed.
+Implemented in the scoped monitoring store and monitor extensions, with bilingual `/show health` and journal-linked `/show audit`. Notification callback failures do not stop observation collection. Unknown observations invalidate stable-for continuity, and independent time conditions remain evaluable. Queue selection considers eligibility and fair retry order before the bounded attempt budget. Live order-fill wakes require actual recent open-order evidence from the current lifecycle; persisted missing orders cannot become fresh merely because another poll completed.
 
 **Implementation:**
 

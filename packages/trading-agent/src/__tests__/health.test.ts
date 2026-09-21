@@ -1,7 +1,7 @@
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { type Component, ProcessTerminal, TuiMainScreen, visibleWidth } from "@earendil-works/pi-tui";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { createOperationalHealthExtension, createTradingStatus, readOperationalHealth } from "../health.ts";
+import { createHealthViewHandler, createTradingStatus, readOperationalHealth } from "../health.ts";
 import * as monitoringState from "../monitoring-state.ts";
 import { createMemoryMonitoringStore, ensureMonitoringScope } from "../monitoring-state.ts";
 import { assessOperationalHealth } from "../operational-health.ts";
@@ -32,24 +32,14 @@ const runtime = vi.hoisted(() => ({
 vi.mock("../context.ts", () => ({ getTrading: () => runtime }));
 
 function fixture(
-	readHealth: Parameters<typeof createOperationalHealthExtension>[0],
-	getLanguage?: Parameters<typeof createOperationalHealthExtension>[1],
+	readHealth?: Parameters<typeof createHealthViewHandler>[1],
+	getLanguage?: Parameters<typeof createHealthViewHandler>[2],
 ) {
-	let handler: ((args: string, ctx: ExtensionCommandContext) => Promise<void> | void) | undefined;
 	const appendEntry = vi.fn();
 	const notify = vi.fn();
-	const events = new Map<string, (event: unknown, ctx: ExtensionCommandContext) => void>();
-	const api = {
-		on: (name: string, fn: (event: unknown, ctx: ExtensionCommandContext) => void) => events.set(name, fn),
-		registerEntryRenderer: vi.fn(),
-		appendEntry,
-		registerCommand: vi.fn((_name: string, command: { handler: typeof handler }) => {
-			handler = command.handler;
-		}),
-	} as unknown as ExtensionAPI;
-	createOperationalHealthExtension(readHealth, getLanguage)(api);
-	if (!handler) throw new Error("Health command was not registered");
-	return { handler, appendEntry, notify, events, ctx: { ui: { notify } } as unknown as ExtensionCommandContext };
+	const pi = { appendEntry } as unknown as ExtensionAPI;
+	const handler = createHealthViewHandler(pi, readHealth, getLanguage);
+	return { handler, appendEntry, notify, ctx: { ui: { notify } } as unknown as ExtensionCommandContext };
 }
 
 describe("health command", () => {
@@ -71,7 +61,11 @@ describe("health command", () => {
 			mode: "tui",
 			hasUI: true,
 			ui: {
-				theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
+				theme: {
+					fg: (_color: string, text: string) => text,
+					bold: (text: string) => text,
+					inverse: (text: string) => text,
+				},
 				setStatus: vi.fn(),
 				setWidget: vi.fn((_key: string, factory: (tui: TuiMainScreen) => Component) => {
 					widget = factory(tui);
@@ -84,7 +78,7 @@ describe("health command", () => {
 		// A routine snapshot renders venue identity only: no alert row and no monitor noise.
 		const routine = widget.render(80).join("\n");
 		expect(routine).toContain("模拟盘");
-		expect(routine).toContain("行情来源：OKX 公开接口");
+		expect(routine).toContain("公开行情");
 		expect(routine).not.toContain("⚠");
 		status.update(ctx);
 		expect(ctx.ui.setWidget).toHaveBeenCalledOnce();
@@ -105,7 +99,7 @@ describe("health command", () => {
 		});
 		vi.advanceTimersByTime(5_000);
 		const failed = widget.render(80).join("\n");
-		expect(failed).toContain("/health");
+		expect(failed).toContain("/show health");
 		expect(failed).not.toContain("secret fixture");
 		expect(failed).not.toContain("未决执行");
 		expect(failed).toContain("模拟盘");
@@ -139,7 +133,7 @@ describe("health command", () => {
 		const text = JSON.stringify(setWidget.mock.calls);
 		expect(text).toContain("PAPER");
 		expect(text).toContain("OKX");
-		expect(text).toContain("market data: OKX public");
+		expect(text).toContain("public market data");
 		expect(text).toContain("Health unavailable");
 		expect(text).not.toContain("secret monitoring fixture");
 		status.dispose();
@@ -190,10 +184,10 @@ describe("health command", () => {
 				ui: { setStatus: vi.fn(), setWidget },
 			} as unknown as ExtensionCommandContext;
 			status.update(ctx);
-			// Monitoring observations now belong to /health, so the widget must stay free of them.
+			// Monitoring observations now belong to /show health, so the widget must stay free of them.
 			const widgetText = JSON.stringify(setWidget.mock.calls);
 			expect(widgetText).not.toContain(label);
-			expect(widgetText).toContain(language === "zh-CN" ? "行情来源：OKX 公开接口" : "market data: OKX public");
+			expect(widgetText).toContain(language === "zh-CN" ? "公开行情" : "public market data");
 			const f = fixture(readHealth, () => language);
 			await f.handler("", f.ctx);
 			expect(JSON.stringify(f.appendEntry.mock.calls)).toContain(label);
@@ -223,7 +217,11 @@ describe("health command", () => {
 			mode: "tui",
 			hasUI: true,
 			ui: {
-				theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
+				theme: {
+					fg: (_color: string, text: string) => text,
+					bold: (text: string) => text,
+					inverse: (text: string) => text,
+				},
 				setStatus: vi.fn(),
 				setWidget: vi.fn((_key: string, factory: (tui: TuiMainScreen) => Component) => {
 					widget = factory(tui);
@@ -233,7 +231,7 @@ describe("health command", () => {
 		status.update(ctx);
 		if (!widget) throw new Error("Missing status widget");
 		const first = widget.render(140).join("\n");
-		expect(first).toContain("[ PAPER ]");
+		expect(first).toContain("PAPER");
 		expect(first).not.toContain("observed ");
 		vi.advanceTimersByTime(5_000);
 		// Idle refreshes re-read health but must not churn the status row with new ages.
@@ -263,7 +261,7 @@ describe("health command", () => {
 			const text = JSON.stringify(setWidget.mock.calls);
 			expect(text).not.toContain(at === undefined ? "unknown" : "stale");
 			expect(text).not.toContain("observed ");
-			expect(text).toContain("market data: OKX public");
+			expect(text).toContain("public market data");
 			status.dispose();
 		},
 	);
@@ -295,9 +293,9 @@ describe("health command", () => {
 		const lines: string[] = setWidget.mock.calls[0][1];
 		expect(lines).toHaveLength(2);
 		expect(lines[0]).toBe(
-			"⚠ Entry blocks: unresolved executions  ·  Inspect /recovery; do not resubmit orders.  ·  /health",
+			"⚠ Entry blocks: unresolved executions  ·  Inspect /recovery; do not resubmit orders.  ·  /show health",
 		);
-		expect(lines[1]).toBe("[ PAPER ]  OKX  Spot  USDT  market data: OKX public");
+		expect(lines[1]).toBe("[ PAPER ]  OKX  Spot  USDT  public market data");
 		expect(lines.join("\n")).not.toMatch(/authorized|safe to trade/i);
 		status.dispose();
 	});
@@ -375,7 +373,7 @@ describe("health command", () => {
 		const readHealth = vi.fn(() => readOperationalHealth(createMemoryMonitoringStore()));
 		const f = fixture(readHealth, () => "zh-CN");
 		await f.handler("run", f.ctx);
-		expect(f.notify).toHaveBeenCalledWith("用法：/health", "warning");
+		expect(f.notify).toHaveBeenCalledWith("用法：/show health", "warning");
 		expect(readHealth).not.toHaveBeenCalled();
 		await f.handler("", f.ctx);
 		expect(f.appendEntry).toHaveBeenCalledWith(

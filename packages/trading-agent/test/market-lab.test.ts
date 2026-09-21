@@ -69,9 +69,17 @@ describe("market-lab", () => {
 			registerCommand: (name: string) => {
 				commands.push(name);
 			},
+			registerEntryRenderer: () => {},
+			appendEntry: () => {},
 		} as unknown as ExtensionAPI);
-		expect(tools).toEqual(["calculate_indicators", "evaluate_strategy", "screen_markets", "simulate_rule"]);
-		expect(commands).toEqual(["indicators", "signal", "screen", "replay"]);
+		expect(tools).toEqual([
+			"calculate_indicators",
+			"evaluate_strategy",
+			"screen_markets",
+			"simulate_rule",
+			"show_market_view",
+		]);
+		expect(commands).toEqual(["lab"]);
 		expect(tools).not.toContain("analyze_market_structure");
 		expect(tools).not.toContain("generate_trade_signal");
 	});
@@ -332,7 +340,7 @@ describe("market-lab", () => {
 			symbol: "BTC/USDT",
 			limit: 80,
 		});
-		expect(parseLabArgs("BTC/USDT horizon=3").error).toMatch(/only supported by \/replay/);
+		expect(parseLabArgs("BTC/USDT horizon=3").error).toMatch(/only supported by \/lab replay/);
 		expect(parseLabArgs("BTC/USDT 2h bogus").error).toMatch(/Unknown argument/);
 	});
 
@@ -375,7 +383,7 @@ describe("market-lab", () => {
 			symbols: ["BTC/USDT", "ETH/USDT"],
 			limit: 50,
 		});
-		expect(parseScreenArgs("1h").error).toMatch(/Usage: \/screen/);
+		expect(parseScreenArgs("1h").error).toMatch(/Usage: \/lab screen/);
 	});
 
 	it("screens multiple symbols and keeps per-symbol failures", async () => {
@@ -451,13 +459,15 @@ describe("market-lab", () => {
 
 	it("passes command options and cancellation to replay and screen without trading", async () => {
 		const commands = new Map<string, Parameters<ExtensionAPI["registerCommand"]>[1]>();
-		const api: Pick<ExtensionAPI, "registerTool" | "registerCommand"> = {
+		const api = {
 			registerTool: vi.fn(),
-			registerCommand: (name, options) => {
+			registerCommand: (name: string, options: Parameters<ExtensionAPI["registerCommand"]>[1]) => {
 				commands.set(name, options);
 			},
+			registerEntryRenderer: vi.fn(),
+			appendEntry: vi.fn(),
 		};
-		marketLabExtension(api as ExtensionAPI);
+		marketLabExtension(api as unknown as ExtensionAPI);
 		const notify = vi.fn();
 		const controller = new AbortController();
 		const ctx = { signal: controller.signal, ui: { notify } } as unknown as ExtensionCommandContext;
@@ -466,10 +476,10 @@ describe("market-lab", () => {
 			source: { venue: "okx", market: "spot", kind: "session-klines" },
 		}));
 		setMarketLabCandleProvider(provider);
-		await commands.get("replay")!.handler("BTC/USDT 1h limit=60 horizon=3", ctx);
+		await commands.get("lab")!.handler("replay BTC/USDT 1h limit=60 horizon=3", ctx);
 		expect(JSON.parse(notify.mock.calls[0][0])).toMatchObject({ horizon: 3, candleCount: 60 });
 		controller.abort();
-		await expect(commands.get("screen")!.handler("BTC/USDT 1h limit=60", ctx)).rejects.toThrow("cancelled");
+		await expect(commands.get("lab")!.handler("screen BTC/USDT 1h limit=60", ctx)).rejects.toThrow("cancelled");
 		expect(provider).toHaveBeenCalledTimes(1);
 	});
 

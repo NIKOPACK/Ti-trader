@@ -45,11 +45,6 @@ export function resolveBundledMarketLabExtension(): string {
 	return resolveBundledExtension("market-lab");
 }
 
-/** Resolve the bundled market-chart extension directory. */
-export function resolveBundledMarketChartExtension(): string {
-	return resolveBundledExtension("market-chart");
-}
-
 /** Resolve the bundled web-search extension directory. */
 export function resolveBundledWebSearchExtension(): string {
 	return resolveBundledExtension("web-search");
@@ -77,7 +72,7 @@ export function resolveBundledFreqtradeExtension(): string {
 
 /**
  * Extra bundled extension directories to auto-load when their opt-in
- * credentials or flags are present. Does not include market-lab or market-chart.
+ * credentials or flags are present. Does not include market-lab.
  */
 export function resolveOptionalBundledExtensionPaths(): string[] {
 	const paths: string[] = [];

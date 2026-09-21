@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import ccxt, { type Order as CcxtOrder, type Ticker as CcxtTicker, type Exchange } from "ccxt";
+import { errorMessage } from "./error-message.ts";
 import {
 	type Order,
 	type OrderFeeObservation,
@@ -139,7 +140,7 @@ function errorCode(error: unknown): string | undefined {
 		const code = (error as { code?: unknown }).code;
 		if (typeof code === "number" || typeof code === "string") return String(code);
 	}
-	const message = error instanceof Error ? error.message : String(error);
+	const message = errorMessage(error);
 	return message.match(/-\d{3,5}\b/)?.[0];
 }
 
@@ -229,7 +230,7 @@ export function normalizeExchangeError(error: unknown, operation: string): Error
 			: undefined;
 	const responseBody =
 		response?.body && typeof response.body === "object" ? (response.body as Record<string, unknown>) : undefined;
-	const message = error instanceof Error ? error.message : String(error);
+	const message = errorMessage(error);
 	const codeValue = value?.code ?? response?.code ?? responseBody?.code;
 	const code =
 		typeof codeValue === "number" || typeof codeValue === "string"

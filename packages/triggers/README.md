@@ -6,7 +6,7 @@ Actions are limited to `notify` and `wake_agent`. This package does not submit, 
 
 ## `ti-trader` monitor
 
-`ti-trader` registers an experimental `/trigger` command (`add` / `list` / `remove` / `clear`).
+`ti-trader` exposes experimental triggers as `/monitor trigger` (`add` / `list` / `remove` / `clear`).
 
 - Definitions, runtime state, pending notifications, and fact baselines are durably scoped by non-secret account identity, mode, exchange, market type, quote currency, and position mode. They survive restart and are isolated from other accounts/scopes.
 - The monitor polls `TradingRuntime.marketData` (prices) and `tradingEngine.getPositions()` (PnL facts). It does not call order-placement APIs.
@@ -24,8 +24,8 @@ Policies are `once` (fire once, including an already-true initial condition), `o
 Example:
 
 ```text
-/trigger add {"id":"btc-move","name":"BTC 1m +1%","when":{"kind":"change","fact":{"key":"price:BTC/USDT"},"windowSec":60,"operator":"gte","value":1,"unit":"percent"},"then":{"kind":"wake_agent","message":"BTC moved at least 1% over the sampled 60s window; review context"},"policy":{"mode":"once"}}
-/trigger add {"id":"long-pnl","name":"BTC long PnL","when":{"kind":"compare","fact":{"key":"position_pnl_pct:BTC/USDT:USDT:LONG"},"operator":"lt","value":-2},"then":{"kind":"notify","message":"BTC long unrealized PnL below -2%"},"policy":{"mode":"on_edge","cooldownSec":300}}
+/monitor trigger add {"id":"btc-move","name":"BTC 1m +1%","when":{"kind":"change","fact":{"key":"price:BTC/USDT"},"windowSec":60,"operator":"gte","value":1,"unit":"percent"},"then":{"kind":"wake_agent","message":"BTC moved at least 1% over the sampled 60s window; review context"},"policy":{"mode":"once"}}
+/monitor trigger add {"id":"long-pnl","name":"BTC long PnL","when":{"kind":"compare","fact":{"key":"position_pnl_pct:BTC/USDT:USDT:LONG"},"operator":"lt","value":-2},"then":{"kind":"notify","message":"BTC long unrealized PnL below -2%"},"policy":{"mode":"on_edge","cooldownSec":300}}
 ```
 
 It is independently buildable and testable:

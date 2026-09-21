@@ -70,14 +70,16 @@ ti --autonomous status      # 显式启用的 Paper 自主运行时（需独立�
 | 命令 | 作用 |
 | --- | --- |
 | `/settings` | 语言、模式、交易所、市场、密钥、风控、模拟账户、监控 |
-| `/balance` `/positions` `/orders` `/trades` `/markets` | 账户与市场 |
-| `/mode` `/exchange` `/market` `/approval` | 切换运行时。live 需要密钥。`unattended` 需要确认 |
+| `/show` | 只读视图：`balance` `positions` `orders` `trades` `markets` `audit` `health` |
+| `/lab` | 只读行情分析：`indicators` `signal` `screen` `replay` `chart` |
+| `/mode` `/exchange` `/market` `/approval` | 切换运行时。裸调显示当前值。live 需要密钥。`unattended` 需要确认 |
 | `/risk` | 限额、已用/预占额度、历史独立占用对账 |
-| `/recovery` `/audit` `/health` | 未决执行、脱敏审计、本地开仓健康 |
+| `/recovery` | 未决执行与有界只读对账 |
+| `/monitor` | 监控状态与 `trigger add|list|remove|clear` |
 | `/autonomous` | 控制显式启用的 Paper 自主运行时。live 启动拒绝 |
 | `/exchange-login <id>` | 写入交易所 API key |
 
-`/trigger` 是实验性功能。live 触发器只通知，不会拉起交易回合。手建的 `keys.json`（以及知乎/freqtrade 密钥文件）若 group/other 可读，读取前会收紧为 `600`。
+`/monitor trigger` 是实验性功能。live 触发器只通知，不会拉起交易回合。手建的 `keys.json`（以及知乎/freqtrade 密钥文件）若 group/other 可读，读取前会收紧为 `600`。
 
 ## 先说清楚的边界
 

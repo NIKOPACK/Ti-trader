@@ -17,21 +17,20 @@ interface PackageManifest {
 
 const extensionNames = [
 	"market-lab",
-	"market-chart",
 	"market-research",
 	"web-search",
 	"zhihu-research",
 	"subagent",
 	"freqtrade",
 ] as const;
-const defaultAutoloadExtensions = ["./dist/market-lab/index.js", "./dist/market-chart/index.js"];
+const defaultAutoloadExtensions = ["./dist/market-lab/index.js"];
 
 function readManifest(relativeUrl: string): PackageManifest {
 	return JSON.parse(readFileSync(fileURLToPath(new URL(relativeUrl, import.meta.url)), "utf8")) as PackageManifest;
 }
 
 describe("extension packaging", () => {
-	it("publishes ti-trader with default lab and chart autoload only", () => {
+	it("publishes ti-trader with default market-lab autoload only", () => {
 		const manifest = readManifest("../package.json");
 
 		expect(manifest.keywords).toContain("pi-package");

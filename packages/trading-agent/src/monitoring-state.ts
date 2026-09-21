@@ -8,7 +8,7 @@ import {
 	type TriggerDefinition,
 	validateTriggerDefinition,
 } from "@nikopack/ti-triggers";
-import { type AutonomousState, validateAutonomousState } from "./autonomous/state.ts";
+import { type AutonomousState, validateAutonomousState } from "./autonomous/schema.ts";
 import { readJsonFile, TRADING_STATE_PATH, writeJsonFileDurable } from "./config.ts";
 
 export const MONITORING_MAX_AGE_MS = 5 * 60_000;
@@ -87,6 +87,8 @@ export interface MonitoringNotification {
 	leaseUntil?: number;
 	finishedAt?: number;
 }
+
+export type MonitoringNotificationSource = MonitoringNotification["source"];
 
 export interface MonitoringScopeState {
 	scope: MonitoringScope;

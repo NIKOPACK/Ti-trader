@@ -56,13 +56,13 @@ describe("Ti startup header", () => {
 		expect(text).toContain("ctrl+o more");
 	});
 
-	it("paints the solid wordmark in #808080, not accent", () => {
+	it("paints the logo in a solid gray and the title in accent", () => {
 		const theme = getThemeByName("light");
 		if (!theme) throw new Error("Missing light theme");
 		const rendered = new TradingHeader("0.2.1", () => ({ language: "en-US", theme })).render(100).join("\n");
-		const wordmark = " ████████  ██";
-		expect(rendered).toContain(`\x1b[38;2;128;128;128m${wordmark}\x1b[39m`);
-		expect(rendered).not.toContain(theme.fg("accent", wordmark));
+		expect(rendered).toContain("\x1b[38;2;128;128;128m ████████  ██\x1b[39m");
+		expect(rendered).toContain("\x1b[38;2;128;128;128m    ██     ██\x1b[39m");
+		expect(rendered).toContain(theme.bold(theme.fg("accent", "Ti")));
 	});
 
 	it("reads current keybindings instead of hardcoding shortcut labels", () => {

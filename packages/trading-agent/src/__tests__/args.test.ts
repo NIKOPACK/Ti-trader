@@ -3,18 +3,18 @@ import { assertSafeUrl } from "../../../../extensions/web-search/index.ts";
 import { parseTradingArgs, printHelp } from "../args.ts";
 
 describe("extension arguments", () => {
-	it("documents recovery, health and persistent monitoring in CLI help", () => {
+	it("documents recovery, consolidated views and persistent monitoring in CLI help", () => {
 		const log = vi.spyOn(console, "log").mockImplementation(() => {});
 		try {
 			printHelp();
 			const help = log.mock.calls[0]?.[0];
 			expect(help).toContain("/recovery");
-			expect(help).toContain("/audit");
-			expect(help).toContain("/health");
+			expect(help).toContain("/show");
+			expect(help).toContain("/lab");
+			expect(help).toContain("/monitor");
 			expect(help).toContain("/plan");
 			expect(help).toContain("/decisions");
 			expect(help).toContain("tracking never places orders");
-			expect(help).toContain("Persistent experimental monitor");
 			expect(help).not.toContain("in-memory monitor");
 		} finally {
 			log.mockRestore();

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import {
 	type AccountRiskAssessment,
 	type AccountRiskFacts,
@@ -13,19 +13,13 @@ import {
 	validateAccountRiskLimits,
 	validateAccountRiskStates,
 } from "@nikopack/ti-trading-risk";
-import type { ExecutionScope } from "./execution-journal.ts";
-import { boundedLookup } from "./execution-recovery.ts";
+import { boundedLookup } from "./bounded-lookup.ts";
+import { accountRiskKey, type ExecutionScope } from "./execution-journal.ts";
 import { hasStopComponent, reduceSide } from "./protection.ts";
 import type { AccountSnapshot, ExchangeClient, Order, PlaceOrderInput, Position } from "./types.ts";
 
 export class AccountRiskError extends Error {
 	readonly code = "ACCOUNT_RISK_REJECTED";
-}
-
-export function accountRiskKey(scope: ExecutionScope): string {
-	return createHash("sha256")
-		.update(JSON.stringify([scope.mode, scope.exchange, scope.accountId, scope.marketType, scope.quoteCurrency]))
-		.digest("hex");
 }
 
 /**

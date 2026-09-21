@@ -1,15 +1,17 @@
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { accountRiskKey, type ExecutionScope } from "@nikopack/ti-trading-engine";
 import { getTrading } from "../context.ts";
 import { type MenuKey, t } from "../i18n.ts";
 import type { TradingLanguage } from "../state.ts";
 import { renderTradingTable, type TableData, type TableLine } from "../table.ts";
+import { errorMessage } from "../tools/format.ts";
 import {
 	type AutonomousCommandOptions,
 	type AutonomousStatus,
 	assertAutonomousScope,
 	autonomousCommand,
 } from "./daemon.ts";
+import { type AutonomousSetupState, autonomousSetupState, runAutonomousSetup } from "./setup.ts";
 
 const actions = ["start", "status", "pause", "resume", "stop"] as const;
 type ControlAction = (typeof actions)[number];
@@ -23,6 +25,10 @@ const actionMessages: Record<Exclude<ControlAction, "status">, MenuKey> = {
 export interface AutonomousCommandDependencies {
 	current(): { scope: ExecutionScope; language: TradingLanguage; stale?: boolean };
 	execute(action: ControlAction, options: AutonomousCommandOptions): Promise<void>;
+	/** Persisted setup state; drives the first-run guided setup instead of an error. */
+	setupState(): AutonomousSetupState;
+	/** Interactive guided setup. Resolves true once configuration is persisted. */
+	setup(ctx: ExtensionCommandContext): Promise<boolean>;
 }
 
 export function createAutonomousCommandExtension(dependencies?: AutonomousCommandDependencies) {
@@ -38,6 +44,8 @@ export function createAutonomousCommandExtension(dependencies?: AutonomousComman
 			};
 		},
 		execute: autonomousCommand,
+		setupState: autonomousSetupState,
+		setup: runAutonomousSetup,
 	};
 	return (pi: Pick<ExtensionAPI, "registerCommand" | "registerEntryRenderer" | "appendEntry">): void => {
 		pi.registerEntryRenderer<TableData>("trading:autonomous", (entry, _options, theme) =>
@@ -55,7 +63,7 @@ export function createAutonomousCommandExtension(dependencies?: AutonomousComman
 					return;
 				}
 				const action = args.trim() || "status";
-				const command = actions.find((candidate) => candidate === action);
+				let command = actions.find((candidate) => candidate === action);
 				if (!command) {
 					ctx.ui.notify(t(language, "autonomousUsage"), "warning");
 					return;
@@ -67,13 +75,30 @@ export function createAutonomousCommandExtension(dependencies?: AutonomousComman
 						warning,
 					});
 				try {
-					if ((command === "start" || command === "resume") && !ctx.isIdle()) {
+					// First run: `start` and bare `status` have nothing to act on, so they enter
+					// the guided setup and continue into a normal start once it persists.
+					const setupState = deps.setupState();
+					const setupRequired =
+						(command === "start" && setupState !== "configured") ||
+						(command === "status" && setupState === "uninitialized");
+					let statusAfterStart = false;
+					if (setupRequired) {
+						if (!ctx.isIdle()) {
+							ctx.ui.notify(t(language, "waitingIdle"), "info");
+							await ctx.waitForIdle();
+						}
+						if (!(await deps.setup(ctx))) return;
+						command = "start";
+						statusAfterStart = true;
+					}
+					const action = command;
+					if ((action === "start" || action === "resume") && !ctx.isIdle()) {
 						ctx.ui.notify(t(language, "waitingIdle"), "info");
 						await ctx.waitForIdle();
 					}
 					const current = deps.current();
 					assertAutonomousScope(initial.scope, current.scope);
-					if ((command === "start" || command === "resume") && current.stale)
+					if ((action === "start" || action === "resume") && current.stale)
 						throw new Error(t(language, "healthStaleRuntime"));
 					const onStatus = (status: AutonomousStatus): void => {
 						const activeWakes = status.wakes?.filter((wake) => wake.state.status === "active") ?? [];
@@ -114,26 +139,23 @@ export function createAutonomousCommandExtension(dependencies?: AutonomousComman
 							{ text: t(language, "healthSemantics"), tone: "muted" },
 						]);
 					};
-					await deps.execute(command, {
+					await deps.execute(action, {
 						expectedScope: current.scope,
 						onStatus,
 						output: (message) =>
 							show(
-								command === "status"
+								action === "status"
 									? [message]
 									: [
-											t(language, actionMessages[command]),
-											...(command === "start" ? [{ text: message, tone: "muted" as const }] : []),
+											t(language, actionMessages[action]),
+											...(action === "start" ? [{ text: message, tone: "muted" as const }] : []),
 										],
 							),
 					});
+					if (statusAfterStart) await deps.execute("status", { expectedScope: current.scope, onStatus });
 				} catch (error) {
 					show(
-						[
-							error instanceof Error ? error.message : String(error),
-							t(language, "autonomousConfigHint"),
-							t(language, "autonomousUsage"),
-						],
+						[errorMessage(error), t(language, "autonomousConfigHint"), t(language, "autonomousUsage")],
 						t(language, "autonomousFailed"),
 					);
 					ctx.ui.notify(t(language, "autonomousFailed"), "error");

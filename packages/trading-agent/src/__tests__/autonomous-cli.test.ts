@@ -90,6 +90,68 @@ describe("headless CLI and worker process boundaries", () => {
 			}),
 		).rejects.toThrow("Live autonomous mode is unavailable");
 	});
+	it("fails fast on missing or incomplete setup without forking a daemon", async () => {
+		const agentDir = join(directory, "agent");
+		const run = () =>
+			execute(process.execPath, ["--import", loader, cli, "--autonomous", "start"], {
+				env: environment(),
+				timeout: 10000,
+			});
+		await expect(run()).rejects.toThrow("Autonomous is not configured");
+		const account = {
+			maxGrossExposure: 100,
+			maxNetExposure: 100,
+			maxAssetExposure: 100,
+			maxLeverage: 1,
+			maxMarginUsagePct: 50,
+			maxDailyLoss: 10,
+			maxDrawdown: 20,
+			maxDataAgeMs: 10000,
+			maxPriceDeviationPct: 2,
+			minDepthRatio: 1,
+			minLiquidationDistancePct: 5,
+			minProtectionCoveragePct: 95,
+			maxStopDistancePct: 10,
+			cancelEntriesOnBreach: true,
+			reduceOnBreach: true,
+		};
+		const autonomous = {
+			enabled: true,
+			mode: "paper",
+			exchange: "okx",
+			marketType: "spot",
+			quoteCurrency: "USDT",
+			objective: "Fixture",
+			provider: "fixture",
+			model: "fixture",
+			services: [],
+			pollIntervalMs: 100,
+			modelTimeoutMs: 1000,
+			serviceTimeoutMs: 1000,
+			maxAttempts: 1,
+			retryBaseMs: 100,
+			retryMaxMs: 100,
+			protectionAttempts: 1,
+		};
+		writeJsonFileDurable(join(agentDir, "trading.json"), { ...DEFAULT_CONFIG, orderApproval: "confirm" });
+		writeJsonFileDurable(join(agentDir, "autonomous.json"), autonomous);
+		await expect(run()).rejects.toThrow("risk.account");
+		writeJsonFileDurable(join(agentDir, "trading.json"), {
+			...DEFAULT_CONFIG,
+			orderApproval: "confirm",
+			risk: { ...DEFAULT_CONFIG.risk, account },
+		});
+		await expect(run()).rejects.toThrow('orderApproval: "unattended"');
+		writeJsonFileDurable(join(agentDir, "autonomous.json"), { ...autonomous, exchange: "binance" });
+		writeJsonFileDurable(join(agentDir, "trading.json"), {
+			...DEFAULT_CONFIG,
+			risk: { ...DEFAULT_CONFIG.risk, account },
+		});
+		await expect(run()).rejects.toThrow("does not match trading.json");
+		expect(existsSync(join(agentDir, "autonomous.log"))).toBe(false);
+		expect(existsSync(join(agentDir, "autonomous-process.json"))).toBe(false);
+	}, 30000);
+
 	it("reports status and persists pause, resume and stop without loading a model or exchange", async () => {
 		const agentDir = join(directory, "agent");
 		const scope = {

@@ -1,6 +1,8 @@
 import { evaluateOrderCapability, getTradingCapabilities } from "./capabilities.ts";
 import type { MarketType } from "./client-types.ts";
 import { futuresAmountsEqual } from "./contract-size.ts";
+import { errorMessage } from "./error-message.ts";
+
 import { futuresAmountStep, isFuturesSymbol, type PreparedOco, type PreparedOrder } from "./order-plan.ts";
 import { reduceSide } from "./protection.ts";
 import type { Balance, MarketInfo, Position, Ticker } from "./types.ts";
@@ -92,20 +94,31 @@ function checkMarketLimits(plan: PreparedOrder, market: MarketInfo, futures: boo
 	if (orderCapability.capability.status === "unsupported") reject(orderCapability.capability.reason);
 	if (orderCapability.omitExchangeQuantity) return;
 	const amount = exchangeAmount(plan, market, futures);
+	const [first] = marketLimitViolations(market, amount, plan.notional);
+	if (first) reject(first);
+}
+
+export function marketLimitViolations(
+	market: MarketInfo,
+	amount: { amount: number; unit: "base" | "contracts" } | undefined,
+	notional: number,
+): string[] {
+	const violations: string[] = [];
 	const minAmount = market.minAmount ?? market.limits?.amount?.min;
 	const maxAmount = market.limits?.amount?.max;
-	if (minAmount !== undefined && amount.amount < minAmount) {
-		reject(`Exchange amount ${amount.amount} ${amount.unit} is below market minimum ${minAmount}`);
+	if (amount !== undefined && minAmount !== undefined && amount.amount < minAmount) {
+		violations.push(`Exchange amount ${amount.amount} ${amount.unit} is below market minimum ${minAmount}`);
 	}
-	if (maxAmount !== undefined && amount.amount > maxAmount) {
-		reject(`Exchange amount ${amount.amount} ${amount.unit} exceeds market maximum ${maxAmount}`);
+	if (amount !== undefined && maxAmount !== undefined && amount.amount > maxAmount) {
+		violations.push(`Exchange amount ${amount.amount} ${amount.unit} exceeds market maximum ${maxAmount}`);
 	}
-	if (market.minNotional !== undefined && plan.notional < market.minNotional) {
-		reject(`Estimated notional ${plan.notional} is below market minimum ${market.minNotional}`);
+	if (market.minNotional !== undefined && notional < market.minNotional) {
+		violations.push(`Estimated notional ${notional} is below market minimum ${market.minNotional}`);
 	}
-	if (market.limits?.cost?.max !== undefined && plan.notional > market.limits.cost.max) {
-		reject(`Estimated notional ${plan.notional} exceeds market maximum ${market.limits.cost.max}`);
+	if (market.limits?.cost?.max !== undefined && notional > market.limits.cost.max) {
+		violations.push(`Estimated notional ${notional} exceeds market maximum ${market.limits.cost.max}`);
 	}
+	return violations;
 }
 
 function requiredBalance(
@@ -158,10 +171,7 @@ async function loadTicker(symbol: string, getTicker: (symbol: string) => Promise
 	try {
 		ticker = await getTicker(symbol);
 	} catch (error) {
-		reject(
-			`Ticker unavailable during order preflight: ${error instanceof Error ? error.message : String(error)}`,
-			true,
-		);
+		reject(`Ticker unavailable during order preflight: ${errorMessage(error)}`, true);
 	}
 	if (ticker.symbol !== symbol) reject(`Ticker returned ${ticker.symbol} while revalidating ${symbol}`, true);
 	return ticker;
@@ -286,10 +296,7 @@ async function revalidateReducingPosition(
 	try {
 		positions = await getPositions();
 	} catch (error) {
-		reject(
-			`Positions unavailable during order preflight: ${error instanceof Error ? error.message : String(error)}`,
-			true,
-		);
+		reject(`Positions unavailable during order preflight: ${errorMessage(error)}`, true);
 	}
 	const matches = positions.filter(
 		(position) =>
@@ -348,10 +355,7 @@ export async function preflightOrder(
 	try {
 		market = await dependencies.getMarketInfo(plan.input.symbol);
 	} catch (error) {
-		reject(
-			`Market metadata unavailable during order preflight: ${error instanceof Error ? error.message : String(error)}`,
-			true,
-		);
+		reject(`Market metadata unavailable during order preflight: ${errorMessage(error)}`, true);
 	}
 	checkMarketLimits(plan, market, futures);
 	const referencePrice = await revalidateOrderPrice(plan, dependencies.getTicker);
@@ -360,10 +364,7 @@ export async function preflightOrder(
 	try {
 		balances = await dependencies.getBalances();
 	} catch (error) {
-		reject(
-			`Balances unavailable during order preflight: ${error instanceof Error ? error.message : String(error)}`,
-			true,
-		);
+		reject(`Balances unavailable during order preflight: ${errorMessage(error)}`, true);
 	}
 	checkBalance(
 		plan,
@@ -398,10 +399,7 @@ export async function preflightOco(
 	try {
 		market = await dependencies.getMarketInfo(plan.input.symbol);
 	} catch (error) {
-		reject(
-			`Market metadata unavailable during OCO preflight: ${error instanceof Error ? error.message : String(error)}`,
-			true,
-		);
+		reject(`Market metadata unavailable during OCO preflight: ${errorMessage(error)}`, true);
 	}
 	if (market.active === false) reject(`Market ${plan.input.symbol} is inactive`);
 	if (!marketMatches(market, plan.input.symbol, dependencies.quoteCurrency, false)) {
@@ -426,10 +424,7 @@ export async function preflightOco(
 	try {
 		balances = await dependencies.getBalances();
 	} catch (error) {
-		reject(
-			`Balances unavailable during OCO preflight: ${error instanceof Error ? error.message : String(error)}`,
-			true,
-		);
+		reject(`Balances unavailable during OCO preflight: ${errorMessage(error)}`, true);
 	}
 	const asset = plan.input.side === "sell" ? plan.input.symbol.split("/")[0] : dependencies.quoteCurrency;
 	const balance = balances.find((candidate) => candidate.asset === asset);

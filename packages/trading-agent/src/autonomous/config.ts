@@ -1,5 +1,5 @@
 import { join } from "node:path";
-import { AGENT_DIR, readJsonFile } from "../config.ts";
+import { AGENT_DIR, readJsonFile, writeJsonFile } from "../config.ts";
 
 export interface AutonomousConfig {
 	enabled: true;
@@ -63,8 +63,24 @@ export function validateAutonomousConfig(value: unknown): asserts value is Auton
 		throw new Error("Only reviewed bundled research services may be loaded");
 }
 
+export const AUTONOMOUS_CONFIG_PATH = join(AGENT_DIR, "autonomous.json");
+
 export function loadAutonomousConfig(): AutonomousConfig {
-	const config = readJsonFile<unknown>(join(AGENT_DIR, "autonomous.json"));
+	const config = readJsonFile<unknown>(AUTONOMOUS_CONFIG_PATH);
 	validateAutonomousConfig(config);
 	return config;
+}
+
+/** Returns undefined for both a missing and an unreadable/invalid file. */
+export function tryLoadAutonomousConfig(): AutonomousConfig | undefined {
+	try {
+		return loadAutonomousConfig();
+	} catch {
+		return undefined;
+	}
+}
+
+export function writeAutonomousConfig(config: AutonomousConfig): void {
+	validateAutonomousConfig(config);
+	writeJsonFile(AUTONOMOUS_CONFIG_PATH, config);
 }

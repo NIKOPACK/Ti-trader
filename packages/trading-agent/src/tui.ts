@@ -5,11 +5,12 @@ import type { TradingLanguage } from "./state.ts";
 
 const TI_STEM = "    ██     ██";
 const TI_LOGO = [" ████████  ██", TI_STEM, TI_STEM, TI_STEM] as const;
+const TI_LOGO_WIDTH = visibleWidth(TI_LOGO[0]);
 const LOGO_GAP = "   ";
-const WORDMARK_GRAY = "\x1b[38;2;128;128;128m";
+const LOGO_GRAY = "\x1b[38;2;128;128;128m";
 
 function paintGray(text: string): string {
-	return `${WORDMARK_GRAY}${text}\x1b[39m`;
+	return `${LOGO_GRAY}${text}\x1b[39m`;
 }
 
 const EXPANDED_SHORTCUTS = [
@@ -71,30 +72,26 @@ export class TradingHeader implements Component {
 		const { language, theme } = this.getAppearance();
 		const separator = theme.fg("dim", "  ·  ");
 		const title =
-			theme.bold(paintGray("Ti")) +
+			theme.bold(theme.fg("accent", "Ti")) +
 			theme.fg("muted", `  v${this.version}`) +
 			separator +
 			theme.fg("muted", t(language, "headerWorkspace"));
 		const hint = (key: string, description: string) => `${theme.fg("text", key)} ${theme.fg("muted", description)}`;
-		const contentWidth = Math.max(1, width - 2);
 		const showLogo = width >= 64;
-		const lines = showLogo
-			? TI_LOGO.map((line, index) => {
-					const mark = paintGray(line);
-					return index === 0 ? `${mark}${LOGO_GAP}${title}` : mark;
-				})
-			: [title];
+		const contentWidth = Math.max(1, width - 2 - (showLogo ? TI_LOGO_WIDTH + LOGO_GAP.length : 0));
+		const content: string[] = [title];
 		if (this.expanded) {
 			const clearKey = keyText("app.clear");
-			lines.push(
-				"",
+			content.push(
+				// Pad past the logo rows plus one blank line so the list starts below the mark.
+				...new Array<string>(showLogo ? TI_LOGO.length : 1).fill(""),
 				...EXPANDED_SHORTCUTS.map(([action, label]) => hint(keyText(action), t(language, label))),
 				hint(`${clearKey} ${t(language, "headerTwice")}`, t(language, "headerExit")),
 				hint("/", t(language, "headerCommands")),
 				hint(t(language, "headerDropFiles"), t(language, "headerAttach")),
 			);
 		} else {
-			lines.push(
+			content.push(
 				...wrapItems(
 					[
 						hint("/", t(language, "headerCommands")),
@@ -105,6 +102,17 @@ export class TradingHeader implements Component {
 					contentWidth,
 				),
 			);
+		}
+		const lines: string[] = [];
+		if (showLogo) {
+			for (const [index, row] of TI_LOGO.entries()) {
+				const mark = paintGray(row);
+				const cell = content[index];
+				lines.push(cell ? `${mark}${LOGO_GAP}${cell}` : mark);
+			}
+			lines.push(...content.slice(TI_LOGO.length));
+		} else {
+			lines.push(...content);
 		}
 		return new Text(lines.join("\n"), 1, 0).render(width).map((line) => truncateToWidth(line, width));
 	}

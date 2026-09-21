@@ -9,6 +9,16 @@
     "inlineSources": false,
     "inlineSourceMap": false
   },
-  "include": ["index.ts", "indicators.ts", "strategies.ts"],
-  "exclude": ["dist", "node_modules"]
+  "include": [
+    "index.ts",
+    "indicators.ts",
+    "strategies.ts",
+    "market-view.ts",
+    "chart-component.ts",
+    "renderer.ts"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
 }

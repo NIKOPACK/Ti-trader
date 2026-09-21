@@ -3,7 +3,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 const getTrading = vi.fn();
 vi.mock("ti-trader", () => ({ getTrading }));
 
-const { default: marketChartExtension } = await import("./index.ts");
+const { default: marketLabExtension } = await import("./index.ts");
 
 function fakeTrading() {
 	return {
@@ -32,17 +32,18 @@ type RegisteredTool = {
 };
 
 function register() {
-	let tool: RegisteredTool | undefined;
+	const tools = new Map<string, RegisteredTool>();
 	const appendEntry = vi.fn();
 	const pi = {
-		registerTool: vi.fn((definition) => {
-			tool = definition as RegisteredTool;
+		registerTool: vi.fn((definition: RegisteredTool & { name: string }) => {
+			tools.set(definition.name, definition);
 		}),
 		registerEntryRenderer: vi.fn(),
 		registerCommand: vi.fn(),
 		appendEntry,
 	};
-	marketChartExtension(pi as never);
+	marketLabExtension(pi as never);
+	const tool = tools.get("show_market_view");
 	if (!tool) throw new Error("tool was not registered");
 	return { tool, appendEntry };
 }

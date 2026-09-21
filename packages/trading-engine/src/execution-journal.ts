@@ -8,7 +8,6 @@ import {
 	type TradingAuditEvent,
 	type TradingRiskState,
 } from "@nikopack/ti-trading-risk";
-import { accountRiskKey } from "./account-risk.ts";
 import { ORDER_TYPES } from "./capabilities.ts";
 import { isOrderFeeObservation, type Order, type PlaceOcoOrderInput, type PlaceOrderInput } from "./types.ts";
 
@@ -34,6 +33,13 @@ export interface ExecutionScope {
 	quoteCurrency: string;
 	positionMode: "one-way" | "hedge";
 }
+
+export function accountRiskKey(scope: ExecutionScope): string {
+	return createHash("sha256")
+		.update(JSON.stringify([scope.mode, scope.exchange, scope.accountId, scope.marketType, scope.quoteCurrency]))
+		.digest("hex");
+}
+
 export interface ExecutionEvidence {
 	source: "submission" | "client-id-lookup" | "operator";
 	observedAt: string;

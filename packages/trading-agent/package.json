@@ -1,7 +1,7 @@
 {
 	"name": "ti-trader",
-	"version": "0.3.0",
-	"description": "Ti — AI trading agent CLI with native buy/sell tools, trading commands, and paper or live crypto trading",
+	"version": "0.4.0",
+	"description": "Ti \u2014 AI trading agent CLI with native buy/sell tools, trading commands, and paper or live crypto trading",
 	"type": "module",
 	"piConfig": {
 		"configDir": ".ti-trader"
@@ -19,14 +19,12 @@
 	},
 	"pi": {
 		"extensions": [
-			"./dist/market-lab/index.js",
-			"./dist/market-chart/index.js"
+			"./dist/market-lab/index.js"
 		]
 	},
 	"ti": {
 		"extensions": [
-			"./dist/market-lab/index.js",
-			"./dist/market-chart/index.js"
+			"./dist/market-lab/index.js"
 		]
 	},
 	"publishConfig": {
@@ -38,10 +36,9 @@
 	],
 	"scripts": {
 		"clean": "shx rm -rf dist",
-		"build": "npm run clean && tsgo -p tsconfig.build.json && npm run build:web-search-extension && npm run build:market-lab-extension && npm run build:market-chart-extension && npm run build:market-research-extension && npm run build:zhihu-research-extension && npm run build:subagent-extension && npm run build:freqtrade-extension && shx chmod +x dist/cli.js",
+		"build": "npm run clean && tsgo -p tsconfig.build.json && npm run build:web-search-extension && npm run build:market-lab-extension && npm run build:market-research-extension && npm run build:zhihu-research-extension && npm run build:subagent-extension && npm run build:freqtrade-extension && shx chmod +x dist/cli.js",
 		"build:web-search-extension": "tsgo -p ../../extensions/web-search/tsconfig.json && node ../../scripts/package-trading-extension.mjs web-search",
 		"build:market-lab-extension": "tsgo -p ../../extensions/market-lab/tsconfig.json && node ../../scripts/package-trading-extension.mjs market-lab",
-		"build:market-chart-extension": "tsgo -p ../../extensions/market-chart/tsconfig.json && node ../../scripts/package-trading-extension.mjs market-chart",
 		"build:market-research-extension": "tsgo -p ../../extensions/market-research/tsconfig.json && node ../../scripts/package-trading-extension.mjs market-research",
 		"build:zhihu-research-extension": "tsgo -p ../../extensions/zhihu-research/tsconfig.json && node ../../scripts/package-trading-extension.mjs zhihu-research",
 		"build:subagent-extension": "tsgo -p ../../extensions/subagent/tsconfig.json && node ../../scripts/package-trading-extension.mjs subagent",
@@ -51,7 +48,7 @@
 		"prepublishOnly": "npm run build"
 	},
 	"dependencies": {
-		"@nikopack/ti-trading-engine": "0.4.0",
+		"@nikopack/ti-trading-engine": "0.4.1",
 		"@nikopack/ti-triggers": "0.1.1",
 		"@earendil-works/pi-coding-agent": "0.84.3",
 		"@earendil-works/pi-tui": "0.84.3",

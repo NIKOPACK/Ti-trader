@@ -34,6 +34,7 @@ export {
 	venueFields,
 } from "./format.ts";
 export {
+	type CheckOrderToolParams,
 	cancelOrderListSchema,
 	cancelOrderSchema,
 	capabilitySchema,

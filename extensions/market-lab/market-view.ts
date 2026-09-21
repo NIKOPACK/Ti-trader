@@ -1,4 +1,4 @@
-import type { ExtensionAPI, Theme } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import type { Component } from "@earendil-works/pi-tui";
 import { getTrading } from "ti-trader";
 import { type Static, Type } from "typebox";
@@ -160,7 +160,26 @@ function summary(data: MarketViewData): Record<string, unknown> {
 	};
 }
 
-export default function marketChartExtension(pi: ExtensionAPI): void {
+/** `/lab chart` subcommand: open the neutral scenario chart for a symbol. */
+export async function runChartCommand(args: string, ctx: ExtensionCommandContext): Promise<void> {
+	const [symbol, tf = "1h"] = args.trim().split(/\s+/);
+	if (!symbol) {
+		ctx.ui.notify("Usage: /lab chart BTC/USDT [1h]", "warning");
+		return;
+	}
+	try {
+		const data = await loadSnapshot({ symbol, timeframe: tf, bias: "neutral" }, ctx.signal);
+		await ctx.ui.custom(
+			(tui, theme, _keys, done) => new MarketChartComponent(tui, theme, data, () => done(undefined)),
+			{ overlay: true, overlayOptions: { width: "96%", maxHeight: "90%" } },
+		);
+	} catch (error) {
+		ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+	}
+}
+
+/** Registers the market-view entry renderer and the show_market_view tool. */
+export function registerMarketView(pi: ExtensionAPI): void {
 	pi.registerEntryRenderer<MarketViewData>("market-view", (entry, options, theme) =>
 		renderEntry(entry.data, options.expanded, theme),
 	);
@@ -181,22 +200,6 @@ export default function marketChartExtension(pi: ExtensionAPI): void {
 			const data = await loadSnapshot(params as ViewParams, signal);
 			pi.appendEntry<MarketViewData>("market-view", data);
 			return jsonResult(summary(data));
-		},
-	});
-	pi.registerCommand("chart", {
-		description: "Show a market scenario chart. Usage: /chart SYMBOL [TIMEFRAME]",
-		handler: async (args, ctx) => {
-			const [symbol, tf = "1h"] = args.trim().split(/\s+/);
-			if (!symbol) return ctx.ui.notify("Usage: /chart BTC/USDT [1h]", "warning");
-			try {
-				const data = await loadSnapshot({ symbol, timeframe: tf, bias: "neutral" }, ctx.signal);
-				await ctx.ui.custom(
-					(tui, theme, _keys, done) => new MarketChartComponent(tui, theme, data, () => done(undefined)),
-					{ overlay: true, overlayOptions: { width: "96%", maxHeight: "90%" } },
-				);
-			} catch (error) {
-				ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-			}
 		},
 	});
 }

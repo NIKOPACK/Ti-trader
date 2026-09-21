@@ -145,7 +145,11 @@ function commandContext(idle: boolean, confirm = true, hasUI = true): ExtensionC
 			setStatus: vi.fn(),
 			setWidget: vi.fn(),
 			addAutocompleteProvider: vi.fn(),
-			theme: { fg: (_color: string, text: string) => text, bold: (text: string) => text },
+			theme: {
+				fg: (_color: string, text: string) => text,
+				bold: (text: string) => text,
+				inverse: (text: string) => text,
+			},
 			confirm: vi.fn(async () => confirm),
 		},
 	} as unknown as ExtensionCommandContext;
@@ -191,11 +195,11 @@ describe("trading commands", () => {
 		if (typeof factory !== "function") throw new Error("Missing venue widget factory");
 		const widget = factory(new TuiMainScreen(new ProcessTerminal()), ctx.ui.theme);
 		const text = widget.render(80).join("\n");
-		expect(text).toContain("[ PAPER ]");
+		expect(text).toContain("PAPER");
 		expect(text).toContain("OKX");
-		expect(text).toContain("market data: OKX public");
+		expect(text).toContain("public market data");
 		expect(text).toContain("unsettled risk reservations");
-		expect(text).toContain("/health");
+		expect(text).toContain("/show health");
 		trading.tradingEngine.risk.usage.mockClear();
 		widget.render(40);
 		widget.invalidate();
@@ -212,7 +216,7 @@ describe("trading commands", () => {
 		["trades", "Filled:0.01234567", "Status:closed"],
 		["markets", "24hchange:+2.34%", "24hvolume:1,000,000"],
 	])("keeps %s query fields readable at 40 and 80 columns", async (command, first, last) => {
-		await registerCommands().get(command)!.handler("", commandContext(true));
+		await registerCommands().get("show")!.handler(command, commandContext(true));
 		const data: TableData = appendEntry.mock.calls.at(-1)?.[1];
 		expect(data.lines.some((line) => typeof line !== "string" && "fields" in line)).toBe(true);
 		for (const width of [40, 80]) {
@@ -237,8 +241,8 @@ describe("trading commands", () => {
 		expect(ctx.ui.setWidget).toHaveBeenCalledWith(
 			"trading-status",
 			expect.arrayContaining([
-				"⚠ Entry blocks: unsettled risk reservations  ·  Inspect /recovery; do not resubmit orders.  ·  /health",
-				"[ PAPER ]  OKX  Spot  USDT  market data: OKX public",
+				"⚠ Entry blocks: unsettled risk reservations  ·  Inspect /recovery; do not resubmit orders.  ·  /show health",
+				"[ PAPER ]  OKX  Spot  USDT  public market data",
 			]),
 		);
 	});
@@ -375,18 +379,13 @@ describe("trading commands", () => {
 		expect([...registerCommands().keys()]).toEqual([
 			"settings",
 			"language",
-			"balance",
-			"positions",
-			"orders",
-			"trades",
-			"markets",
+			"show",
 			"mode",
 			"approval",
 			"exchange",
 			"market",
 			"risk",
 			"recovery",
-			"audit",
 			"paper",
 			"exchange-login",
 		]);
@@ -420,15 +419,19 @@ describe("trading commands", () => {
 		expect(trading.close).not.toHaveBeenCalled();
 	});
 
-	it("opens trading settings when /mode is invoked without arguments", async () => {
+	it("prints the current mode when /mode is invoked without arguments", async () => {
 		const command = registerCommands().get("mode");
 		if (!command) throw new Error("mode command was not registered");
 		const ctx = commandContext(true);
 
 		await command.handler("", ctx);
 
-		expect(settingsMenu.openTradingSettings).toHaveBeenCalledOnce();
+		expect(settingsMenu.openTradingSettings).not.toHaveBeenCalled();
 		expect(trading.setMode).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Trading mode: Paper (simulated) — change: /mode paper|live or /settings",
+			"info",
+		);
 	});
 
 	it("waits for the active agent turn before switching trading mode", async () => {
@@ -444,15 +447,19 @@ describe("trading commands", () => {
 		);
 	});
 
-	it("opens trading settings when /approval is invoked without arguments", async () => {
+	it("prints the current approval mode when /approval is invoked without arguments", async () => {
 		const command = registerCommands().get("approval");
 		if (!command) throw new Error("approval command was not registered");
 		const ctx = commandContext(true);
 
 		await command.handler("", ctx);
 
-		expect(settingsMenu.openTradingSettings).toHaveBeenCalledOnce();
+		expect(settingsMenu.openTradingSettings).not.toHaveBeenCalled();
 		expect(trading.setOrderApproval).not.toHaveBeenCalled();
+		expect(ctx.ui.notify).toHaveBeenCalledWith(
+			"Order approval: Confirm each order — change: /approval confirm|unattended or /settings",
+			"info",
+		);
 	});
 
 	it("requires confirmation before switching order approval to unattended", async () => {

@@ -5,6 +5,13 @@ import { getTrading } from "./context.ts";
 import { failureCode } from "./failure-code.ts";
 import { t, translate } from "./i18n.ts";
 import {
+	isFreshFirstDelivery,
+	recordPollFailure,
+	runtimeMatchesScope,
+	sendMonitoringEvent,
+	waitForIdleBeforeMutation,
+} from "./monitor-shared.ts";
+import {
 	cancelTriggerNotifications,
 	createFileMonitoringStore,
 	deliverMonitoringNotifications,
@@ -15,10 +22,10 @@ import {
 	type MonitoringScope,
 	type MonitoringStore,
 	monitoringScopeForRuntime,
-	monitoringScopeKey,
 	recordMonitoringObservation,
 	type StoredTrigger,
 } from "./monitoring-state.ts";
+import { errorMessage } from "./tools/format.ts";
 import {
 	collectTriggerFactKeys,
 	parsePositionPnlFactKey,
@@ -51,10 +58,85 @@ function warning(ctx: ExtensionContext, message: string): void {
 	if (ctx.hasUI) ctx.ui.notify(translate(getTrading().config.language, "triggerWarning", { message }), "warning");
 }
 
-async function waitForIdleBeforeMutation(ctx: ExtensionCommandContext): Promise<void> {
-	if (ctx.isIdle()) return;
-	if (ctx.hasUI) ctx.ui.notify(t(getTrading().config.language, "triggerWaitingIdle"), "info");
-	await ctx.waitForIdle();
+/** `/monitor trigger` subcommand: manage scoped durable read-only triggers. */
+export function createTriggerCommandHandler(
+	options: TriggerMonitorOptions = {},
+): (args: string | undefined, ctx: ExtensionCommandContext) => Promise<void> {
+	const store = options.store ?? createFileMonitoringStore();
+	const getScope = options.getScope ?? monitoringScopeForRuntime;
+	return async (args, ctx) => {
+		const input = args?.trim() ?? "";
+		const space = input.indexOf(" ");
+		const command = space < 0 ? input : input.slice(0, space);
+		const rest = space < 0 ? "" : input.slice(space + 1).trim();
+		try {
+			if (command === "add" || command === "remove" || command === "clear")
+				await waitForIdleBeforeMutation(ctx, "triggerWaitingIdle");
+			const scope = getScope(getTrading());
+			if (command === "add") {
+				if (!rest) throw new Error("add requires one-line JSON TriggerDefinition");
+				const value: unknown = JSON.parse(rest);
+				validateTriggerDefinition(value);
+				validateMonitorFactKeys(value.when);
+				store.transact((state) => {
+					const entry = ensureMonitoringScope(state, scope, Date.now());
+					if (entry.autonomous?.triggerIds.includes(value.id))
+						throw new Error(`Cannot modify autonomous-owned trigger: ${value.id}`);
+					const old = entry.triggers.find(
+						(trigger) =>
+							trigger.definition.id === value.id && !isAutonomousTrigger(trigger, entry.autonomous?.triggerIds),
+					);
+					entry.triggers = entry.triggers.filter((trigger) => trigger !== old);
+					if (old) cancelTriggerNotifications(entry, [old.revision], Date.now());
+					entry.triggers.push({
+						definition: value,
+						revision: randomUUID(),
+						state: { status: "active", armed: true },
+						updatedAt: Date.now(),
+					});
+				});
+				if (ctx.hasUI)
+					ctx.ui.notify(translate(getTrading().config.language, "triggerAdded", { id: value.id }), "info");
+			} else if (command === "list") {
+				const monitoring = findMonitoringScope(store.read(), scope);
+				const triggers =
+					monitoring?.triggers.filter(
+						(trigger) => !isAutonomousTrigger(trigger, monitoring.autonomous?.triggerIds),
+					) ?? [];
+				if (ctx.hasUI)
+					ctx.ui.notify(
+						triggers.length === 0
+							? t(getTrading().config.language, "triggerNone")
+							: triggers.map(({ definition: d, state }) => `${d.id}: ${d.name} (${state.status})`).join("\n"),
+						"info",
+					);
+			} else if (command === "remove" || command === "clear") {
+				store.transact((state) => {
+					const entry = ensureMonitoringScope(state, scope, Date.now());
+					const removed = entry.triggers.filter(
+						(trigger) =>
+							!isAutonomousTrigger(trigger, entry.autonomous?.triggerIds) &&
+							(command === "clear" || trigger.definition.id === rest),
+					);
+					if (command === "remove" && (!rest || removed.length === 0))
+						throw new Error(`Trigger not found: ${rest}`);
+					entry.triggers = entry.triggers.filter((trigger) => !removed.includes(trigger));
+					cancelTriggerNotifications(
+						entry,
+						removed.map((trigger) => trigger.revision),
+						Date.now(),
+					);
+					const keys = new Set<string>();
+					for (const trigger of entry.triggers) collectTriggerFactKeys(trigger.definition.when, keys);
+					entry.facts = entry.facts.filter((fact) => keys.has(fact.key));
+					entry.factHistory = entry.factHistory?.filter((history) => keys.has(history.key));
+					if (entry.factHistory?.length === 0) delete entry.factHistory;
+				});
+			} else warning(ctx, "usage: /monitor trigger add <JSON>|list|remove <id>|clear");
+		} catch (error) {
+			warning(ctx, errorMessage(error));
+		}
+	};
 }
 
 export function createTriggerMonitorExtension(options: TriggerMonitorOptions = {}) {
@@ -77,17 +159,11 @@ export function createTriggerMonitorExtension(options: TriggerMonitorOptions = {
 			token: number,
 		): boolean => {
 			if (token !== lifecycleToken) return false;
-			try {
-				const current = getTrading();
-				return (
-					current === trading &&
-					current.tradingEngine === engine &&
-					current.marketData === marketData &&
-					monitoringScopeKey(getScope(current)) === monitoringScopeKey(scope)
-				);
-			} catch {
-				return false;
-			}
+			return runtimeMatchesScope(
+				getScope,
+				scope,
+				(current) => current === trading && current.tradingEngine === engine && current.marketData === marketData,
+			);
 		};
 
 		const factsFor = async (
@@ -197,19 +273,10 @@ export function createTriggerMonitorExtension(options: TriggerMonitorOptions = {
 					if (action === "notify") return ctx.hasUI;
 					const wake =
 						event.wake &&
-						freshDeliveries.has(event.id) &&
-						event.attempts === 1 &&
+						isFreshFirstDelivery(event, freshDeliveries) &&
 						scope.mode !== "live" &&
 						ctx.mode !== "print";
-					pi.sendMessage(
-						{
-							customType: "trigger",
-							content: event.content,
-							details: { monitoringEventId: event.id },
-							display: true,
-						},
-						wake ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: false },
-					);
+					sendMonitoringEvent(pi, event, "trigger", wake);
 					return true;
 				},
 				isCurrent,
@@ -332,13 +399,7 @@ export function createTriggerMonitorExtension(options: TriggerMonitorOptions = {
 					warning(ctx, message);
 					if (scope) {
 						try {
-							const capturedScope = scope;
-							store.transact((state) => {
-								const health = ensureMonitoringScope(state, capturedScope, Date.now()).health.triggers;
-								health.lastPollAt = Date.now();
-								health.lastFailureAt = Date.now();
-								health.errorCode = "poll-failed";
-							});
+							recordPollFailure(store, scope, "triggers");
 						} catch (storageError) {
 							warning(ctx, `state persistence failed: ${failureCode(storageError)}`);
 						}
@@ -363,86 +424,6 @@ export function createTriggerMonitorExtension(options: TriggerMonitorOptions = {
 			}, intervalMs);
 			timer.unref?.();
 		};
-
-		pi.registerCommand("trigger", {
-			description: "Manage scoped durable read-only triggers: /trigger add|list|remove|clear",
-			handler: async (args, ctx) => {
-				const input = args?.trim() ?? "";
-				const space = input.indexOf(" ");
-				const command = space < 0 ? input : input.slice(0, space);
-				const rest = space < 0 ? "" : input.slice(space + 1).trim();
-				try {
-					if (command === "add" || command === "remove" || command === "clear")
-						await waitForIdleBeforeMutation(ctx);
-					const scope = getScope(getTrading());
-					if (command === "add") {
-						if (!rest) throw new Error("add requires one-line JSON TriggerDefinition");
-						const value: unknown = JSON.parse(rest);
-						validateTriggerDefinition(value);
-						validateMonitorFactKeys(value.when);
-						store.transact((state) => {
-							const entry = ensureMonitoringScope(state, scope, Date.now());
-							if (entry.autonomous?.triggerIds.includes(value.id))
-								throw new Error(`Cannot modify autonomous-owned trigger: ${value.id}`);
-							const old = entry.triggers.find(
-								(trigger) =>
-									trigger.definition.id === value.id &&
-									!isAutonomousTrigger(trigger, entry.autonomous?.triggerIds),
-							);
-							entry.triggers = entry.triggers.filter((trigger) => trigger !== old);
-							if (old) cancelTriggerNotifications(entry, [old.revision], Date.now());
-							entry.triggers.push({
-								definition: value,
-								revision: randomUUID(),
-								state: { status: "active", armed: true },
-								updatedAt: Date.now(),
-							});
-						});
-						if (ctx.hasUI)
-							ctx.ui.notify(translate(getTrading().config.language, "triggerAdded", { id: value.id }), "info");
-					} else if (command === "list") {
-						const monitoring = findMonitoringScope(store.read(), scope);
-						const triggers =
-							monitoring?.triggers.filter(
-								(trigger) => !isAutonomousTrigger(trigger, monitoring.autonomous?.triggerIds),
-							) ?? [];
-						if (ctx.hasUI)
-							ctx.ui.notify(
-								triggers.length === 0
-									? t(getTrading().config.language, "triggerNone")
-									: triggers
-											.map(({ definition: d, state }) => `${d.id}: ${d.name} (${state.status})`)
-											.join("\n"),
-								"info",
-							);
-					} else if (command === "remove" || command === "clear") {
-						store.transact((state) => {
-							const entry = ensureMonitoringScope(state, scope, Date.now());
-							const removed = entry.triggers.filter(
-								(trigger) =>
-									!isAutonomousTrigger(trigger, entry.autonomous?.triggerIds) &&
-									(command === "clear" || trigger.definition.id === rest),
-							);
-							if (command === "remove" && (!rest || removed.length === 0))
-								throw new Error(`Trigger not found: ${rest}`);
-							entry.triggers = entry.triggers.filter((trigger) => !removed.includes(trigger));
-							cancelTriggerNotifications(
-								entry,
-								removed.map((trigger) => trigger.revision),
-								Date.now(),
-							);
-							const keys = new Set<string>();
-							for (const trigger of entry.triggers) collectTriggerFactKeys(trigger.definition.when, keys);
-							entry.facts = entry.facts.filter((fact) => keys.has(fact.key));
-							entry.factHistory = entry.factHistory?.filter((history) => keys.has(history.key));
-							if (entry.factHistory?.length === 0) delete entry.factHistory;
-						});
-					} else warning(ctx, "usage: /trigger add <JSON>|list|remove <id>|clear");
-				} catch (error) {
-					warning(ctx, error instanceof Error ? error.message : String(error));
-				}
-			},
-		});
 
 		pi.on("session_start", async (_event, ctx) => {
 			lifecycleToken += 1;

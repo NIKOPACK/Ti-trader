@@ -1,4 +1,5 @@
-import { type Model, modelsAreEqual } from "@earendil-works/pi-ai";
+import type { ThinkingLevel } from "@earendil-works/pi-agent-core";
+import { clampThinkingLevel, getSupportedThinkingLevels, type Model, modelsAreEqual } from "@earendil-works/pi-ai";
 import {
 	Container,
 	type Focusable,
@@ -15,7 +16,7 @@ import { refreshModelCatalogs } from "../model-catalog-refresh.ts";
 import { getModelSelectorSearchText } from "../model-search.ts";
 import { theme } from "../theme/theme.ts";
 import { DynamicBorder } from "./dynamic-border.ts";
-import { keyHint } from "./keybinding-hints.ts";
+import { keyHint, keyText } from "./keybinding-hints.ts";
 
 interface ModelItem {
 	provider: string;
@@ -31,6 +32,17 @@ interface ScopedModelItem {
 interface DefaultModelReference {
 	provider: string;
 	id: string;
+}
+
+/**
+ * Per-model thinking level display and inline adjustment in the model list.
+ * Levels persist as per-model overrides; `onChange` is invoked with the model
+ * and the newly selected level (which may equal the global default).
+ */
+export interface ModelSelectorThinkingConfig {
+	modelThinkingLevels: Record<string, ThinkingLevel>;
+	defaultThinkingLevel: ThinkingLevel;
+	onChange: (model: Model<any>, level: ThinkingLevel) => void;
 }
 
 type ModelScope = "all" | "scoped";
@@ -67,6 +79,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 	private tui: TUI;
 	private scopedModels: ReadonlyArray<ScopedModelItem>;
 	private defaultModel?: DefaultModelReference;
+	private thinking?: ModelSelectorThinkingConfig;
+	private thinkingLevels: Record<string, ThinkingLevel>;
 	private scope: ModelScope = "all";
 	private scopeText?: Text;
 	private scopeHintText?: Text;
@@ -84,6 +98,7 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		initialSearchInput?: string,
 		onSelectAsDefault?: (model: Model<any>) => void,
 		defaultModel?: DefaultModelReference,
+		thinking?: ModelSelectorThinkingConfig,
 	) {
 		super();
 
@@ -92,6 +107,8 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.modelRuntime = modelRuntime;
 		this.scopedModels = scopedModels;
 		this.defaultModel = defaultModel;
+		this.thinking = thinking;
+		this.thinkingLevels = { ...(thinking?.modelThinkingLevels ?? {}) };
 		this.scope = scopedModels.length > 0 ? "scoped" : "all";
 		this.onSelectCallback = onSelect;
 		this.onSelectAsDefaultCallback = onSelectAsDefault;
@@ -135,10 +152,14 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		this.addChild(new Spacer(1));
 
 		// Hint
-		if (this.onSelectAsDefaultCallback) {
-			this.addChild(
-				new Text(theme.fg("dim", "  Enter to select \u00b7 Ctrl+S to set as default \u00b7 Esc to cancel"), 0, 0),
-			);
+		{
+			const hintParts = ["Enter to select"];
+			if (this.onSelectAsDefaultCallback) hintParts.push("Ctrl+S to set as default");
+			if (this.thinking) {
+				hintParts.push(`${keyText("app.models.thinkingDown")}/${keyText("app.models.thinkingUp")} thinking level`);
+			}
+			hintParts.push("Esc to cancel");
+			this.addChild(new Text(theme.fg("dim", `  ${hintParts.join(" \u00b7 ")}`), 0, 0));
 		}
 
 		// Add bottom border
@@ -324,6 +345,23 @@ export class ModelSelectorComponent extends Container implements Focusable {
 		);
 		const endIndex = Math.min(startIndex + maxVisible, this.filteredModels.length);
 
+		// Column widths for aligned thinking-level indicators
+		let maxIdWidth = 0;
+		let maxProviderWidth = 0;
+		let maxBadgeWidth = 0;
+		if (this.thinking) {
+			for (let i = startIndex; i < endIndex; i++) {
+				const item = this.filteredModels[i];
+				if (!item) continue;
+				maxIdWidth = Math.max(maxIdWidth, item.id.length);
+				maxProviderWidth = Math.max(maxProviderWidth, item.provider.length + 2);
+				const badgeWidth =
+					(this.isDefaultModel(item.model) ? " · default".length : 0) +
+					(modelsAreEqual(this.currentModel, item.model) ? " ✓".length : 0);
+				maxBadgeWidth = Math.max(maxBadgeWidth, badgeWidth);
+			}
+		}
+
 		// Show visible slice of filtered models
 		for (let i = startIndex; i < endIndex; i++) {
 			const item = this.filteredModels[i];
@@ -333,19 +371,21 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			const isCurrent = modelsAreEqual(this.currentModel, item.model);
 			const isDefault = this.isDefaultModel(item.model);
 			const defaultBadge = isDefault ? theme.fg("muted", " · default") : "";
+			const modelText = this.thinking ? item.id.padEnd(maxIdWidth) : item.id;
+			const providerBadge = theme.fg(
+				"muted",
+				this.thinking ? `[${item.provider}]`.padEnd(maxProviderWidth) : `[${item.provider}]`,
+			);
+			const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
+			const badgeWidth = (isDefault ? " · default".length : 0) + (isCurrent ? " ✓".length : 0);
+			const badgePad = this.thinking ? " ".repeat(maxBadgeWidth - badgeWidth) : "";
+			const thinkingDisplay = this.getThinkingDisplay(item.model, isSelected);
 
 			let line = "";
 			if (isSelected) {
-				const prefix = theme.fg("accent", "→ ");
-				const modelText = `${item.id}`;
-				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-				line = `${prefix + theme.fg("accent", modelText)} ${providerBadge}${defaultBadge}${checkmark}`;
+				line = `${theme.fg("accent", "→ ") + theme.fg("accent", modelText)} ${providerBadge}${defaultBadge}${checkmark}${badgePad}${thinkingDisplay}`;
 			} else {
-				const modelText = `  ${item.id}`;
-				const providerBadge = theme.fg("muted", `[${item.provider}]`);
-				const checkmark = isCurrent ? theme.fg("success", " ✓") : "";
-				line = `${modelText} ${providerBadge}${defaultBadge}${checkmark}`;
+				line = `  ${modelText} ${providerBadge}${defaultBadge}${checkmark}${badgePad}${thinkingDisplay}`;
 			}
 
 			this.listContainer.addChild(new Text(line, 0, 0));
@@ -368,8 +408,15 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.listContainer.addChild(new Text(theme.fg("muted", "  No matching models"), 0, 0));
 		} else {
 			const selected = this.filteredModels[this.selectedIndex];
+			let thinkingNote = "";
+			if (this.thinking) {
+				const effective = this.getEffectiveThinkingLevel(selected.model);
+				thinkingNote = ` · thinking: ${effective}`;
+			}
 			this.listContainer.addChild(new Spacer(1));
-			this.listContainer.addChild(new Text(theme.fg("muted", `  Model Name: ${selected.model.name}`), 0, 0));
+			this.listContainer.addChild(
+				new Text(theme.fg("muted", `  Model Name: ${selected.model.name}${thinkingNote}`), 0, 0),
+			);
 		}
 		if (this.refreshStatusMessage) {
 			this.listContainer.addChild(new Spacer(1));
@@ -389,6 +436,15 @@ export class ModelSelectorComponent extends Container implements Focusable {
 					this.scopeHintText.setText(this.getScopeHintText());
 				}
 			}
+			return;
+		}
+		// Left/Right arrows - adjust the highlighted model's thinking level
+		if (this.thinking && kb.matches(keyData, "app.models.thinkingUp")) {
+			this.adjustThinking(1);
+			return;
+		}
+		if (this.thinking && kb.matches(keyData, "app.models.thinkingDown")) {
+			this.adjustThinking(-1);
 			return;
 		}
 		// Up arrow - wrap to bottom when at top
@@ -428,6 +484,48 @@ export class ModelSelectorComponent extends Container implements Focusable {
 			this.searchInput.handleInput(keyData);
 			this.filterModels(this.searchInput.getValue());
 		}
+	}
+
+	private getEffectiveThinkingLevel(model: Model<any>): ThinkingLevel {
+		const override = this.thinkingLevels[`${model.provider}/${model.id}`];
+		return clampThinkingLevel(model, override ?? this.thinking!.defaultThinkingLevel) as ThinkingLevel;
+	}
+
+	private getThinkingDisplay(model: Model<any>, isSelected: boolean): string {
+		if (!this.thinking) return "";
+		const levels = getSupportedThinkingLevels(model) as ThinkingLevel[];
+		const effective = this.getEffectiveThinkingLevel(model);
+		const index = levels.indexOf(effective);
+		const barWidth = 5;
+		const filled =
+			effective === "off" || index < 0 ? 0 : Math.max(1, Math.round(((index + 1) / levels.length) * barWidth));
+		const bar =
+			(filled > 0 ? theme.fg("accent", "■".repeat(filled)) : "") +
+			(filled < barWidth ? theme.fg("dim", "■".repeat(barWidth - filled)) : "");
+		const label = effective.charAt(0).toUpperCase() + effective.slice(1);
+		const labelColor = effective === "off" ? "dim" : "accent";
+		const left = isSelected ? theme.fg("muted", "← ") : "  ";
+		const right = isSelected ? theme.fg("muted", " → ") : "   ";
+		return `  ${left}${bar}${right}${theme.fg(labelColor, label.padEnd(7))}`;
+	}
+
+	private adjustThinking(direction: 1 | -1): void {
+		const item = this.filteredModels[this.selectedIndex];
+		if (!item || !this.thinking) return;
+		const levels = getSupportedThinkingLevels(item.model) as ThinkingLevel[];
+		if (levels.length <= 1) return;
+		const current = this.getEffectiveThinkingLevel(item.model);
+		const index = Math.max(0, levels.indexOf(current));
+		const next = levels[(index + direction + levels.length) % levels.length];
+		const key = `${item.provider}/${item.id}`;
+		if (next === this.thinking.defaultThinkingLevel) {
+			delete this.thinkingLevels[key];
+		} else {
+			this.thinkingLevels[key] = next;
+		}
+		this.thinking.onChange(item.model, next);
+		this.updateList();
+		this.tui.requestRender();
 	}
 
 	private handleSelect(model: Model<any>): void {

@@ -5,7 +5,7 @@ import { getThemeByName } from "../../../coding-agent/src/modes/interactive/them
 import { formatTradingStatus, formatTradingVenue, renderTradingVenue, type TradingVenueInput } from "../venue.ts";
 
 describe("formatTradingVenue", () => {
-	it("shows paper market data as the configured exchange public feed", () => {
+	it("shows paper market data as the configured exchange feed", () => {
 		expect(
 			formatTradingVenue({
 				language: "zh-CN",
@@ -16,7 +16,7 @@ describe("formatTradingVenue", () => {
 			}),
 		).toEqual({
 			identity: "模拟盘  OKX  现货  USDT",
-			source: "行情来源：OKX 公开接口",
+			source: "行情来源：OKX",
 		});
 	});
 
@@ -44,7 +44,11 @@ describe("trading venue status layout", () => {
 		marketType: "usdm-futures",
 		quoteCurrency: "USDT",
 	};
-	const plainTheme = { fg: (_color: string, text: string) => text, bold: (text: string) => text };
+	const plainTheme = {
+		fg: (_color: string, text: string) => text,
+		bold: (text: string) => text,
+		inverse: (text: string) => text,
+	};
 	const settled = { summary: "Entry blocks: none", tone: "muted", entryBlocked: false } as const;
 	const blocked = {
 		summary: "Entry blocks: unresolved executions",
@@ -55,7 +59,7 @@ describe("trading venue status layout", () => {
 
 	it("renders a routine live venue as one identity row", () => {
 		const lines = renderTradingVenue(input, plainTheme, 140, settled).map((line) => line.trim());
-		expect(lines).toEqual(["[ LIVE ]  |  Binance  |  USDⓈ-M futures  USDT"]);
+		expect(lines).toEqual(["LIVE  Binance · USDⓈ-M futures · USDT"]);
 	});
 
 	it("drops the live feed source and the routine summary from the status area", () => {
@@ -68,18 +72,18 @@ describe("trading venue status layout", () => {
 		const unattended = renderTradingVenue({ ...input, orderApproval: "unattended" }, plainTheme, 140, settled).map(
 			(line) => line.trim(),
 		);
-		expect(unattended).toEqual(["[ LIVE ]  |  Binance  |  USDⓈ-M futures  USDT  |  Unattended"]);
+		expect(unattended).toEqual(["LIVE  Binance · USDⓈ-M futures · USDT · Unattended"]);
 		const confirm = renderTradingVenue({ ...input, orderApproval: "confirm" }, plainTheme, 140, settled).map((line) =>
 			line.trim(),
 		);
-		expect(confirm).toEqual(["[ LIVE ]  |  Binance  |  USDⓈ-M futures  USDT"]);
+		expect(confirm).toEqual(["LIVE  Binance · USDⓈ-M futures · USDT"]);
 	});
 
 	it("reports entry blocks as one alert row ahead of the identity row", () => {
 		const lines = renderTradingVenue(input, plainTheme, 140, blocked).map((line) => line.trim());
 		expect(lines).toEqual([
-			"⚠ Entry blocks: unresolved executions  ·  Inspect /recovery; do not resubmit orders.  ·  /health",
-			"[ LIVE ]  |  Binance  |  USDⓈ-M futures  USDT",
+			"⚠ Entry blocks: unresolved executions  ·  Inspect /recovery; do not resubmit orders.  ·  /show health",
+			"LIVE  Binance · USDⓈ-M futures · USDT",
 		]);
 	});
 
@@ -92,7 +96,7 @@ describe("trading venue status layout", () => {
 		const lines = renderTradingVenue(input, plainTheme, 140, status).map((line) => line.trim());
 		expect(lines).toHaveLength(2);
 		expect(lines[0]).toContain("⚠ Health unavailable");
-		expect(lines[1]).toBe("[ LIVE ]  |  Binance  |  USDⓈ-M futures  USDT");
+		expect(lines[1]).toBe("LIVE  Binance · USDⓈ-M futures · USDT");
 	});
 
 	it.each(["en-US", "zh-CN"] as const)("preserves venue information when wrapping %s", (language) => {
@@ -120,27 +124,24 @@ describe("trading venue status layout", () => {
 		};
 		const wide = renderTradingVenue(paperInput, plainTheme, 100, settled);
 		expect(wide).toHaveLength(1);
-		expect(wide[0].trim().replace(/\s+/g, " ")).toBe("[ PAPER ] | Binance | Spot USDT market data: Binance public");
+		expect(wide[0].trim().replace(/\s+/g, " ")).toBe("PAPER Binance · Spot · USDT public market data");
 		const narrow = renderTradingVenue(paperInput, plainTheme, 40, settled);
 		expect(narrow).toHaveLength(2);
-		expect(narrow.map((line) => line.trim())).toEqual([
-			"[ PAPER ]  |  Binance  |  Spot  USDT",
-			"market data: Binance public",
-		]);
+		expect(narrow.map((line) => line.trim())).toEqual(["PAPER  Binance · Spot · USDT", "public market data"]);
 	});
 
 	it.each(["light", "dark"])("uses semantic colors in the %s theme without overflowing", (name) => {
 		const theme = getThemeByName(name);
 		if (!theme) throw new Error(`Missing theme: ${name}`);
 		const confirm = renderTradingVenue({ ...input, orderApproval: "confirm" }, theme, 140, settled).join("\n");
-		expect(confirm).toContain(theme.bold(theme.fg("text", "[ LIVE ]")));
-		expect(confirm).toContain(theme.fg("text", "Binance"));
+		expect(confirm).toContain(theme.inverse(theme.fg("text", " LIVE ")));
+		expect(confirm).toContain(theme.bold(theme.fg("text", "Binance")));
 		expect(confirm).not.toContain(theme.fg("warning", "Unattended"));
 		const unattended = renderTradingVenue({ ...input, orderApproval: "unattended" }, theme, 140, settled).join("\n");
-		expect(unattended).toContain(theme.bold(theme.fg("error", "[ LIVE ]")));
+		expect(unattended).toContain(theme.inverse(theme.fg("error", " LIVE ")));
 		expect(unattended).toContain(theme.fg("warning", "Unattended"));
 		const paper = renderTradingVenue({ ...input, mode: "paper" }, theme, 140, settled).join("\n");
-		expect(paper).toContain(theme.bold(theme.fg("accent", "[ PAPER ]")));
+		expect(paper).toContain(theme.inverse(theme.fg("accent", " PAPER ")));
 		const alert = renderTradingVenue(input, theme, 140, blocked).join("\n");
 		expect(alert).toContain(theme.fg("warning", "⚠ Entry blocks: unresolved executions"));
 		for (const width of [1, 2, 20, 40, 80, 140]) {
@@ -154,7 +155,7 @@ describe("trading venue status layout", () => {
 
 	it("mirrors the layout in the plain status widget without colors", () => {
 		expect(formatTradingStatus(input, blocked)).toEqual([
-			"⚠ Entry blocks: unresolved executions  ·  Inspect /recovery; do not resubmit orders.  ·  /health",
+			"⚠ Entry blocks: unresolved executions  ·  Inspect /recovery; do not resubmit orders.  ·  /show health",
 			"[ LIVE ]  Binance  USDⓈ-M futures  USDT",
 		]);
 		expect(formatTradingStatus({ ...input, orderApproval: "unattended" }, settled)).toEqual([
@@ -168,14 +169,14 @@ describe("trading venue status layout", () => {
 				{ language: "en-US", mode: "paper", exchangeId: "okx", marketType: "spot", quoteCurrency: "USDT" },
 				settled,
 			),
-		).toEqual(["[ PAPER ]  OKX  Spot  USDT  market data: OKX public"]);
+		).toEqual(["[ PAPER ]  OKX  Spot  USDT  public market data"]);
 	});
 
 	it("renders the blocked alert without a recovery hint when none is set", () => {
 		const status = { summary: "Entry blocks: none", tone: "warning", entryBlocked: true } as const;
 		expect(renderTradingVenue(input, plainTheme, 140, status).map((line) => line.trim())).toEqual([
-			"⚠ Entry blocks: none  ·  /health",
-			"[ LIVE ]  |  Binance  |  USDⓈ-M futures  USDT",
+			"⚠ Entry blocks: none  ·  /show health",
+			"LIVE  Binance · USDⓈ-M futures · USDT",
 		]);
 	});
 });

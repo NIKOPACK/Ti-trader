@@ -1,5 +1,5 @@
 import { fork } from "node:child_process";
-import { closeSync, openSync } from "node:fs";
+import { closeSync, existsSync, openSync } from "node:fs";
 import { join } from "node:path";
 import {
 	acquireFileLock,
@@ -19,7 +19,7 @@ import {
 	validateMonitoringScope,
 } from "../monitoring-state.ts";
 import { loadTradingConfig, loadTradingState } from "../state.ts";
-import { loadAutonomousConfig } from "./config.ts";
+import { type AutonomousConfig, loadAutonomousConfig } from "./config.ts";
 import { ModelProcess } from "./model-process.ts";
 import { AutonomousRuntime, failureCode, withDeadline } from "./runtime.ts";
 import { AutonomousStore } from "./state.ts";
@@ -73,6 +73,15 @@ export interface AutonomousCommandOptions {
 	onStatus?: (status: AutonomousStatus) => void;
 }
 
+/** A manifest file counts even when malformed: it proves setup ran before. */
+export function hasAutonomousManifest(): boolean {
+	try {
+		return manifest() !== undefined;
+	} catch {
+		return existsSync(manifestPath);
+	}
+}
+
 function manifest(): DaemonManifest | undefined {
 	const value = readJsonFile(manifestPath);
 	if (value === undefined) return undefined;
@@ -112,9 +121,27 @@ export async function autonomousCommand(
 	}
 	const existing = manifest();
 	if (command === "start") {
-		const config = loadAutonomousConfig();
+		let config: AutonomousConfig;
+		try {
+			config = loadAutonomousConfig();
+		} catch {
+			throw new Error("Autonomous is not configured; run /autonomous in the Ti TUI to complete setup");
+		}
 		const tradingConfig = loadTradingConfig();
-		validateAccountRiskLimits(tradingConfig.risk.account);
+		try {
+			validateAccountRiskLimits(tradingConfig.risk.account);
+		} catch (error) {
+			throw new Error(
+				`${error instanceof Error ? error.message : String(error)}; run /autonomous to apply hard risk limits`,
+			);
+		}
+		if (tradingConfig.orderApproval !== "unattended")
+			throw new Error(
+				'Autonomous trading requires orderApproval: "unattended" in trading.json; run /autonomous to apply it',
+			);
+		for (const key of ["mode", "exchange", "marketType", "quoteCurrency"] as const)
+			if (config[key] !== tradingConfig[key])
+				throw new Error(`autonomous.json ${key} does not match trading.json; run /autonomous to repair it`);
 		if (options.expectedScope) {
 			validateMonitoringScope(options.expectedScope);
 			for (const key of ["mode", "exchange", "marketType", "quoteCurrency"] as const)
@@ -123,6 +150,10 @@ export async function autonomousCommand(
 			if (tradingConfig.positionMode !== options.expectedScope.positionMode)
 				throw new Error("Autonomous position mode differs from the active TUI account");
 		}
+		if (config.mode === "live")
+			throw new Error(
+				"Live autonomous mode is unavailable: current adapters lack complete external-flow, fee and funding evidence required by account hard risk",
+			);
 		if (existing && processExists(existing.pid)) throw new Error("Autonomous process is already running");
 		const logPath = join(AGENT_DIR, "autonomous.log");
 		const log = openSync(logPath, "a", 0o600);

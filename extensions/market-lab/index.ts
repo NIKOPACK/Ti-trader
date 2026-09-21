@@ -7,6 +7,7 @@ import {
 	type IndicatorPoint,
 	resolveIndicatorPeriods,
 } from "./indicators.ts";
+import { registerMarketView, runChartCommand } from "./market-view.ts";
 import {
 	evaluateStrategy,
 	isStrategyPreset,
@@ -161,15 +162,16 @@ export function parseReplayArgs(args: string): {
 	return parseMarketArgs(args, true);
 }
 
-function usage(command: "signal" | "screen" | "replay" | "indicators"): string {
+function usage(command: "signal" | "screen" | "replay" | "indicators" | "lab"): string {
 	if (command === "screen") {
-		return "Usage: /screen BTC/USDT ETH/USDT [1h] [ema-cross|rsi-revert|macd-hist] [limit=20-200]";
+		return "Usage: /lab screen BTC/USDT ETH/USDT [1h] [ema-cross|rsi-revert|macd-hist] [limit=20-200]";
 	}
 	if (command === "replay") {
-		return "Usage: /replay BTC/USDT [1h] [ema-cross|rsi-revert|macd-hist] [limit=20-200] [horizon=1-20]";
+		return "Usage: /lab replay BTC/USDT [1h] [ema-cross|rsi-revert|macd-hist] [limit=20-200] [horizon=1-20]";
 	}
-	if (command === "indicators") return "Usage: /indicators BTC/USDT [1h] [limit=20-200]";
-	return "Usage: /signal BTC/USDT [1h] [ema-cross|rsi-revert|macd-hist] [limit=20-200]";
+	if (command === "indicators") return "Usage: /lab indicators BTC/USDT [1h] [limit=20-200]";
+	if (command === "signal") return "Usage: /lab signal BTC/USDT [1h] [ema-cross|rsi-revert|macd-hist] [limit=20-200]";
+	return "Usage: /lab indicators|signal|screen|replay|chart ...";
 }
 
 function parseBoundedIntegerOption(
@@ -227,7 +229,7 @@ function parseMarketArgs(
 		}
 		const parsedHorizon = parseBoundedIntegerOption(part, "horizon", 1, 20);
 		if (parsedHorizon) {
-			if (!allowHorizon) return { error: "horizon is only supported by /replay" };
+			if (!allowHorizon) return { error: "horizon is only supported by /lab replay" };
 			if ("error" in parsedHorizon) return parsedHorizon;
 			if (horizon !== undefined) return { error: "Duplicate horizon option" };
 			horizon = parsedHorizon.value;
@@ -280,7 +282,7 @@ export function parseScreenArgs(args: string): {
 			limit = parsedLimit.value;
 			continue;
 		}
-		if (part.startsWith("horizon=")) return { error: "horizon is only supported by /replay" };
+		if (part.startsWith("horizon=")) return { error: "horizon is only supported by /lab replay" };
 		symbols.push(part);
 	}
 	if (symbols.length === 0) return { error: usage("screen") };
@@ -768,99 +770,72 @@ export default function marketLabExtension(pi: ExtensionAPI): void {
 			return jsonResult(await replayRule(params as MarketParams, signal));
 		},
 	});
-	pi.registerCommand("indicators", {
-		description: "Show read-only technical indicators: /indicators SYMBOL [TIMEFRAME] [limit=20-200]",
-		handler: async (args, ctx) => {
-			const parsed = parseLabArgs(args);
-			if (parsed.error) return ctx.ui.notify(parsed.error, "warning");
-			if (!parsed.symbol) return ctx.ui.notify(usage("indicators"), "warning");
-			ctx.ui.notify(
-				JSON.stringify(
-					await analyze({ symbol: parsed.symbol, timeframe: parsed.timeframe, limit: parsed.limit }, ctx.signal),
-					null,
-					2,
-				),
-				"info",
-			);
+	registerMarketView(pi);
+	pi.registerCommand("lab", {
+		description: "Read-only market analysis: /lab indicators|signal|screen|replay|chart ...",
+		getArgumentCompletions: (prefix) => {
+			const items = ["indicators", "signal", "screen", "replay", "chart"]
+				.filter((name) => name.startsWith(prefix))
+				.map((name) => ({ value: name, label: name }));
+			return items.length > 0 ? items : null;
 		},
-	});
-	pi.registerCommand("signal", {
-		description:
-			"Show a read-only market signal: /signal SYMBOL [TIMEFRAME] [ema-cross|rsi-revert|macd-hist] [limit=20-200]",
 		handler: async (args, ctx) => {
-			const parsed = parseLabArgs(args);
-			if (parsed.error) return ctx.ui.notify(parsed.error, "warning");
-			if (!parsed.symbol) {
-				return ctx.ui.notify(usage("signal"), "warning");
+			const input = args.trim();
+			const space = input.indexOf(" ");
+			const command = space < 0 ? input : input.slice(0, space);
+			const rest = space < 0 ? "" : input.slice(space + 1).trim();
+			if (command === "chart") {
+				await runChartCommand(rest, ctx);
+				return;
 			}
-			ctx.ui.notify(
-				JSON.stringify(
-					await analyze(
-						{
-							symbol: parsed.symbol,
-							timeframe: parsed.timeframe,
-							preset: parsed.preset,
-							limit: parsed.limit,
-						},
-						ctx.signal,
-					),
-					null,
-					2,
-				),
-				"info",
-			);
-		},
-	});
-	pi.registerCommand("screen", {
-		description:
-			"Read-only multi-symbol scan: /screen BTC/USDT ETH/USDT [1h] [ema-cross|rsi-revert|macd-hist] [limit=20-200]",
-		handler: async (args, ctx) => {
-			const parsed = parseScreenArgs(args);
-			if (parsed.error) return ctx.ui.notify(parsed.error, "warning");
-			if (!parsed.symbols || parsed.symbols.length === 0) {
-				return ctx.ui.notify(usage("screen"), "warning");
+			if (command === "screen") {
+				const parsed = parseScreenArgs(rest);
+				if (parsed.error) return ctx.ui.notify(parsed.error, "warning");
+				if (!parsed.symbols || parsed.symbols.length === 0) {
+					return ctx.ui.notify(usage("screen"), "warning");
+				}
+				const result = await screenMarkets(
+					{
+						symbols: parsed.symbols,
+						timeframe: parsed.timeframe,
+						preset: parsed.preset,
+						limit: parsed.limit,
+					},
+					ctx.signal,
+				);
+				return ctx.ui.notify(
+					JSON.stringify(result, null, 2),
+					result.status === "failed" ? "error" : result.status === "partial-failure" ? "warning" : "info",
+				);
 			}
-			const result = await screenMarkets(
-				{
-					symbols: parsed.symbols,
-					timeframe: parsed.timeframe,
-					preset: parsed.preset,
-					limit: parsed.limit,
-				},
-				ctx.signal,
-			);
-			ctx.ui.notify(
-				JSON.stringify(result, null, 2),
-				result.status === "failed" ? "error" : result.status === "partial-failure" ? "warning" : "info",
-			);
-		},
-	});
-	pi.registerCommand("replay", {
-		description:
-			"Read-only closed-candle replay: /replay SYMBOL [TIMEFRAME] [ema-cross|rsi-revert|macd-hist] [limit=20-200] [horizon=1-20]",
-		handler: async (args, ctx) => {
-			const parsed = parseMarketArgs(args, true);
-			if (parsed.error) return ctx.ui.notify(parsed.error, "warning");
-			if (!parsed.symbol) {
-				return ctx.ui.notify(usage("replay"), "warning");
+			if (command === "indicators" || command === "signal" || command === "replay") {
+				const parsed = parseMarketArgs(rest, command === "replay");
+				if (parsed.error) return ctx.ui.notify(parsed.error, "warning");
+				if (!parsed.symbol) return ctx.ui.notify(usage(command), "warning");
+				const result =
+					command === "replay"
+						? await replayRule(
+								{
+									symbol: parsed.symbol,
+									timeframe: parsed.timeframe,
+									preset: parsed.preset,
+									limit: parsed.limit,
+									horizon: parsed.horizon,
+								},
+								ctx.signal,
+							)
+						: await analyze(
+								{
+									symbol: parsed.symbol,
+									timeframe: parsed.timeframe,
+									preset: command === "signal" ? parsed.preset : undefined,
+									limit: parsed.limit,
+								},
+								ctx.signal,
+							);
+				return ctx.ui.notify(JSON.stringify(result, null, 2), "info");
 			}
-			ctx.ui.notify(
-				JSON.stringify(
-					await replayRule(
-						{
-							symbol: parsed.symbol,
-							timeframe: parsed.timeframe,
-							preset: parsed.preset,
-							limit: parsed.limit,
-							horizon: parsed.horizon,
-						},
-						ctx.signal,
-					),
-					null,
-					2,
-				),
-				"info",
-			);
+			return ctx.ui.notify(usage("lab"), "warning");
 		},
 	});
 }

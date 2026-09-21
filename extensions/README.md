@@ -1,13 +1,12 @@
 # Ti 扩展包
 
-此目录存放 Ti 扩展源码模块。对外可安装的 Pi Package 是 `ti-trader`；发布构建会把这些模块复制到 `ti-trader/dist/`，并生成对应的 JavaScript 扩展清单。七个扩展都会随发布包一起打进 `dist/`。
+此目录存放 Ti 扩展源码模块。对外可安装的 Pi Package 是 `ti-trader`；发布构建会把这些模块复制到 `ti-trader/dist/`，并生成对应的 JavaScript 扩展清单。六个扩展都会随发布包一起打进 `dist/`。
 
 ## 默认加载与按需加载
 
 `ti-trader` 默认只自动加载：
 
-- `market-lab`：`calculate_indicators`、`evaluate_strategy`、`screen_markets`、`simulate_rule`，以及 `/indicators` `/signal` `/screen` `/replay`
-- `market-chart`：`show_market_view`，以及 `/chart`
+- `market-lab`：`calculate_indicators`、`evaluate_strategy`、`screen_markets`、`simulate_rule`、`show_market_view`，以及 `/lab`（indicators|signal|screen|replay|chart）
 
 以下扩展仍打进 `dist/`，但只在条件满足或 `--extension` 时加载：
 
@@ -32,7 +31,6 @@
 ```text
 extensions/
   market-lab/
-  market-chart/
   market-research/
   subagent/
   web-search/

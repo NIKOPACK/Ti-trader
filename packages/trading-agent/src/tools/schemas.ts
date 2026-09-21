@@ -135,6 +135,8 @@ export const checkOrderSchema = Type.Object({
 	...orderFields,
 });
 
+export type CheckOrderToolParams = Static<typeof checkOrderSchema>;
+
 export const cancelOrderSchema = Type.Object({
 	id: Type.String({ minLength: 1, description: "Order id (see get_open_orders)" }),
 	symbol: Type.String({ minLength: 1, description: SYMBOL_DESC }),

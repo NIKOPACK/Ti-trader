@@ -11,7 +11,6 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
 	optionalBundledResearchToolNames,
 	resolveBundledFreqtradeExtension,
-	resolveBundledMarketChartExtension,
 	resolveBundledMarketLabExtension,
 	resolveBundledMarketResearchExtension,
 	resolveBundledSubagentExtension,
@@ -115,14 +114,21 @@ describe("bundled market-lab extension", () => {
 				typeof tool === "string" ? tool : tool.name,
 			);
 			expect(toolNames).toEqual(
-				expect.arrayContaining(["calculate_indicators", "evaluate_strategy", "screen_markets", "simulate_rule"]),
+				expect.arrayContaining([
+					"calculate_indicators",
+					"evaluate_strategy",
+					"screen_markets",
+					"simulate_rule",
+					"show_market_view",
+				]),
 			);
 			expect(toolNames).not.toContain("analyze_market_structure");
 			expect(toolNames).not.toContain("generate_trade_signal");
 			const commands = services.resourceLoader
 				.getExtensions()
 				.extensions.flatMap((extension) => [...(extension.commands?.keys() ?? [])]);
-			expect(commands).toEqual(expect.arrayContaining(["indicators", "signal", "screen", "replay"]));
+			expect(commands).toEqual(expect.arrayContaining(["lab"]));
+			expect(commands).not.toEqual(expect.arrayContaining(["indicators", "signal", "screen", "replay", "chart"]));
 		} finally {
 			session.dispose();
 		}
@@ -175,7 +181,6 @@ describe("bundled freqtrade extension", () => {
 describe("bundled extension resolution", () => {
 	it.each([
 		["market-lab", resolveBundledMarketLabExtension],
-		["market-chart", resolveBundledMarketChartExtension],
 		["web-search", resolveBundledWebSearchExtension],
 		["zhihu-research", resolveBundledZhihuResearchExtension],
 		["market-research", resolveBundledMarketResearchExtension],

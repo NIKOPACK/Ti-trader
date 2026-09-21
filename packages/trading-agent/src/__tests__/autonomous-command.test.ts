@@ -46,6 +46,8 @@ function setup() {
 			if (action === "status") options.onStatus?.(status);
 			else options.output?.("pid=123 log=/fixture/autonomous.log");
 		}),
+		setupState: vi.fn<AutonomousCommandDependencies["setupState"]>(() => "configured"),
+		setup: vi.fn<AutonomousCommandDependencies["setup"]>(async () => true),
 	};
 	const context = {
 		hasUI: true,
@@ -171,6 +173,50 @@ describe("autonomous TUI command", () => {
 		await run(action);
 		expect(deps.execute).not.toHaveBeenCalled();
 		expect(transcript()).toContain(t("zh-CN", "healthStaleRuntime"));
+	});
+
+	it("runs guided setup on a bare command when nothing is initialized", async () => {
+		const { run, deps, transcript } = setup();
+		deps.setupState.mockReturnValue("uninitialized");
+		await run("");
+		expect(deps.setup).toHaveBeenCalledOnce();
+		expect(deps.execute).toHaveBeenNthCalledWith(1, "start", expect.objectContaining({ expectedScope: scope }));
+		expect(deps.execute).toHaveBeenNthCalledWith(2, "status", expect.objectContaining({ expectedScope: scope }));
+		expect(transcript()).toContain(t("zh-CN", "autonomousStarted"));
+	});
+
+	it.each(["uninitialized", "manifest"] as const)("runs guided setup before start when state is %s", async (state) => {
+		const { run, deps } = setup();
+		deps.setupState.mockReturnValue(state);
+		await run("start");
+		expect(deps.setup).toHaveBeenCalledOnce();
+		expect(deps.execute).toHaveBeenNthCalledWith(1, "start", expect.anything());
+		expect(deps.execute).toHaveBeenNthCalledWith(2, "status", expect.anything());
+	});
+
+	it("aborts without side effects when guided setup is cancelled", async () => {
+		const { run, deps } = setup();
+		deps.setupState.mockReturnValue("uninitialized");
+		deps.setup.mockResolvedValue(false);
+		await run("start");
+		expect(deps.execute).not.toHaveBeenCalled();
+	});
+
+	it("keeps status on a surviving manifest instead of rerunning setup", async () => {
+		const { run, deps, transcript } = setup();
+		deps.setupState.mockReturnValue("manifest");
+		await run("status");
+		expect(deps.setup).not.toHaveBeenCalled();
+		expect(deps.execute).toHaveBeenCalledExactlyOnceWith("status", expect.anything());
+		expect(transcript()).toContain("Wait for new evidence");
+	});
+
+	it.each(["pause", "resume", "stop"] as const)("does not offer guided setup for %s", async (action) => {
+		const { run, deps } = setup();
+		deps.setupState.mockReturnValue("uninitialized");
+		await run(action);
+		expect(deps.setup).not.toHaveBeenCalled();
+		expect(deps.execute).toHaveBeenCalledExactlyOnceWith(action, expect.anything());
 	});
 
 	it("reports configuration errors without claiming success", async () => {

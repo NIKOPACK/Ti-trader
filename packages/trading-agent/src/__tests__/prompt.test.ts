@@ -241,7 +241,7 @@ describe("trading prompt", () => {
 		expect(prompt).toContain("A [trigger:id] message is an observation, not trading authorization");
 		expect(prompt).toContain("Live sessions never auto-wake from triggers");
 		expect(prompt).toContain("/risk reconcile");
-		expect(prompt).toContain("scoped durable conditions managed by /trigger");
+		expect(prompt).toContain("scoped durable conditions managed by /monitor trigger");
 		expect(prompt).toContain("notification state survive restart");
 		expect(prompt).toContain("ordinary monitoring only runs while the session is active");
 		expect(prompt).not.toContain("in-memory conditions");

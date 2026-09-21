@@ -1,5 +1,5 @@
 import type { AgentToolResult } from "@earendil-works/pi-coding-agent";
-import type { Balance, Order, Position } from "@nikopack/ti-trading-engine";
+import { type Balance, errorMessage, type Order, type Position } from "@nikopack/ti-trading-engine";
 import type { TradingRuntime } from "../context.ts";
 
 export type TradingProvider = () => TradingRuntime;
@@ -47,15 +47,7 @@ export function findNestedError<T>(error: unknown, match: (candidate: unknown) =
 	return visit(error);
 }
 
-export function errorMessage(error: unknown): string {
-	if (error instanceof Error) return error.message;
-	if (typeof error === "string") return error;
-	if (error !== null && typeof error === "object") {
-		const message = (error as { message?: unknown }).message;
-		if (typeof message === "string") return message;
-	}
-	return String(error);
-}
+export { errorMessage };
 
 /** Exchange adapters mark a failed request as ambiguous when it may have reached the venue. */
 export function isSubmissionStatusUnknown(error: unknown): boolean {

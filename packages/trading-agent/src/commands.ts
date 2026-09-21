@@ -1,19 +1,22 @@
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import type { Balance } from "@nikopack/ti-trading-engine";
 import { AccountSwitchConfirmationRequired, getTrading } from "./context.ts";
-import { isSupportedExchangeId } from "./exchanges.ts";
-import { createTradingStatus } from "./health.ts";
+import { isSupportedExchangeId, SUPPORTED_EXCHANGES } from "./exchanges.ts";
+import { createHealthViewHandler, createTradingStatus } from "./health.ts";
 import { orderApprovalLabel, t, translate } from "./i18n.ts";
+import { waitForIdleBeforeMutation } from "./monitor-shared.ts";
 import { loginExchange, openTradingSettings } from "./settings-menu.ts";
 import { wrapTradingAutocomplete } from "./slash-autocomplete.ts";
 import {
 	isOrderApprovalMode,
 	loadExchangeKeyEntry,
+	loadExchangeKeys,
 	type MarketType,
 	type TradingLanguage,
 	type TradingMode,
 } from "./state.ts";
 import { renderTradingTable, type TableData, type TableLine } from "./table.ts";
+import { errorMessage } from "./tools/format.ts";
 import { formatTradingVenue } from "./venue.ts";
 
 function fmt(n: number | undefined, decimals = 2): string {
@@ -32,12 +35,6 @@ function uiLang(): TradingLanguage {
 
 function hasFiniteQuoteValue(balance: Balance): balance is Balance & { quoteValue: number } {
 	return balance.quoteValue !== undefined && Number.isFinite(balance.quoteValue);
-}
-
-async function waitForIdleBeforeMutation(ctx: ExtensionCommandContext): Promise<void> {
-	if (ctx.isIdle()) return;
-	ctx.ui.notify(t(uiLang(), "waitingIdle"), "info");
-	await ctx.waitForIdle();
 }
 
 async function runWithAccountSwitchConfirmation(
@@ -156,6 +153,29 @@ export function createTradingExtension() {
 
 		const tradingVenue = () => formatTradingVenue(tradingVenueInput());
 
+		const venueHeader = (): TableLine[] => {
+			const venue = tradingVenue();
+			return [venue.identity, { text: venue.source, tone: "muted" }, ""];
+		};
+
+		const applyRuntimeSwitch = async (
+			ctx: ExtensionCommandContext,
+			apply: (confirmAccountSwitch: boolean) => Promise<void>,
+			render: () => { title: string; lines: TableLine[]; notice: string },
+		): Promise<void> => {
+			try {
+				await waitForIdleBeforeMutation(ctx, "waitingIdle");
+				const applied = await runWithAccountSwitchConfirmation(ctx, apply);
+				if (!applied) return;
+				updateStatus(ctx);
+				const { title, lines, notice } = render();
+				show(title, lines);
+				ctx.ui.notify(notice, "info");
+			} catch (error) {
+				ctx.ui.notify(errorMessage(error), "error");
+			}
+		};
+
 		let autocompleteWrapped = false;
 		pi.on("session_start", async (_event, ctx) => {
 			if (ctx.hasUI && !autocompleteWrapped) {
@@ -185,211 +205,239 @@ export function createTradingExtension() {
 				const trading = getTrading();
 				const language = args.trim() as TradingLanguage;
 				if (!language) {
-					await openSettings(ctx);
+					ctx.ui.notify(
+						translate(trading.config.language, "currentSetting", {
+							label: t(trading.config.language, "language"),
+							value: trading.config.language,
+							usage: "/language zh-CN|en-US",
+						}),
+						"info",
+					);
 					return;
 				}
 				if (language !== "zh-CN" && language !== "en-US") {
 					ctx.ui.notify(t(trading.config.language, "languageInvalid"), "error");
 					return;
 				}
-				await waitForIdleBeforeMutation(ctx);
+				await waitForIdleBeforeMutation(ctx, "waitingIdle");
 				await trading.setLanguage(language);
 				updateStatus(ctx);
 				ctx.ui.notify(t(language, "languageChanged"), "info");
 			},
 		});
 
-		pi.registerCommand("balance", {
-			description: "Show account balances with quote-currency valuation",
-			handler: async (_args, ctx) => {
-				const trading = getTrading();
-				const balances = await trading.tradingEngine.getBalances();
-				const valuedBalances = balances.filter(hasFiniteQuoteValue);
-				const total = valuedBalances.reduce((s, b) => s + b.quoteValue, 0);
-				const totalLabel =
-					valuedBalances.length === balances.length
-						? `${fmt(total)} ${trading.config.quoteCurrency}`
-						: translate(trading.config.language, "valuationIncomplete", { known: fmt(total) });
-				const language = trading.config.language;
-				const venue = tradingVenue();
-				const lines: TableLine[] = [
-					venue.identity,
-					{ text: venue.source, tone: "muted" },
-					"",
-					...balances.map(
-						(b): TableLine => ({
-							fields: [
-								{ label: t(language, "colAsset"), value: b.asset },
-								{ label: t(language, "colAvailable"), value: fmtAmount(b.free) },
-								{ label: t(language, "colLocked"), value: fmtAmount(b.used) },
-								{
-									label: t(language, "colValuation"),
-									value: `${fmt(b.quoteValue)} ${trading.config.quoteCurrency}`,
-								},
-							],
-						}),
-					),
-					"",
-					`${t(language, "totalValuation")} ≈ ${totalLabel}`,
-				];
-				show(t(language, "titleBalance"), lines);
-				ctx.ui.notify(
-					translate(language, "notifyTotalValuation", {
-						label: t(language, "totalValuation"),
-						total: totalLabel,
-						mode: trading.mode,
+		const showBalance = async (_args: string, ctx: ExtensionCommandContext): Promise<void> => {
+			const trading = getTrading();
+			const balances = await trading.tradingEngine.getBalances();
+			const valuedBalances = balances.filter(hasFiniteQuoteValue);
+			const total = valuedBalances.reduce((s, b) => s + b.quoteValue, 0);
+			const totalLabel =
+				valuedBalances.length === balances.length
+					? `${fmt(total)} ${trading.config.quoteCurrency}`
+					: translate(trading.config.language, "valuationIncomplete", { known: fmt(total) });
+			const language = trading.config.language;
+			const lines: TableLine[] = [
+				...venueHeader(),
+				...balances.map(
+					(b): TableLine => ({
+						fields: [
+							{ label: t(language, "colAsset"), value: b.asset },
+							{ label: t(language, "colAvailable"), value: fmtAmount(b.free) },
+							{ label: t(language, "colLocked"), value: fmtAmount(b.used) },
+							{
+								label: t(language, "colValuation"),
+								value: `${fmt(b.quoteValue)} ${trading.config.quoteCurrency}`,
+							},
+						],
 					}),
-					"info",
-				);
-			},
-		});
+				),
+				"",
+				`${t(language, "totalValuation")} ≈ ${totalLabel}`,
+			];
+			show(t(language, "titleBalance"), lines);
+			ctx.ui.notify(
+				translate(language, "notifyTotalValuation", {
+					label: t(language, "totalValuation"),
+					total: totalLabel,
+					mode: trading.mode,
+				}),
+				"info",
+			);
+		};
 
-		pi.registerCommand("positions", {
-			description: "Show current holdings with average entry and unrealized PnL when available",
-			handler: async (_args, ctx) => {
-				const trading = getTrading();
-				const positions = await trading.tradingEngine.getPositions();
-				const language = trading.config.language;
-				const venue = tradingVenue();
-				const header: TableLine[] = [venue.identity, { text: venue.source, tone: "muted" }, ""];
-				if (positions.length === 0) {
-					show(t(language, "titlePositions"), [...header, t(language, "emptyPositions")]);
+		const showPositions = async (_args: string, ctx: ExtensionCommandContext): Promise<void> => {
+			const trading = getTrading();
+			const positions = await trading.tradingEngine.getPositions();
+			const language = trading.config.language;
+			const header = venueHeader();
+			if (positions.length === 0) {
+				show(t(language, "titlePositions"), [...header, t(language, "emptyPositions")]);
+				return;
+			}
+			show(t(language, "titlePositions"), [
+				...header,
+				...positions.map(
+					(p): TableLine => ({
+						fields: [
+							{ label: t(language, "colSymbol"), value: p.symbol },
+							{ label: t(language, "colAmount"), value: fmtAmount(p.amount) },
+							{
+								label: t(language, "colPnl"),
+								value:
+									p.unrealizedPnl === undefined
+										? "-"
+										: `${p.unrealizedPnl >= 0 ? "+" : ""}${fmt(p.unrealizedPnl)} ${trading.config.quoteCurrency} (${fmt(p.unrealizedPnlPct)}%)`,
+							},
+							{
+								label: t(language, "colValuation"),
+								value: `${fmt(p.quoteValue)} ${trading.config.quoteCurrency}${p.valuationReason ? ` (${p.valuationReason})` : ""}`,
+							},
+							{ label: t(language, "colEntry"), value: fmt(p.avgEntryPrice, 6) },
+							...(p.costBasisStatus && p.costBasisStatus !== "complete"
+								? [{ label: t(language, "colBasis"), value: p.costBasisStatus }]
+								: []),
+						],
+						tone: p.unrealizedPnl === undefined ? undefined : p.unrealizedPnl >= 0 ? "up" : "down",
+					}),
+				),
+			]);
+			ctx.ui.notify(translate(language, "notifyPositions", { count: positions.length }), "info");
+		};
+
+		const showOrders = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
+			const symbol = args.trim() || undefined;
+			const language = uiLang();
+			const orders = await getTrading().tradingEngine.getOpenOrders(symbol);
+			const header = venueHeader();
+			if (orders.length === 0) {
+				show(t(language, "titleOrders"), [...header, t(language, "emptyOrders")]);
+				return;
+			}
+			show(t(language, "titleOrders"), [
+				...header,
+				...orders.map(
+					(o): TableLine => ({
+						fields: [
+							{ label: t(language, "colSymbol"), value: o.symbol },
+							{ label: t(language, "colSide"), value: o.side },
+							{ label: t(language, "colType"), value: o.type },
+							{ label: t(language, "colRemaining"), value: fmtAmount(o.remaining) },
+							{ label: t(language, "colPrice"), value: fmt(o.price, 6) },
+							...(o.stopPrice === undefined
+								? []
+								: [{ label: t(language, "colTrigger"), value: fmt(o.stopPrice, 6) }]),
+							...(o.trailingPercent === undefined
+								? []
+								: [{ label: t(language, "colTrailing"), value: `${fmt(o.trailingPercent)}%` }]),
+							{ label: t(language, "colOrderId"), value: o.id },
+							...(o.ocoGroup ? [{ label: "OCO", value: o.ocoGroup }] : []),
+							{ label: t(language, "colTime"), value: new Date(o.timestamp).toLocaleString(language) },
+						],
+						tone: o.side === "buy" ? "up" : "down",
+					}),
+				),
+			]);
+			ctx.ui.notify(translate(language, "notifyOrders", { count: orders.length }), "info");
+		};
+
+		const showTrades = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
+			const symbol = args.trim() || undefined;
+			const language = uiLang();
+			const orders = await getTrading().tradingEngine.getOrderHistory(symbol, 20);
+			const header = venueHeader();
+			if (orders.length === 0) {
+				show(t(language, "titleTrades"), [...header, t(language, "emptyTrades")]);
+				return;
+			}
+			show(t(language, "titleTrades"), [
+				...header,
+				...orders.map(
+					(o): TableLine => ({
+						fields: [
+							{ label: t(language, "colSymbol"), value: o.symbol },
+							{ label: t(language, "colSide"), value: o.side },
+							{ label: t(language, "colFilled"), value: fmtAmount(o.filled) },
+							{ label: t(language, "colPrice"), value: fmt(o.average, 6) },
+							{ label: t(language, "colStatus"), value: o.status },
+							{ label: t(language, "colOrderId"), value: o.id },
+							{ label: t(language, "colTime"), value: new Date(o.timestamp).toLocaleString(language) },
+						],
+						tone: o.side === "buy" ? "up" : "down",
+					}),
+				),
+			]);
+			ctx.ui.notify(translate(language, "notifyTrades", { count: orders.length }), "info");
+		};
+
+		const showMarkets = async (args: string, ctx: ExtensionCommandContext): Promise<void> => {
+			const limit = Math.min(Math.max(Number.parseInt(args.trim(), 10) || 15, 1), 50);
+			const language = uiLang();
+			const tickers = await getTrading().tradingEngine.getTopMarkets(limit);
+			show(t(language, "titleMarkets"), [
+				...venueHeader(),
+				...tickers.map(
+					(ticker, i): TableLine => ({
+						fields: [
+							{ label: "", value: `${i + 1}. ${ticker.symbol}` },
+							{ label: t(language, "colPrice"), value: fmt(ticker.last, 6) },
+							{
+								label: t(language, "colChange"),
+								value:
+									ticker.changePct24h === undefined
+										? "-"
+										: `${ticker.changePct24h >= 0 ? "+" : ""}${fmt(ticker.changePct24h)}%`,
+							},
+							{ label: t(language, "colVolume"), value: fmt(ticker.quoteVolume24h, 0) },
+						],
+						tone: ticker.changePct24h === undefined ? undefined : ticker.changePct24h >= 0 ? "up" : "down",
+					}),
+				),
+			]);
+			ctx.ui.notify(translate(language, "notifyMarkets", { count: tickers.length }), "info");
+		};
+
+		const showAudit = async (_args: string): Promise<void> => {
+			show(
+				t(uiLang(), "titleAudit"),
+				getTrading()
+					.listAuditEvents()
+					.map(
+						(event) =>
+							`${event.at} ${event.mode} ${event.kind} ${event.action ?? ""} ${event.executionId ?? ""} ${event.evidenceReference ?? ""}`,
+					),
+			);
+		};
+
+		const showViews = {
+			balance: showBalance,
+			positions: showPositions,
+			orders: showOrders,
+			trades: showTrades,
+			markets: showMarkets,
+			audit: showAudit,
+			health: createHealthViewHandler(pi),
+		} satisfies Record<string, (args: string, ctx: ExtensionCommandContext) => Promise<void>>;
+		const showViewNames = Object.keys(showViews);
+
+		pi.registerCommand("show", {
+			description: "Read-only views: /show [balance|positions|orders|trades|markets|audit|health]",
+			getArgumentCompletions: (prefix) => {
+				const items = showViewNames
+					.filter((name) => name.startsWith(prefix))
+					.map((name) => ({ value: name, label: name }));
+				return items.length > 0 ? items : null;
+			},
+			handler: async (args, ctx) => {
+				const input = args.trim();
+				const space = input.indexOf(" ");
+				const name = space < 0 ? input : input.slice(0, space);
+				const rest = space < 0 ? "" : input.slice(space + 1).trim();
+				const view = showViews[name as keyof typeof showViews] ?? (name === "" ? showViews.balance : undefined);
+				if (!view) {
+					ctx.ui.notify(t(uiLang(), "showUsage"), "warning");
 					return;
 				}
-				show(t(language, "titlePositions"), [
-					...header,
-					...positions.map(
-						(p): TableLine => ({
-							fields: [
-								{ label: t(language, "colSymbol"), value: p.symbol },
-								{ label: t(language, "colAmount"), value: fmtAmount(p.amount) },
-								{
-									label: t(language, "colPnl"),
-									value:
-										p.unrealizedPnl === undefined
-											? "-"
-											: `${p.unrealizedPnl >= 0 ? "+" : ""}${fmt(p.unrealizedPnl)} ${trading.config.quoteCurrency} (${fmt(p.unrealizedPnlPct)}%)`,
-								},
-								{
-									label: t(language, "colValuation"),
-									value: `${fmt(p.quoteValue)} ${trading.config.quoteCurrency}${p.valuationReason ? ` (${p.valuationReason})` : ""}`,
-								},
-								{ label: t(language, "colEntry"), value: fmt(p.avgEntryPrice, 6) },
-								...(p.costBasisStatus && p.costBasisStatus !== "complete"
-									? [{ label: t(language, "colBasis"), value: p.costBasisStatus }]
-									: []),
-							],
-							tone: p.unrealizedPnl === undefined ? undefined : p.unrealizedPnl >= 0 ? "up" : "down",
-						}),
-					),
-				]);
-				ctx.ui.notify(translate(language, "notifyPositions", { count: positions.length }), "info");
-			},
-		});
-
-		pi.registerCommand("orders", {
-			description: "Show open orders. Usage: /orders [symbol]",
-			handler: async (args, ctx) => {
-				const symbol = args.trim() || undefined;
-				const language = uiLang();
-				const orders = await getTrading().tradingEngine.getOpenOrders(symbol);
-				const venue = tradingVenue();
-				const header: TableLine[] = [venue.identity, { text: venue.source, tone: "muted" }, ""];
-				if (orders.length === 0) {
-					show(t(language, "titleOrders"), [...header, t(language, "emptyOrders")]);
-					return;
-				}
-				show(t(language, "titleOrders"), [
-					...header,
-					...orders.map(
-						(o): TableLine => ({
-							fields: [
-								{ label: t(language, "colSymbol"), value: o.symbol },
-								{ label: t(language, "colSide"), value: o.side },
-								{ label: t(language, "colType"), value: o.type },
-								{ label: t(language, "colRemaining"), value: fmtAmount(o.remaining) },
-								{ label: t(language, "colPrice"), value: fmt(o.price, 6) },
-								...(o.stopPrice === undefined
-									? []
-									: [{ label: t(language, "colTrigger"), value: fmt(o.stopPrice, 6) }]),
-								...(o.trailingPercent === undefined
-									? []
-									: [{ label: t(language, "colTrailing"), value: `${fmt(o.trailingPercent)}%` }]),
-								{ label: t(language, "colOrderId"), value: o.id },
-								...(o.ocoGroup ? [{ label: "OCO", value: o.ocoGroup }] : []),
-								{ label: t(language, "colTime"), value: new Date(o.timestamp).toLocaleString(language) },
-							],
-							tone: o.side === "buy" ? "up" : "down",
-						}),
-					),
-				]);
-				ctx.ui.notify(translate(language, "notifyOrders", { count: orders.length }), "info");
-			},
-		});
-
-		pi.registerCommand("trades", {
-			description: "Show recently closed orders. Usage: /trades [symbol]",
-			handler: async (args, ctx) => {
-				const symbol = args.trim() || undefined;
-				const language = uiLang();
-				const orders = await getTrading().tradingEngine.getOrderHistory(symbol, 20);
-				const venue = tradingVenue();
-				const header: TableLine[] = [venue.identity, { text: venue.source, tone: "muted" }, ""];
-				if (orders.length === 0) {
-					show(t(language, "titleTrades"), [...header, t(language, "emptyTrades")]);
-					return;
-				}
-				show(t(language, "titleTrades"), [
-					...header,
-					...orders.map(
-						(o): TableLine => ({
-							fields: [
-								{ label: t(language, "colSymbol"), value: o.symbol },
-								{ label: t(language, "colSide"), value: o.side },
-								{ label: t(language, "colFilled"), value: fmtAmount(o.filled) },
-								{ label: t(language, "colPrice"), value: fmt(o.average, 6) },
-								{ label: t(language, "colStatus"), value: o.status },
-								{ label: t(language, "colOrderId"), value: o.id },
-								{ label: t(language, "colTime"), value: new Date(o.timestamp).toLocaleString(language) },
-							],
-							tone: o.side === "buy" ? "up" : "down",
-						}),
-					),
-				]);
-				ctx.ui.notify(translate(language, "notifyTrades", { count: orders.length }), "info");
-			},
-		});
-
-		pi.registerCommand("markets", {
-			description: `Show top markets by 24h quote volume. Usage: /markets [limit]`,
-			handler: async (args, ctx) => {
-				const limit = Math.min(Math.max(Number.parseInt(args.trim(), 10) || 15, 1), 50);
-				const language = uiLang();
-				const tickers = await getTrading().tradingEngine.getTopMarkets(limit);
-				const venue = tradingVenue();
-				show(t(language, "titleMarkets"), [
-					venue.identity,
-					{ text: venue.source, tone: "muted" },
-					"",
-					...tickers.map(
-						(ticker, i): TableLine => ({
-							fields: [
-								{ label: "", value: `${i + 1}. ${ticker.symbol}` },
-								{ label: t(language, "colPrice"), value: fmt(ticker.last, 6) },
-								{
-									label: t(language, "colChange"),
-									value:
-										ticker.changePct24h === undefined
-											? "-"
-											: `${ticker.changePct24h >= 0 ? "+" : ""}${fmt(ticker.changePct24h)}%`,
-								},
-								{ label: t(language, "colVolume"), value: fmt(ticker.quoteVolume24h, 0) },
-							],
-							tone: ticker.changePct24h === undefined ? undefined : ticker.changePct24h >= 0 ? "up" : "down",
-						}),
-					),
-				]);
-				ctx.ui.notify(translate(language, "notifyMarkets", { count: tickers.length }), "info");
+				await view(rest, ctx);
 			},
 		});
 
@@ -398,11 +446,18 @@ export function createTradingExtension() {
 			handler: async (args, ctx) => {
 				const trading = getTrading();
 				const target = args.trim().toLowerCase();
+				const language = trading.config.language;
 				if (!target) {
-					await openSettings(ctx);
+					ctx.ui.notify(
+						translate(language, "currentSetting", {
+							label: t(language, "mode"),
+							value: t(language, trading.mode === "live" ? "modeLive" : "modePaper"),
+							usage: "/mode paper|live",
+						}),
+						"info",
+					);
 					return;
 				}
-				const language = trading.config.language;
 				if (target !== "paper" && target !== "live") {
 					ctx.ui.notify(translate(language, "unknownMode", { target }), "error");
 					return;
@@ -426,27 +481,26 @@ export function createTradingExtension() {
 						return;
 					}
 				}
-				try {
-					await waitForIdleBeforeMutation(ctx);
-					const applied = await runWithAccountSwitchConfirmation(ctx, (confirmAccountSwitch) =>
-						trading.setMode(target as TradingMode, { confirmAccountSwitch }),
-					);
-					if (!applied) return;
-					updateStatus(ctx);
-					const modeLabel = t(language, target === "live" ? "venueLive" : "venuePaper");
-					show(t(language, "titleMode"), [
-						{
-							text: translate(language, "switchedMode", {
-								mode: modeLabel,
-								exchange: trading.config.exchange,
-							}),
-							tone: target === "live" ? "warn" : undefined,
-						},
-					]);
-					ctx.ui.notify(translate(language, "notifyMode", { mode: target }), "info");
-				} catch (error) {
-					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-				}
+				await applyRuntimeSwitch(
+					ctx,
+					(c) => trading.setMode(target as TradingMode, { confirmAccountSwitch: c }),
+					() => {
+						const modeLabel = t(language, target === "live" ? "venueLive" : "venuePaper");
+						return {
+							title: t(language, "titleMode"),
+							lines: [
+								{
+									text: translate(language, "switchedMode", {
+										mode: modeLabel,
+										exchange: trading.config.exchange,
+									}),
+									tone: target === "live" ? "warn" : undefined,
+								},
+							],
+							notice: translate(language, "notifyMode", { mode: target }),
+						};
+					},
+				);
 			},
 		});
 
@@ -455,11 +509,18 @@ export function createTradingExtension() {
 			handler: async (args, ctx) => {
 				const trading = getTrading();
 				const target = args.trim().toLowerCase();
+				const language = trading.config.language;
 				if (!target) {
-					await openSettings(ctx);
+					ctx.ui.notify(
+						translate(language, "currentSetting", {
+							label: t(language, "orderApproval"),
+							value: orderApprovalLabel(language, trading.config.orderApproval),
+							usage: "/approval confirm|unattended",
+						}),
+						"info",
+					);
 					return;
 				}
-				const language = trading.config.language;
 				if (!isOrderApprovalMode(target)) {
 					ctx.ui.notify(translate(language, "unknownApproval", { target }), "error");
 					return;
@@ -486,7 +547,7 @@ export function createTradingExtension() {
 					}
 				}
 				try {
-					await waitForIdleBeforeMutation(ctx);
+					await waitForIdleBeforeMutation(ctx, "waitingIdle");
 					if (getTrading() !== trading) throw new Error(t(language, "riskRuntimeChanged"));
 					await trading.setOrderApproval(target, { confirmUnattendedTrading: target === "unattended" });
 					updateStatus(ctx);
@@ -502,7 +563,7 @@ export function createTradingExtension() {
 						target === "unattended" ? "warning" : "info",
 					);
 				} catch (error) {
-					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+					ctx.ui.notify(errorMessage(error), "error");
 				}
 			},
 		});
@@ -513,24 +574,29 @@ export function createTradingExtension() {
 				const trading = getTrading();
 				const target = args.trim().toLowerCase();
 				if (!target) {
-					await openSettings(ctx);
+					const language = trading.config.language;
+					ctx.ui.notify(
+						translate(language, "currentSetting", {
+							label: t(language, "exchange"),
+							value: trading.config.exchange,
+							usage: "/exchange <id>",
+						}),
+						"info",
+					);
 					return;
 				}
-				try {
-					await waitForIdleBeforeMutation(ctx);
-					const applied = await runWithAccountSwitchConfirmation(ctx, (confirmAccountSwitch) =>
-						trading.setExchange(target, { confirmAccountSwitch }),
-					);
-					if (!applied) return;
-					updateStatus(ctx);
-					const language = trading.config.language;
-					show(t(language, "titleExchange"), [
-						translate(language, "switchedExchange", { exchange: target, mode: trading.mode }),
-					]);
-					ctx.ui.notify(translate(language, "notifyExchange", { exchange: target }), "info");
-				} catch (error) {
-					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-				}
+				await applyRuntimeSwitch(
+					ctx,
+					(c) => trading.setExchange(target, { confirmAccountSwitch: c }),
+					() => {
+						const language = trading.config.language;
+						return {
+							title: t(language, "titleExchange"),
+							lines: [translate(language, "switchedExchange", { exchange: target, mode: trading.mode })],
+							notice: translate(language, "notifyExchange", { exchange: target }),
+						};
+					},
+				);
 			},
 		});
 
@@ -539,11 +605,18 @@ export function createTradingExtension() {
 			handler: async (args, ctx) => {
 				const trading = getTrading();
 				const target = args.trim().toLowerCase() as MarketType | "";
+				const language = trading.config.language;
 				if (!target) {
-					await openSettings(ctx);
+					ctx.ui.notify(
+						translate(language, "currentSetting", {
+							label: t(language, "marketType"),
+							value: trading.config.marketType,
+							usage: "/market spot|usdm-futures|both",
+						}),
+						"info",
+					);
 					return;
 				}
-				const language = trading.config.language;
 				if (target !== "spot" && target !== "usdm-futures" && target !== "both") {
 					ctx.ui.notify(translate(language, "unknownMarketType", { target }), "error");
 					return;
@@ -565,23 +638,20 @@ export function createTradingExtension() {
 					);
 					if (!futuresConfirmed) return;
 				}
-				try {
-					await waitForIdleBeforeMutation(ctx);
-					const applied = await runWithAccountSwitchConfirmation(ctx, (confirmAccountSwitch) =>
-						trading.setMarketType(target, { confirmAccountSwitch }),
-					);
-					if (!applied) return;
-					updateStatus(ctx);
-					show(t(language, "titleMarket"), [
-						translate(language, "switchedMarket", {
-							market: target,
-							hint: target === "usdm-futures" ? t(language, "futuresSymbolHint") : "",
-						}),
-					]);
-					ctx.ui.notify(translate(language, "notifyMarket", { market: target }), "info");
-				} catch (error) {
-					ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
-				}
+				await applyRuntimeSwitch(
+					ctx,
+					(c) => trading.setMarketType(target, { confirmAccountSwitch: c }),
+					() => ({
+						title: t(language, "titleMarket"),
+						lines: [
+							translate(language, "switchedMarket", {
+								market: target,
+								hint: target === "usdm-futures" ? t(language, "futuresSymbolHint") : "",
+							}),
+						],
+						notice: translate(language, "notifyMarket", { market: target }),
+					}),
+				);
 			},
 		});
 
@@ -589,11 +659,7 @@ export function createTradingExtension() {
 			description: "Risk limits: /risk [show|reset|reconcile <id> commit|release]",
 			handler: async (args, ctx) => {
 				const trading = getTrading();
-				const arg = args?.trim();
-				if (!arg) {
-					await openSettings(ctx);
-					return;
-				}
+				const arg = args?.trim() || "show";
 				const parts = arg.split(/\s+/).filter(Boolean);
 				const language = trading.config.language;
 				if (arg === "reset") {
@@ -610,7 +676,7 @@ export function createTradingExtension() {
 						ctx.ui.notify(t(language, "riskResetCancelled"), "info");
 						return;
 					}
-					await waitForIdleBeforeMutation(ctx);
+					await waitForIdleBeforeMutation(ctx, "waitingIdle");
 					trading.tradingEngine.risk.reset();
 					updateStatus(ctx);
 					ctx.ui.notify(t(language, "riskResetDone"), "info");
@@ -647,7 +713,7 @@ export function createTradingExtension() {
 						ctx.ui.notify(t(language, "riskReservationUnchanged"), "info");
 						return;
 					}
-					await waitForIdleBeforeMutation(ctx);
+					await waitForIdleBeforeMutation(ctx, "waitingIdle");
 					try {
 						if (getTrading() !== trading || getTrading().tradingEngine !== engine)
 							throw new Error(t(language, "riskRuntimeChanged"));
@@ -662,7 +728,7 @@ export function createTradingExtension() {
 							"info",
 						);
 					} catch (error) {
-						ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+						ctx.ui.notify(errorMessage(error), "error");
 					}
 					return;
 				}
@@ -771,7 +837,7 @@ export function createTradingExtension() {
 							))
 						)
 							return;
-						await waitForIdleBeforeMutation(ctx);
+						await waitForIdleBeforeMutation(ctx, "waitingIdle");
 						if (getTrading() !== trading || trading.tradingEngine !== engine)
 							throw new Error(t(language, "riskRuntimeChanged"));
 						trading.resolveMaintenance(maintenance.id, parts[2]);
@@ -822,7 +888,7 @@ export function createTradingExtension() {
 						}),
 					);
 					if (!confirmed) return;
-					await waitForIdleBeforeMutation(ctx);
+					await waitForIdleBeforeMutation(ctx, "waitingIdle");
 					if (getTrading() !== trading || trading.tradingEngine !== engine)
 						throw new Error(t(language, "riskRuntimeChanged"));
 					trading.resolveExecution({
@@ -842,31 +908,22 @@ export function createTradingExtension() {
 			},
 		});
 
-		pi.registerCommand("audit", {
-			description: "Read bounded, redacted trading audit history",
-			handler: async (_args, _ctx) => {
-				show(
-					t(uiLang(), "titleAudit"),
-					getTrading()
-						.listAuditEvents()
-						.map(
-							(event) =>
-								`${event.at} ${event.mode} ${event.kind} ${event.action ?? ""} ${event.executionId ?? ""} ${event.evidenceReference ?? ""}`,
-						),
-				);
-			},
-		});
-
 		pi.registerCommand("paper", {
 			description: "Paper account: /paper [reset [startQuote]] — reset simulated balances, e.g. /paper reset 50000",
 			handler: async (args, ctx) => {
 				const trading = getTrading();
 				const parts = args.trim().split(/\s+/).filter(Boolean);
+				const language = trading.config.language;
 				if (parts.length === 0) {
-					await openSettings(ctx);
+					ctx.ui.notify(
+						translate(language, "paperSummary", {
+							amount: fmt(trading.config.paper.startQuote),
+							quote: trading.config.quoteCurrency,
+						}),
+						"info",
+					);
 					return;
 				}
-				const language = trading.config.language;
 				if (parts[0] !== "reset" || parts.length > 2) {
 					ctx.ui.notify(t(language, "paperUsage"), "warning");
 					return;
@@ -895,7 +952,7 @@ export function createTradingExtension() {
 					ctx.ui.notify(t(language, "paperUnchanged"), "info");
 					return;
 				}
-				await waitForIdleBeforeMutation(ctx);
+				await waitForIdleBeforeMutation(ctx, "waitingIdle");
 				const applied = await trading.resetPaperAccount(startQuote, { confirmExposure: true });
 				updateStatus(ctx);
 				show(t(language, "titlePaper"), [
@@ -921,7 +978,17 @@ export function createTradingExtension() {
 			handler: async (args, ctx) => {
 				const target = args.trim().toLowerCase();
 				if (!target || target === "exchange") {
-					await openSettings(ctx);
+					const language = uiLang();
+					const keys = loadExchangeKeys();
+					const configured = SUPPORTED_EXCHANGES.filter((exchange) => keys[exchange.id]).map(
+						(exchange) => exchange.id,
+					);
+					ctx.ui.notify(
+						configured.length === 0
+							? t(language, "exchangeLoginNone")
+							: translate(language, "exchangeLoginStatus", { list: configured.join(", ") }),
+						"info",
+					);
 					return;
 				}
 				if (!isSupportedExchangeId(target)) {

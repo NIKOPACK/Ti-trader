@@ -3,6 +3,7 @@ import { evaluateOrderCapability, getTradingCapabilities, type TradingCapability
 import { truncateToAmountStep } from "./ccxt-precision.ts";
 import type { FuturesPositionMode, MarketType } from "./client-types.ts";
 import { futuresAmountsEqual } from "./contract-size.ts";
+import { errorMessage } from "./error-message.ts";
 import { reduceSide } from "./protection.ts";
 import type {
 	MarketDataClient,
@@ -219,10 +220,7 @@ async function loadMarketInfo(
 		return await trading.exchange.getMarketInfo(symbol);
 	} catch (error) {
 		if (error instanceof OrderPreparationError) throw error;
-		rejectOrder(
-			`${kind} market metadata unavailable: ${error instanceof Error ? error.message : String(error)}`,
-			true,
-		);
+		rejectOrder(`${kind} market metadata unavailable: ${errorMessage(error)}`, true);
 	}
 }
 
@@ -464,10 +462,7 @@ export async function prepareOrder(
 		} catch (error) {
 			if (error instanceof OrderPreparationError) throw error;
 			if (requireStep) {
-				rejectOrder(
-					`Spot market metadata unavailable: ${error instanceof Error ? error.message : String(error)}`,
-					true,
-				);
+				rejectOrder(`Spot market metadata unavailable: ${errorMessage(error)}`, true);
 			}
 		}
 		if (market) amount = snapSpotLot(amount, market, requireStep);
@@ -485,10 +480,7 @@ export async function prepareOrder(
 					: await trading.exchange.getMarketInfo(params.symbol);
 		} catch (error) {
 			if (error instanceof OrderPreparationError) throw error;
-			rejectOrder(
-				`Futures market metadata unavailable: ${error instanceof Error ? error.message : String(error)}`,
-				true,
-			);
+			rejectOrder(`Futures market metadata unavailable: ${errorMessage(error)}`, true);
 		}
 		if (params.quoteAmount !== undefined) amount = snapQuoteAmountToFuturesLot(amount, market, referencePrice);
 		else assertFuturesAmountRepresentable(amount, market);

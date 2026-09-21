@@ -12,7 +12,11 @@ const runtime = vi.hoisted(() => ({
 vi.mock("../context.ts", () => ({ getTrading: () => runtime }));
 
 import { createMemoryMonitoringStore, type MonitoringScope, type MonitoringStore } from "../monitoring-state.ts";
-import { createTriggerMonitorExtension as createDurableTriggerMonitorExtension } from "../trigger-monitor.ts";
+import {
+	createTriggerMonitorExtension as createDurableTriggerMonitorExtension,
+	createTriggerCommandHandler,
+	type TriggerMonitorOptions,
+} from "../trigger-monitor.ts";
 
 const TEST_SCOPE: MonitoringScope = {
 	mode: "paper",
@@ -22,11 +26,19 @@ const TEST_SCOPE: MonitoringScope = {
 	accountId: "test-account",
 };
 
+// Mirrors production: /monitor registers the trigger handler over the same store
+// and scope as the monitor extension.
 function createTriggerMonitorExtension(store: MonitoringStore = createMemoryMonitoringStore()) {
-	return createDurableTriggerMonitorExtension({
+	const options: TriggerMonitorOptions = {
 		store,
 		getScope: () => ({ ...TEST_SCOPE, mode: runtime.mode }),
-	});
+	};
+	const monitor = createDurableTriggerMonitorExtension(options);
+	const trigger = createTriggerCommandHandler(options);
+	return (pi: ExtensionAPI): void => {
+		monitor(pi);
+		pi.registerCommand("trigger", { description: "test trigger", handler: trigger });
+	};
 }
 
 type Handler = (args: string | undefined, ctx: ExtensionContext) => Promise<void>;

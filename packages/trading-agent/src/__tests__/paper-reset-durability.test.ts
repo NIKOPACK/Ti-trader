@@ -1,5 +1,6 @@
 import type * as Fs from "node:fs";
 import { existsSync, readFileSync, rmSync } from "node:fs";
+import path from "node:path";
 import { writeJsonFile } from "@nikopack/ti-trading-engine";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { TradingRuntime } from "../context.ts";
@@ -20,7 +21,8 @@ vi.mock("node:fs", async (importOriginal) => {
 			return fd;
 		},
 		fsyncSync: (fd: number) => {
-			if (fixtures.fail && fixtures.handles.get(fd)?.endsWith("binance-USDT-futures.json"))
+			const handle = fixtures.handles.get(fd);
+			if (fixtures.fail && handle !== undefined && path.basename(handle).startsWith("binance-USDT-futures.json"))
 				throw new Error("injected Paper snapshot sync failure");
 			fs.fsyncSync(fd);
 		},

@@ -1,4 +1,5 @@
 import ccxt, { type Order as CcxtOrder, type Exchange } from "ccxt";
+import { boundedLookup } from "./bounded-lookup.ts";
 import { evaluateOrderCapability } from "./capabilities.ts";
 import {
 	finiteFundingRate,
@@ -21,7 +22,6 @@ import { amountStepFromCcxtPrecision } from "./ccxt-precision.ts";
 import { getSpotCostBasis } from "./ccxt-spot-cost-basis.ts";
 import type { ExchangeCredentials, FuturesMarginType, FuturesPositionMode, MarketType } from "./client-types.ts";
 import { contractSizeForMarket } from "./contract-size.ts";
-import { boundedLookup } from "./execution-recovery.ts";
 import { validateOrderInput } from "./order-input.ts";
 import {
 	type Balance,

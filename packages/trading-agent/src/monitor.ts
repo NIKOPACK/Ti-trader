@@ -3,6 +3,7 @@ import { type Order, type Position, protectionCoverage, reduceSide } from "@niko
 import { getTrading } from "./context.ts";
 import { failureCode } from "./failure-code.ts";
 import { t, translate } from "./i18n.ts";
+import { isFreshFirstDelivery, recordPollFailure, runtimeMatchesScope, sendMonitoringEvent } from "./monitor-shared.ts";
 import {
 	createFileMonitoringStore,
 	deliverMonitoringNotifications,
@@ -18,7 +19,7 @@ import {
 	monitoringScopeKey,
 	recordMonitoringObservation,
 } from "./monitoring-state.ts";
-import { openTradingSettings } from "./settings-menu.ts";
+import { createTriggerCommandHandler } from "./trigger-monitor.ts";
 
 const MAX_MISSING_HISTORY_CHECKS = 3;
 const MAX_TRACKED_UNRESOLVED_ORDERS = 256;
@@ -90,17 +91,11 @@ export function createOrderMonitorExtension(options: OrderMonitorOptions = {}) {
 
 		const isActive = (trading: Trading, engine: TradingEngine, scope: MonitoringScope, token: number): boolean => {
 			if (token !== lifecycleToken) return false;
-			try {
-				const current = getTrading();
-				return (
-					current === trading &&
-					current.tradingEngine === engine &&
-					current.config.monitor.enabled &&
-					monitoringScopeKey(getScope(current)) === monitoringScopeKey(scope)
-				);
-			} catch {
-				return false;
-			}
+			return runtimeMatchesScope(
+				getScope,
+				scope,
+				(current) => current === trading && current.tradingEngine === engine && current.config.monitor.enabled,
+			);
 		};
 
 		const reportError = (ctx: ExtensionContext, scope: string, error: unknown): void => {
@@ -222,20 +217,8 @@ export function createOrderMonitorExtension(options: OrderMonitorOptions = {}) {
 				(event) => {
 					for (const notice of event.notices) if (ctx.hasUI) ctx.ui.notify(notice, event.level);
 					const wake =
-						event.wake &&
-						freshDeliveries.has(event.id) &&
-						event.attempts === 1 &&
-						ctx.hasUI &&
-						ctx.mode !== "print";
-					pi.sendMessage(
-						{
-							customType: event.customType,
-							content: event.content,
-							details: { monitoringEventId: event.id },
-							display: true,
-						},
-						wake ? { triggerTurn: true, deliverAs: "followUp" } : { triggerTurn: false },
-					);
+						event.wake && isFreshFirstDelivery(event, freshDeliveries) && ctx.hasUI && ctx.mode !== "print";
+					sendMonitoringEvent(pi, event, event.customType, wake);
 					return true;
 				},
 				isCurrent,
@@ -461,13 +444,7 @@ export function createOrderMonitorExtension(options: OrderMonitorOptions = {}) {
 					reportError(ctx, "poll failed", error);
 					if (scope) {
 						try {
-							const capturedScope = scope;
-							store.transact((state) => {
-								const health = ensureMonitoringScope(state, capturedScope, Date.now()).health.orders;
-								health.lastPollAt = Date.now();
-								health.lastFailureAt = Date.now();
-								health.errorCode = "poll-failed";
-							});
+							recordPollFailure(store, scope, "orders");
 						} catch (storageError) {
 							reportError(ctx, "state persistence failed", storageError);
 						}
@@ -478,18 +455,25 @@ export function createOrderMonitorExtension(options: OrderMonitorOptions = {}) {
 			}
 		};
 
+		const triggerHandler = createTriggerCommandHandler({ store, getScope });
 		pi.registerCommand("monitor", {
-			description: "Order fill monitor & position guard: /monitor [on|off]",
+			description: "Order fill monitor, position guard and triggers: /monitor [on|off|status|trigger ...]",
+			getArgumentCompletions: (prefix) => {
+				const items = ["on", "off", "status", "trigger"]
+					.filter((name) => name.startsWith(prefix))
+					.map((name) => ({ value: name, label: name }));
+				return items.length > 0 ? items : null;
+			},
 			handler: async (args, ctx) => {
-				const arg = args?.trim();
-				if (!arg) {
-					await openTradingSettings(ctx, () => {});
+				const arg = args?.trim() ?? "";
+				if (arg === "trigger" || arg.startsWith("trigger ")) {
+					await triggerHandler(arg.slice("trigger".length).trim(), ctx);
 					return;
 				}
 				const trading = getTrading();
 				if (arg === "on" || arg === "off") {
 					await trading.patchConfig({ monitor: { enabled: arg === "on" } });
-				} else if (arg !== "status") {
+				} else if (arg !== "" && arg !== "status") {
 					ctx.ui.notify(t(trading.config.language, "monitorUsage"), "warning");
 					return;
 				}

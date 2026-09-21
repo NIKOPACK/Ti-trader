@@ -43,7 +43,7 @@ Ti 是一个 **AI 驱动的加密货币现货与 Binance USDⓈ-M 合约交易 a
 | 模块 | 功能 | 状态 |
 |---|---|---|
 | 交易工具 | 行情、账户、订单生命周期、下单预检、能力查询、候选市场、组合快照和风控，共 25 个 | ✅ |
-| 交易命令 | 余额、持仓、订单、市场、模式、交易所、市场类型、审批、风控（reset/reconcile）、`/recovery` `/audit` `/health`、Paper、监控、实验性 `/trigger`、`/autonomous`、语言和交易所登录 | ✅ |
+| 交易命令 | `/show` 只读视图（balance/positions/orders/trades/markets/audit/health）、模式、交易所、市场类型、审批、风控（reset/reconcile）、`/recovery`、Paper、监控与触发器（`/monitor trigger`）、`/autonomous`、语言和交易所登录 | ✅ |
 | 交易引擎 | `@nikopack/ti-trading-engine`：ccxt 实盘客户端、模拟盘客户端、venue profile、规划、保护、执行日志和风控 | ✅ |
 | 模拟盘 | 真实行情撮合、手续费、均价成本、PnL、跨进程持久化；Paper 合约与现货同一套限价/条件单懒撮合 | ✅ |
 | 风控 | 单笔/单日名义限额、币种白名单、日计数持久化、未结算 reservation 对账、可选账户级硬风控 `risk.account` | ✅ |
@@ -52,7 +52,7 @@ Ti 是一个 **AI 驱动的加密货币现货与 Binance USDⓈ-M 合约交易 a
 | 模型层 | 继承 pi：OpenAI/Anthropic/Google 等多 provider、`/login`、`/model` | ✅（上游） |
 | 会话层 | 继承 pi：会话持久化、`/new` `/resume` `/fork` `/compact` 等 | ✅（上游） |
 | 自动化 | `--print` 无头一次性；显式启用的 Paper 自主运行时（`ti --autonomous` / `/autonomous`） | ✅ Paper；live 启动 fail-closed |
-| 事件驱动 | 实验性持久化 `/trigger`（通知/paper 唤醒；live 只通知）；WebSocket 行情推送尚未实现 | 部分 |
+| 事件驱动 | 实验性持久化触发器 `/monitor trigger`（通知/paper 唤醒；live 只通知）；WebSocket 行情推送尚未实现 | 部分 |
 | 定时任务 | 通用 cron 未实现；Paper 自主运行时按 poll/wake 调度，不是 crontab 包装 `--print` | Paper ✅ / cron ❌ |
 | 合约/杠杆 | Paper 与 Binance USDⓈ-M live：杠杆、保证金模式、持仓方向、reduceOnly；Binance live 支持资金费率查询，Paper 不模拟资金费率扣款或历史 | ✅ v1 |
 | 筛选与回放 | 多标的扫描、三种预设的有界规则回放 | 内置 `market-lab`；完整回测可选本机 `freqtrade` 侧车，两者均不进入下单路径 |
@@ -171,27 +171,21 @@ live 模式的现货在交易历史完整且能与余额核对时返回手续费
 
 | 命令 | 功能 | 说明 |
 |---|---|---|
-| `/balance` | 账户总览 | 各资产 free/locked/估值 + 总估值 |
-| `/positions` | 持仓明细 | 数量、估值、均价、浮动盈亏（paper） |
-| `/orders [symbol]` | 未成交订单 | |
-| `/trades [symbol]` | 历史订单 | 最近 20 条已完结订单 |
-| `/markets [n]` | 热门市场 | 按 24h quote 成交量排序，默认前 15，上限 50 |
-| `/mode [paper\|live]` | 查看/切换交易模式 | 切 live 需二次确认且有 key 校验；配置持久化后下次启动不再确认 |
-| `/approval [confirm\|unattended]` | 实盘订单审批 | 默认逐单确认；切到 `unattended` 需交互确认，之后 live 下单不再弹框 |
-| `/exchange [id]` | 查看/切换交易所 | ccxt 交易所 id，如 `okx` `bybit` |
-| `/market [type]` | 查看/切换市场类型 | `spot`、`usdm-futures` 或 `both`（`both` 仅 Paper） |
+| `/show [balance\|positions\|orders [symbol]\|trades [symbol]\|markets [n]\|audit\|health]` | 只读视图 | 余额估值、持仓明细、未成交/历史订单、热门市场（默认前 15，上限 50）、脱敏审计、本地健康（开仓阻断/未决计数/监控观测，不查询交易所）；无参数默认 balance |
+| `/lab [indicators\|signal\|screen\|replay\|chart] …` | 只读行情分析 | 指标、预设信号、多标的扫描、收盘 K 线回放和 TUI 快照图；参数见 market-lab README |
+| `/mode [paper\|live]` | 查看/切换交易模式 | 无参数显示当前值；切 live 需二次确认且有 key 校验；配置持久化后下次启动不再确认 |
+| `/approval [confirm\|unattended]` | 实盘订单审批 | 无参数显示当前值；切到 `unattended` 需交互确认，之后 live 下单不再弹框 |
+| `/exchange [id]` | 查看/切换交易所 | 无参数显示当前值；ccxt 交易所 id，如 `okx` `bybit` |
+| `/market [type]` | 查看/切换市场类型 | 无参数显示当前值；`spot`、`usdm-futures` 或 `both`（`both` 仅 Paper） |
 | `/risk [show\|reset\|reconcile <id> commit\|release]` | 风控状态 | 限额、已用/预留额度、未结算占用；限额与白名单也可在 `/settings` 编辑；`reset` 二次确认后手动清零（paper 额度为累计制）；`reconcile` 只结算没有执行记录的历史独立占用 |
 | `/recovery [run\|resolve …\|maintenance …]` | 执行对账 | 查看未决执行；有界只读对账，从不重发；人工确认后 commit/release |
-| `/audit` | 脱敏审计 | 有界执行与风控历史 |
-| `/health` | 本地健康 | 开仓阻断、未决计数、最近监控观测；不查询交易所 |
 | `/autonomous [start\|status\|pause\|resume\|stop]` | Paper 自主运行时 | 需同一数据目录的 `risk.account`、`unattended` 和 `autonomous.json`；live 启动拒绝。见 [autonomous-trading.md](../../docs/autonomous-trading.md) |
-| `/trigger add\|list\|remove\|clear` | 实验性条件监控 | 按账户与配置作用域持久化，只读行情/持仓；live 下 `wake_agent` 只通知，不自动拉起交易回合 |
 | `/paper [reset [金额]]` | 模拟账户 | 查看摘要；`reset` 二次确认后重置资产（可指定初始 USDT） |
-| `/monitor [on\|off]` | 后台监控 | 成交监控 + 仓位守护的状态与本会话开关 |
-| `/exchange-login [id]` | 配置交易所 API | 交互录入 Binance（币安）、OKX、Bybit 凭证 |
+| `/monitor [on\|off\|status\|trigger …]` | 后台监控与触发器 | 成交监控 + 仓位守护的状态与本会话开关；`trigger add\|list\|remove\|clear` 管理按账户与配置作用域持久化的实验性条件，只读行情/持仓；live 下 `wake_agent` 只通知，不自动拉起交易回合 |
+| `/exchange-login [id]` | 配置交易所 API | 无参数列出已配置交易所；交互录入 Binance（币安）、OKX、Bybit 凭证 |
 
 #### `/language [zh-CN|en-US]`
-切换 TUI 语言。无参数时显示中文和 English 选择菜单，设置保存到 `trading.json`，并影响 Ti 系统提示词的回复语言。
+切换 TUI 语言。无参数时显示当前语言；带参数切换并保存到 `trading.json`，同时影响 Ti 系统提示词的回复语言。
 
 另继承 pi 通用命令：`/model` `/logout` `/new` `/resume` `/fork` `/compact` `/export` `/settings` `/quit` 等。`/login` 负责模型 Provider 登录；交易所凭证使用 Ti 自己的 `/exchange-login`。
 
@@ -209,13 +203,13 @@ live 模式的现货在交易历史完整且能与余额核对时返回手续费
 packages/trading-agent/src/
   context.ts          运行时装配与 client/engine 生命周期
   tools/              agent 原生交易工具
-  commands.ts         交易 slash 命令、/recovery、/audit
+  commands.ts         交易 slash 命令（/show、设置类）、/recovery
   autonomous/         显式启用的 Paper 自主运行时
   monitor.ts          成交监控与仓位守护
-  trigger-monitor.ts  实验性 /trigger 持久化监控
+  trigger-monitor.ts  实验性 /monitor trigger 持久化监控
   trigger-facts.ts    普通监控与自主唤醒共享的事实历史
   monitoring-state.ts 作用域状态与通知重试
-  health.ts           /health 与状态栏
+  health.ts           /show health 与状态栏
   config.ts/state.ts  配置与状态持久化；密钥读取时收紧 600
 packages/trading-engine/src/
   types.ts            规范化交易合约（含 ExchangeClient）
@@ -286,7 +280,7 @@ packages/trading-engine/src/
 | 切换确认 | `/mode live` 需交互确认，且预先校验该交易所 key 存在。切到 live 后写入 `trading.json`，下次启动按已保存模式进入，不再弹启动确认 |
 | 逐单确认 | Paper 默认 `orderApproval: "unattended"`，live 默认 `"confirm"`。live+confirm 每笔订单弹确认框。live+unattended 必须经 Settings 或 `/approval unattended` 交互确认后才能开启。切换模式会套用该模式的默认审批，除非同一次 patch 显式带了 `orderApproval` |
 | 无头保护 | `--print`/RPC 等无 UI 场景下，若审批仍是 `confirm`，live 下单一律拒绝——防止无人值守时误触实盘 |
-| Trigger | 实验性 `/trigger` 不是下单授权。live 与 `--print` 从不因 trigger 自动唤醒 agent |
+| Trigger | 实验性 `/monitor trigger` 不是下单授权。live 与 `--print` 从不因 trigger 自动唤醒 agent |
 | 自主运行 | 须显式配置；自主 live 启动 fail-closed。`unattended` 本身不会启动 daemon |
 | 提示词约束 | 系统提示词内置仓位比例、下单前查余额、下单后必验证等规则（软约束） |
 
@@ -452,11 +446,11 @@ Paper 触发单按触发价成交、限价单按限价成交（与真实滑点�
   - **裸仓**：持仓没有任何减仓方向的止损类挂单（类型含 `stop`，含 OCO 止损腿；纯止盈单不算保护），且持续超过一个轮询周期宽限期 → 告警，要求 agent 立即设置保护或向用户说明理由。保护出现后宽限期重置。
   - **浮亏**：`unrealizedPnlPct` 达到 `-alertLossPct`（默认 5%）→ 告警并附现有保护单信息，要求 agent 重新评估（砍仓/收紧止损/说明持有理由）。
   - 同一仓位同类告警受 `alertCooldownSec`（默认 900s）冷却，避免每个轮询周期重复唤醒。
-- 会话关闭期间的成交不追溯播报（重启后首轮静默快照），历史可查 `/trades`。`/monitor on|off` 只影响本会话。
+- 会话关闭期间的成交不追溯播报（重启后首轮静默快照），历史可查 `/show trades`。`/monitor on|off` 只影响本会话。
 
-## 13.8 实验性 `/trigger`
+## 13.8 实验性触发器（`/monitor trigger`）
 
-`@nikopack/ti-triggers` 是无副作用求值器：输入定义、上一状态、事实快照和时间，输出状态迁移，不做 IO、不下单。`ti-trader` 用 `trigger-monitor.ts` 注册 `/trigger add|list|remove|clear`。
+`@nikopack/ti-triggers` 是无副作用求值器：输入定义、上一状态、事实快照和时间，输出状态迁移，不做 IO、不下单。`ti-trader` 用 `trigger-monitor.ts` 实现 `/monitor trigger add|list|remove|clear`。
 
 - 定义、运行状态、观测历史、冷却与通知记录按账户、模式、交易所、市场类型、报价币和持仓模式持久化；普通监控随会话退出停止。重启不补算停机期间未观察到的穿越，也不把停机时间计入持续成立时长。
 - 只读 `marketData.getTicker` 和持仓浮亏。价格事实用 ticker 时间戳；缺失或非法时间戳跳过。求值器将超过五分钟的观测视为 unknown，不触发。
@@ -467,7 +461,7 @@ Paper 触发单按触发价成交、限价单按限价成交（与真实滑点�
 
 ## 13.9 多标的筛选与策略回放
 
-`market-lab` 使用当前会话的已收盘 K 线，缺少会话桥接时明确退回 Binance 公共现货数据。`/screen` 最多处理 8 个标的，各行保留来源、收盘时间、样本数、警告和错误，区分部分失败、全部失败及混合来源。`/replay` 最多使用 200 根 K 线，支持 `ema-cross`、`rsi-revert`、`macd-hist`。
+`market-lab` 使用当前会话的已收盘 K 线，缺少会话桥接时明确退回 Binance 公共现货数据。`/lab screen` 最多处理 8 个标的，各行保留来源、收盘时间、样本数、警告和错误，区分部分失败、全部失败及混合来源。`/lab replay` 最多使用 200 根 K 线，支持 `ema-cross`、`rsi-revert`、`macd-hist`。
 
 回放在信号 K 线收盘后，按下一根开盘价入场，在指定 K 线期限的收盘价退出；RSI 需要观察到进入极值区间，不能每根重复入场。收益百分数字段中 `10` 表示 `10%`；收益相加不等于账户或复利收益。零交易不能证明策略有效。
 
@@ -497,7 +491,7 @@ Paper 触发单按触发价成交、限价单按限价成交（与真实滑点�
 
 计划及账户周期使用一个带锁的 `plans/state.json`，而不是早期任务书建议的每计划单文件：这样容量约束、跨作用域 Paper 重置与修订可在一个原子事务内完成。持久化同步落盘，私有文件 600，目录 700；损坏、容量用尽和符号链接路径明确拒绝。文件锁内不等待行情或用户。
 
-`account-observations.ts` 仅持有查询和归档确认接口，复用引擎保护覆盖判断；同标的账户仓位不是计划持仓归属证明。单轮关联挂单查询上限为 20，持久化游标轮转并标出未刷新的记录。`monitoring.ts` 复用原有通知租约、重试和过期逻辑，但队列嵌入计划状态，使事件和通知原子提交；计划通知永不唤醒模型。每计划成功通知冷却 60 秒，旧版本或已归档通知取消。`/health` 和状态栏读取计划观测与交付故障，计划故障不新增全局开仓阻断。
+`account-observations.ts` 仅持有查询和归档确认接口，复用引擎保护覆盖判断；同标的账户仓位不是计划持仓归属证明。单轮关联挂单查询上限为 20，持久化游标轮转并标出未刷新的记录。`monitoring.ts` 复用原有通知租约、重试和过期逻辑，但队列嵌入计划状态，使事件和通知原子提交；计划通知永不唤醒模型。每计划成功通知冷却 60 秒，旧版本或已归档通知取消。`/show health` 和状态栏读取计划观测与交付故障，计划故障不新增全局开仓阻断。
 
 `presentation.ts` 将操作者页面写成普通会话条目而不是模型消息，并对列表、详情、时间线和复盘分页。模型工具分别读取概览与有界证据分区。`comparisons.ts` 将提交前冻结的拟议订单与真实归档字段对照；缺少字段不是“符合原计划”，准备时参考价差也不是纯执行滑点。
 
@@ -515,7 +509,7 @@ Paper 触发单按触发价成交、限价单按限价成交（与真实滑点�
 
 建议优先级：
 
-1. **事件驱动循环**（高价值）：行情 WebSocket 订阅，让 agent 从"请求驱动"升级为"事件驱动"（当前已有 30s 轮询版监控与仓位守护，见 13.7，以及实验性持久化 `/trigger`，见 13.8；WebSocket 化可降低延迟）。
+1. **事件驱动循环**（高价值）：行情 WebSocket 订阅，让 agent 从"请求驱动"升级为"事件驱动"（当前已有 30s 轮询版监控与仓位守护，见 13.7，以及实验性持久化触发器，见 13.8；WebSocket 化可降低延迟）。
 2. **自主 live 证据**：适配器补齐账户硬风控所需的外部资金流、手续费和资金费率证据之前，自主 live 保持 fail-closed。
 3. **回测模式**：`BacktestExchangeClient` 实现同一接口，喂历史 K 线。Freqtrade 侧车只做研究，不进入下单路径。
 4. **策略 skills**：利用 pi 的 skill 机制把交易策略做成可加载文件（需重新启用 `noSkills` 并补一个受控的内容读取通道）。

@@ -4,6 +4,12 @@ All notable changes to `@nikopack/ti-trading-engine` are documented in this file
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-21
+
+### Added
+
+- Exported `errorMessage` for consistent error-text extraction and `marketLimitViolations` to report every market limit violation at once instead of throwing on the first.
+
 ## [0.4.0] - 2026-09-20
 
 ### Breaking Changes

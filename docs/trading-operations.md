@@ -38,7 +38,7 @@ An unknown submission is not a rejection. Do not start another entry while estab
 ```text
 /recovery
 /recovery run
-/audit
+/show audit
 ```
 
 Startup and `/recovery run` use bounded correlated reads. Neither resubmits an order. Unknown executions block entries across the shared state store.
@@ -59,17 +59,17 @@ After recovery has no unresolved entry block and exchange exposure is understood
 
 Account replacement and Paper reset hold a persisted maintenance fence: a record that blocks submissions until the state-changing operation completes. If `/recovery` reports an interrupted fence, stop every other writer and verify the account, journal, Paper ledger and risk state before confirming `/recovery maintenance <id> <evidence-reference>`. Clearing the fence does not resolve executions.
 
-Successful maintenance advances a durable admission generation, separate from account identity. Processes and plans bound to an older generation cannot submit after the fence clears. If `/health` reports an outdated runtime, restart that Ti process using the intended data directory and current configuration. Do not reset quota to bypass this state.
+Successful maintenance advances a durable admission generation, separate from account identity. Processes and plans bound to an older generation cannot submit after the fence clears. If `/show health` reports an outdated runtime, restart that Ti process using the intended data directory and current configuration. Do not reset quota to bypass this state.
 
 The risk/execution file lock is a separate filesystem mechanism. It is not automatically taken over because its timestamp is old; configuration and Paper account locks follow the same rule. New locks record PID/host metadata and permit recovery only when a local owner is verified dead. Legacy empty locks, foreign-host locks and interrupted reclaim locks still require operator action. First establish that all writers have stopped, preserve the state, and remove only the exact abandoned lock file. Do not delete the state file, delete all lock files indiscriminately or use lock age as proof that its owner is dead.
 
 ## Triage by symptom
 
-`/health` reads local entry blocks, unresolved execution/reservation counts and recent monitor observations without querying an exchange. `unknown`, `stale` and `degraded` are not healthy fallbacks. A recent observation does not prove that a new order will succeed; disabled or idle monitors cannot certify current connectivity.
+`/show health` reads local entry blocks, unresolved execution/reservation counts and recent monitor observations without querying an exchange. `unknown`, `stale` and `degraded` are not healthy fallbacks. A recent observation does not prove that a new order will succeed; disabled or idle monitors cannot certify current connectivity.
 
 Fresh first-attempt order-fill and position-guard notifications retain the configured `monitor.wakeAgent` behavior in interactive Paper and live sessions. Live triggers remain notification-only. Restored and retried notifications never wake a trading turn. An analysis wake is not permission to bypass live confirmation or risk limits.
 
-Trade-plan notifications never wake a model, including their first delivery. `/health` reports plan observation and delivery failures separately. `/plan review <id>` performs bounded read-only evidence repair; `planEvidence: pending` does not change the engine's order outcome. Archiving a plan leaves its orders and positions untouched. Preserve the execution ID and use `/recovery` for uncertain submissions rather than submitting another plan intent.
+Trade-plan notifications never wake a model, including their first delivery. `/show health` reports plan observation and delivery failures separately. `/plan review <id>` performs bounded read-only evidence repair; `planEvidence: pending` does not change the engine's order outcome. Archiving a plan leaves its orders and positions untouched. Preserve the execution ID and use `/recovery` for uncertain submissions rather than submitting another plan intent.
 
 | Symptom | Safe response |
 | --- | --- |

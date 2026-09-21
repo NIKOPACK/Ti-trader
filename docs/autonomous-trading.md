@@ -18,7 +18,13 @@ mkdir -p "$TI_DATA_DIR/agent"
 
 Configure the model's normal authentication using Ti's existing login/configuration workflow. Do not put exchange credentials, model tokens or shell commands in the files below. Model selection is explicit; an unavailable model is an error, not permission to select another provider.
 
-Create `agent/trading.json` under this directory. The numbers below are **illustrative Paper values, not live risk recommendations or automatically installed defaults**. Review every hard limit. Other interactive configuration fields retain their existing defaults.
+## First-run setup
+
+In a Ti TUI launched with the same `TI_DATA_DIR`, run `/autonomous`. On an uninitialized account it opens a guided setup: review the decision model, objective and the suggested hard-risk preset, then explicitly confirm unattended order approval. Confirming writes `orderApproval: "unattended"` and `risk.account` into `agent/trading.json`, writes `agent/autonomous.json`, and starts the daemon. `/autonomous start` enters the same flow whenever configuration is missing or invalid.
+
+The setup derives the scope (mode, exchange, marketType, quoteCurrency) from the active account and supplies the operational defaults below. It refuses a live account, aborts when no authenticated model is configured, and never substitutes another model. Unattended approval is never applied without the explicit confirmation step. Manual file creation is still supported; the formats below are exactly what the setup writes and what `start` validates.
+
+`agent/trading.json` hard limits. The numbers below are **illustrative Paper values, not live risk recommendations or automatically installed defaults**. Review every hard limit. Other interactive configuration fields retain their existing defaults.
 
 ```json
 {
@@ -56,7 +62,7 @@ Create `agent/trading.json` under this directory. The numbers below are **illust
 }
 ```
 
-Create `agent/autonomous.json`. Replace the provider/model with an exact model already available in your Ti configuration. The scope must match `trading.json`; there are no command-line account overrides in this mode.
+`agent/autonomous.json`. The provider/model must name an exact model already available in your Ti configuration. The scope must match `trading.json`; there are no command-line account overrides in this mode.
 
 ```json
 {
@@ -101,7 +107,7 @@ In a Ti TUI launched with the same `TI_DATA_DIR`, use:
 /autonomous stop
 ```
 
-Bare `/autonomous` shows status. Subcommands appear in slash completion. Configuration above is still required: this command does not invent risk limits, enable live trading or select a model for you. Errors appear in the transcript with configuration guidance.
+Bare `/autonomous` shows status once configured; on an uninitialized account it opens the guided setup described above and continues into a normal start after it completes. `/autonomous start` enters the same setup whenever configuration is missing or invalid. Subcommands appear in slash completion. The setup does not invent risk limits, enable live trading or select an unavailable model, and unattended approval always requires an explicit confirmation. Errors appear in the transcript with configuration guidance.
 
 Controls are bound to the TUI's active account, including Paper/live, exchange, market, quote currency and position mode. An account mismatch is rejected; switch to the matching account before controlling its daemon. `start` and `resume` wait for the current TUI model turn to finish. `pause`, `stop` and `status` do not wait. The daemon remains independent: exiting the TUI does not stop it, and `/autonomous stop` does not close positions.
 

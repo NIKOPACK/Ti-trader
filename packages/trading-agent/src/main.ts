@@ -19,7 +19,6 @@ import { createAutonomousCommandExtension } from "./autonomous/command.ts";
 import { autonomousCommand } from "./autonomous/daemon.ts";
 import {
 	optionalBundledResearchToolNames,
-	resolveBundledMarketChartExtension,
 	resolveBundledMarketLabExtension,
 	resolveOptionalBundledExtensionPaths,
 } from "./bundled-extensions.ts";
@@ -180,7 +179,6 @@ export async function main(argv: string[]): Promise<void> {
 				additionalExtensionPaths: [
 					...parsed.extensions,
 					resolveBundledMarketLabExtension(),
-					resolveBundledMarketChartExtension(),
 					...resolveOptionalBundledExtensionPaths(),
 				],
 				systemPrompt: buildTradingPrompt(trading.config, {

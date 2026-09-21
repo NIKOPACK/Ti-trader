@@ -47,6 +47,8 @@ export interface AppKeybindings {
 	"app.models.toggleProvider": true;
 	"app.models.reorderUp": true;
 	"app.models.reorderDown": true;
+	"app.models.thinkingUp": true;
+	"app.models.thinkingDown": true;
 	"app.tree.filter.default": true;
 	"app.tree.filter.noTools": true;
 	"app.tree.filter.userOnly": true;
@@ -201,6 +203,14 @@ export const KEYBINDINGS = {
 	"app.models.reorderDown": {
 		defaultKeys: "alt+down",
 		description: "Move model down in order",
+	},
+	"app.models.thinkingUp": {
+		defaultKeys: "right",
+		description: "Raise highlighted model thinking level",
+	},
+	"app.models.thinkingDown": {
+		defaultKeys: "left",
+		description: "Lower highlighted model thinking level",
 	},
 	"app.tree.filter.default": {
 		defaultKeys: "ctrl+d",

@@ -15,9 +15,7 @@ const { createTradingTools } = await import("../dist/tools/index.js");
 const { createTradingExtension } = await import("../dist/commands.js");
 const { createOrderMonitorExtension } = await import("../dist/monitor.js");
 const { buildTradingPrompt } = await import("../dist/prompt.js");
-const { resolveBundledMarketChartExtension, resolveBundledMarketLabExtension } = await import(
-	"../dist/bundled-extensions.js",
-);
+const { resolveBundledMarketLabExtension } = await import("../dist/bundled-extensions.js");
 
 const agentDir = join(homedir(), ".ti-trader", "agent");
 const cwd = process.cwd();
@@ -43,7 +41,7 @@ const createRuntime = async ({ cwd, agentDir, sessionManager, sessionStartEvent 
 			noContextFiles: true,
 			noSkills: true,
 			noExtensions: true,
-			additionalExtensionPaths: [resolveBundledMarketLabExtension(), resolveBundledMarketChartExtension()],
+			additionalExtensionPaths: [resolveBundledMarketLabExtension()],
 			systemPrompt: buildTradingPrompt(trading.config),
 			extensionFactories: [createTradingExtension(), createOrderMonitorExtension()],
 		},
@@ -117,21 +115,14 @@ const commands = exts.extensions.flatMap((e) => [...(e.commands?.keys?.() ?? [])
 console.log("registered commands:", commands.join(", "));
 for (const c of [
 	"language",
-	"balance",
-	"positions",
-	"orders",
-	"trades",
-	"markets",
+	"show",
 	"mode",
 	"exchange",
 	"market",
 	"risk",
 	"paper",
 	"monitor",
-	"indicators",
-	"signal",
-	"screen",
-	"replay",
+	"lab",
 	"exchange-login",
 ]) {
 	if (!commands.includes(c)) throw new Error(`command /${c} not registered`);

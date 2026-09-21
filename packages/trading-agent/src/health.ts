@@ -1,4 +1,4 @@
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getTrading } from "./context.ts";
 import { type MenuKey, t, translate } from "./i18n.ts";
 import {
@@ -180,59 +180,60 @@ export function createTradingStatus(readHealth = () => readOperationalHealth(und
 	};
 }
 
-export function createOperationalHealthExtension(
+export function createHealthViewHandler(
+	pi: Pick<ExtensionAPI, "appendEntry">,
 	readHealth = () => readOperationalHealth(undefined, new PlanStore()),
 	getLanguage: () => TradingLanguage = () => getTrading().config.language,
-) {
+): (args: string, ctx: ExtensionCommandContext) => Promise<void> {
+	return async (args, ctx) => {
+		const language = getLanguage();
+		if (args.trim()) {
+			ctx.ui.notify(t(language, "healthUsage"), "warning");
+			return;
+		}
+		const localize = (value: string) => healthLabel(language, value);
+		try {
+			const health = readHealth();
+			pi.appendEntry<TableData>("trading:health", {
+				title: t(language, "healthTitle"),
+				lines: [
+					`${health.mode.toUpperCase()}  ${health.exchange}  ${health.marketType}`,
+					translate(language, "healthEntryBlocks", {
+						blocks: health.blockers.map(localize).join(", ") || t(language, "healthNone"),
+					}),
+					translate(language, "healthUnresolved", { count: health.unresolvedExecutions }),
+					translate(language, "healthReservations", { count: health.pendingReservations }),
+					translate(language, "healthConnectivity", { status: localize(health.connectivity) }),
+					...health.observations.map((observation) =>
+						[
+							translate(language, "healthObservation", {
+								source: localize(observation.source),
+								status: localize(observation.status),
+								count: observation.pendingNotifications,
+								error: observation.errorCode ? `; ${observation.errorCode}` : "",
+							}),
+							observationAge(language, observation.ageMs),
+						]
+							.filter(Boolean)
+							.join("; "),
+					),
+					t(language, "healthSemantics"),
+				],
+				warning:
+					health.entryBlocked || health.connectivity !== "recent-observations"
+						? t(language, "healthWarning")
+						: undefined,
+			});
+		} catch {
+			ctx.ui.notify(t(language, "healthUnavailable"), "error");
+		}
+	};
+}
+
+export function createOperationalHealthExtension() {
 	return (pi: ExtensionAPI): void => {
 		pi.registerEntryRenderer<TableData>("trading:health", (entry, _opts, theme) =>
 			renderTradingTable(entry.data ?? { title: "health", lines: [] }, theme),
 		);
-		pi.registerCommand("health", {
-			description: t("en-US", "cmdHealth"),
-			handler: async (args, ctx) => {
-				const language = getLanguage();
-				if (args.trim()) {
-					ctx.ui.notify(t(language, "healthUsage"), "warning");
-					return;
-				}
-				const localize = (value: string) => healthLabel(language, value);
-				try {
-					const health = readHealth();
-					pi.appendEntry<TableData>("trading:health", {
-						title: t(language, "healthTitle"),
-						lines: [
-							`${health.mode.toUpperCase()}  ${health.exchange}  ${health.marketType}`,
-							translate(language, "healthEntryBlocks", {
-								blocks: health.blockers.map(localize).join(", ") || t(language, "healthNone"),
-							}),
-							translate(language, "healthUnresolved", { count: health.unresolvedExecutions }),
-							translate(language, "healthReservations", { count: health.pendingReservations }),
-							translate(language, "healthConnectivity", { status: localize(health.connectivity) }),
-							...health.observations.map((observation) =>
-								[
-									translate(language, "healthObservation", {
-										source: localize(observation.source),
-										status: localize(observation.status),
-										count: observation.pendingNotifications,
-										error: observation.errorCode ? `; ${observation.errorCode}` : "",
-									}),
-									observationAge(language, observation.ageMs),
-								]
-									.filter(Boolean)
-									.join("; "),
-							),
-							t(language, "healthSemantics"),
-						],
-						warning:
-							health.entryBlocked || health.connectivity !== "recent-observations"
-								? t(language, "healthWarning")
-								: undefined,
-					});
-				} catch {
-					ctx.ui.notify(t(language, "healthUnavailable"), "error");
-				}
-			},
-		});
 	};
 }

@@ -70,14 +70,16 @@ State lives in `~/.ti-trader/agent/` (`trading.json`, `keys.json`, sessions); Pi
 | Command | Purpose |
 | --- | --- |
 | `/settings` | Language, mode, exchange, market, keys, risk, paper, monitor |
-| `/balance` `/positions` `/orders` `/trades` `/markets` | Account and market views |
-| `/mode` `/exchange` `/market` `/approval` | Runtime switches. Live needs keys. `unattended` needs confirmation |
+| `/show` | Read-only views: `balance` `positions` `orders` `trades` `markets` `audit` `health` |
+| `/lab` | Read-only market analysis: `indicators` `signal` `screen` `replay` `chart` |
+| `/mode` `/exchange` `/market` `/approval` | Runtime switches. Bare call shows the current value. Live needs keys. `unattended` needs confirmation |
 | `/risk` | Limits, used/reserved quota, legacy reservation reconcile |
-| `/recovery` `/audit` `/health` | Unresolved executions, redacted history, local admission health |
+| `/recovery` | Unresolved executions and bounded read-only reconciliation |
+| `/monitor` | Monitoring status and `trigger add|list|remove|clear` |
 | `/autonomous` | Control an explicit Paper autonomous daemon. Live startup is rejected |
 | `/exchange-login <id>` | Store exchange API keys |
 
-`/trigger` is experimental. Live triggers notify only; they do not wake a trading turn. Hand-made `keys.json` (and Zhihu/freqtrade secret files) that are group/world-readable are tightened to mode `600` on read.
+`/monitor trigger` is experimental. Live triggers notify only; they do not wake a trading turn. Hand-made `keys.json` (and Zhihu/freqtrade secret files) that are group/world-readable are tightened to mode `600` on read.
 
 ## Honest limits
 

@@ -5,7 +5,7 @@ import type { ExecutionScope } from "@nikopack/ti-trading-engine";
 import type { TSchema } from "typebox";
 import type { AutonomousConfig } from "./config.ts";
 import { type AutonomousModel, failureCode } from "./runtime.ts";
-import type { AutonomousDecision } from "./state.ts";
+import type { AutonomousDecision } from "./schema.ts";
 import { AUTONOMOUS_TOOLS, type AutonomousTools } from "./tools.ts";
 
 export interface ModelWorkerRequest {

@@ -5084,6 +5084,24 @@ export class InteractiveMode {
 				initialSearchInput,
 				(model) => selectModel(model, true),
 				defaultProvider && defaultModel ? { provider: defaultProvider, id: defaultModel } : undefined,
+				{
+					modelThinkingLevels: this.settingsManager.getAllModelThinkingLevels(),
+					defaultThinkingLevel: this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL,
+					onChange: (model, level) => {
+						const globalDefault = this.settingsManager.getDefaultThinkingLevel() ?? DEFAULT_THINKING_LEVEL;
+						if (level === globalDefault) {
+							this.settingsManager.removeModelThinkingLevel(model.provider, model.id);
+						} else {
+							this.settingsManager.setModelThinkingLevel(model.provider, model.id, level);
+						}
+						// Apply immediately when the adjusted model is the active one.
+						const current = this.session.model;
+						if (current && current.provider === model.provider && current.id === model.id) {
+							this.session.setThinkingLevel(level);
+							this.footer.invalidate();
+						}
+					},
+				},
 			);
 			return { component: selector, focus: selector, dispose: () => selector.dispose() };
 		});

@@ -4,6 +4,23 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-09-21
+
+### Breaking Changes
+
+- Consolidated the slash command surface. `/balance`, `/positions`, `/orders`, `/trades`, `/markets`, `/audit` and `/health` moved under `/show` (e.g. `/show balance`, `/show health`). `/indicators`, `/signal`, `/screen`, `/replay` and `/chart` moved under `/lab` (e.g. `/lab signal`, `/lab chart`). `/trigger` moved under `/monitor` as `/monitor trigger add|list|remove|clear`. The standalone `market-chart` extension merged into `market-lab`; `ti-trader` autoloads only `market-lab`.
+- Settings commands invoked without arguments now print the current value and a usage hint instead of opening the settings menu: `/language`, `/mode`, `/approval`, `/exchange`, `/market`, `/paper`, `/exchange-login`, `/risk` and `/monitor`.
+
+### Added
+
+- Guided first-run setup behind bare `/autonomous` and `/autonomous start` on an uninitialized or incomplete account. The panel derives account scope and operational defaults, offers authenticated models and a suggested Paper hard-risk preset, requires an explicit unattended-order confirmation, then writes `trading.json` and `autonomous.json` and starts the daemon. It refuses live accounts and unavailable models instead of substituting defaults.
+- Parent-side autonomous start preflight: missing configuration, absent `risk.account`, non-unattended approval, scope mismatches and live mode now fail with direct errors before the daemon forks, instead of requiring `autonomous.log` inspection.
+
+### Changed
+
+- `check_order` preflight now collects every market limit violation in one result instead of reporting only the first failing filter.
+- `/monitor` gains an explicit `status` action; bare `/monitor` prints the same status instead of opening the settings menu.
+
 ## [0.3.0] - 2026-09-20
 
 ### Breaking Changes

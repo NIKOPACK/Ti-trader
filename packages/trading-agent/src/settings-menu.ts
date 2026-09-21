@@ -23,6 +23,7 @@ import {
 	type TradingLanguage,
 	type TradingMode,
 } from "./state.ts";
+import { errorMessage } from "./tools/format.ts";
 import { formatTradingVenue } from "./venue.ts";
 
 export type TradingSettingsResult = { type: "closed" } | { type: "login"; exchange: string } | { type: "tui-settings" };
@@ -43,7 +44,7 @@ function parseOnOff(language: TradingLanguage, value: string): boolean {
 	return value === t(language, "on");
 }
 
-class TitledSelect implements Component {
+export class TitledSelect implements Component {
 	private readonly list: SelectList;
 	private readonly title: string;
 	private readonly description: string;
@@ -378,7 +379,7 @@ export class TradingSettingsPanel implements Component {
 			this.onStatus();
 			this.rebuild(parentSettingId(id));
 		} catch (error) {
-			this.ctx.ui.notify(error instanceof Error ? error.message : String(error), "error");
+			this.ctx.ui.notify(errorMessage(error), "error");
 			this.rebuild(parentSettingId(id));
 		} finally {
 			this.applying = false;

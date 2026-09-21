@@ -45,7 +45,7 @@ const KNOWN_PROMPT_TOOL_NAMES = new Set<string>([
 	...DECISION_TOOL_NAMES,
 ]);
 
-/** Native tools plus always-on market-lab and market-chart. */
+/** Native tools plus always-on market-lab. */
 export const DEFAULT_TRADING_PROMPT_TOOLS: readonly string[] = [
 	...NATIVE_TRADING_TOOL_NAMES,
 	...BUNDLED_ANALYSIS_TOOL_NAMES,
@@ -491,7 +491,7 @@ function buildToolNotes(input: {
 	const background: string[] = [
 		"Order monitor: a background monitor polls open orders and injects an [order monitor] message when a resting order fills. When you receive one, verify with get_positions / get_order_history and decide the follow-up (e.g. place a protective bracket after an entry fill).",
 		"Position guard: the monitor also watches open positions and injects a [position guard] message when a position has no stop-loss protection or its unrealized loss breaches the alert threshold. Treat these as action items: protect, adjust, or close the position via the tools, or briefly report to the user why no action is needed. Never ignore them.",
-		"Triggers: scoped durable conditions managed by /trigger. Definitions, baselines, cooldowns and notification state survive restart, but ordinary monitoring only runs while the session is active. Missing observations are unknown; restarting cannot reconstruct unobserved crossings. A [trigger:id] message is an observation, not trading authorization and not a risk approval. Re-check portfolio and call check_order before any order. Live sessions never auto-wake from triggers; they notify only.",
+		"Triggers: scoped durable conditions managed by /monitor trigger. Definitions, baselines, cooldowns and notification state survive restart, but ordinary monitoring only runs while the session is active. Missing observations are unknown; restarting cannot reconstruct unobserved crossings. A [trigger:id] message is an observation, not trading authorization and not a risk approval. Re-check portfolio and call check_order before any order. Live sessions never auto-wake from triggers; they notify only.",
 	];
 
 	const loadedResearch = RESEARCH_TOOL_NAMES.filter((name) => has(name));

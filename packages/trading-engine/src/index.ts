@@ -35,10 +35,10 @@ export {
 export {
 	AccountRiskError,
 	accountRiskFacts,
-	accountRiskKey,
 	isProtectiveExit,
 	verifiedReducingOrder,
 } from "./account-risk.ts";
+export { boundedLookup } from "./bounded-lookup.ts";
 export * from "./capabilities.ts";
 export { CcxtExchangeClient } from "./ccxt-client.ts";
 export type { ExchangeCredentials, FuturesMarginType, FuturesPositionMode, MarketType } from "./client-types.ts";
@@ -51,7 +51,9 @@ export {
 	type TradingEngineConfig,
 	type TradingEngineSubmissionPolicy,
 } from "./engine.ts";
+export { errorMessage } from "./error-message.ts";
 export {
+	accountRiskKey,
 	EXECUTION_HISTORY_LIMIT,
 	type ExecutionEvidence,
 	type ExecutionIssue,
@@ -75,7 +77,6 @@ export {
 	validateExecutionRiskState,
 } from "./execution-journal.ts";
 export type { ManualExecutionResolution, RecoveryOptions, RecoveryReport } from "./execution-recovery.ts";
-export { boundedLookup } from "./execution-recovery.ts";
 export type {
 	OcoIntent,
 	OrderIntent,
@@ -96,6 +97,7 @@ export {
 export {
 	confirmationSnapshotChanged,
 	marketEvidenceChanged,
+	marketLimitViolations,
 	type OcoPreflightResult,
 	type OrderConfirmationEvidence,
 	OrderPreflightError,

@@ -2,6 +2,7 @@ import { mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import {
+	errorMessage,
 	readJsonFile as readPersistedJson,
 	writeJsonFile as writePersistedJson,
 	writeJsonFileDurable as writePersistedJsonDurable,
@@ -58,7 +59,7 @@ export function readJsonFile<T>(path: string): T | undefined {
 	try {
 		return readPersistedJson(path) as T | undefined;
 	} catch (error) {
-		throw new Error(`Invalid JSON in ${path}: ${error instanceof Error ? error.message : String(error)}`);
+		throw new Error(`Invalid JSON in ${path}: ${errorMessage(error)}`);
 	}
 }
 

@@ -134,28 +134,18 @@ Trading commands (interactive mode):
   /settings    Trading settings (language, mode, approval, exchange, market, keys, risk, paper, monitor)
   /plan        Saved research: list|show|track|archive|review|export|delete (tracking never places orders)
   /decisions   Public decision evidence: show|evaluate|export|delete (not a profitability score)
-  /balance     Account balances with valuation
-  /positions   Holdings with entry price and PnL
-  /orders      Open orders
-  /trades      Order history
-  /markets     Top markets by volume
-  /language    Change TUI language (中文 / English)
-  /mode        Show/switch paper|live
-  /approval    Show/switch confirm|unattended live order approval
-  /exchange    Show/switch exchange
-  /market      Show/switch spot|usdm-futures|both
+  /show        Read-only views: balance|positions|orders|trades|markets|audit|health
+  /lab         Read-only market analysis: indicators|signal|screen|replay|chart
+  /language    Show or change TUI language (中文 / English)
+  /mode        Show or switch paper|live
+  /approval    Show or switch confirm|unattended live order approval
+  /exchange    Show or switch exchange
+  /market      Show or switch spot|usdm-futures|both
   /risk        Limits, usage, pause/resume and legacy reservation reconciliation
   /recovery    Inspect/reconcile durable executions; never resubmit unknown orders
-  /audit       Bounded, redacted execution and risk audit history
-  /health      Local entry blocks and recent monitor observations
-  /trigger     Persistent experimental monitor (live: notify only, never auto-wake)
   /paper       Paper account summary or reset
-  /monitor     Order-fill monitor and position guard
-  /indicators  Read-only indicators for a spot symbol
-  /signal      Read-only preset signal (ema-cross|rsi-revert|macd-hist)
-  /screen      Read-only multi-symbol preset scan
-  /replay      Read-only closed-candle preset replay
-  /exchange-login  Configure trading exchange API credentials
+  /monitor     Order-fill monitor, position guard and triggers: on|off|status|trigger ...
+  /exchange-login  Show or configure trading exchange API credentials
 
 Plus the generic session commands (/model, /login, /new, /resume, /quit, ...).
 

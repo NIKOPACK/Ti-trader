@@ -5,6 +5,8 @@ import { requireCcxtMarkets, toTicker } from "./ccxt-map.ts";
 import { amountStepFromCcxtPrecision } from "./ccxt-precision.ts";
 import type { FuturesPositionMode } from "./client-types.ts";
 import { contractSizeForMarket, futuresAmountsEqual } from "./contract-size.ts";
+import { errorMessage } from "./error-message.ts";
+
 import {
 	type AccountTransaction,
 	type FuturesEntry,
@@ -1976,7 +1978,7 @@ export class PaperExchangeClient implements ExchangeClient {
 				result.push({
 					...basePosition,
 					valuationStatus: "unavailable",
-					valuationReason: `Ticker unavailable for ${symbol}: ${error instanceof Error ? error.message : String(error)}`,
+					valuationReason: `Ticker unavailable for ${symbol}: ${errorMessage(error)}`,
 				});
 				continue;
 			}
@@ -2251,10 +2253,9 @@ export class PaperExchangeClient implements ExchangeClient {
 				if (futures && !this.syncFuturesOpeningReserve(order, fire?.price) && fire) continue;
 				if (fire) this.fillRestingOrder(account, order, fire.price, futures);
 			} catch (error) {
-				throw new Error(
-					`Failed to settle paper order ${order.id} on ${order.symbol}: ${error instanceof Error ? error.message : String(error)}`,
-					{ cause: error },
-				);
+				throw new Error(`Failed to settle paper order ${order.id} on ${order.symbol}: ${errorMessage(error)}`, {
+					cause: error,
+				});
 			}
 		}
 		return dirty;
@@ -2346,7 +2347,7 @@ export class PaperExchangeClient implements ExchangeClient {
 			return { price: ticker.last };
 		} catch (error) {
 			return {
-				reason: `Ticker unavailable for ${symbol}: ${error instanceof Error ? error.message : String(error)}`,
+				reason: `Ticker unavailable for ${symbol}: ${errorMessage(error)}`,
 			};
 		}
 	}

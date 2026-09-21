@@ -52,18 +52,21 @@ function modeColor(input: TradingVenueInput): "error" | "text" | "accent" {
 	return input.orderApproval === "unattended" ? "error" : "text";
 }
 
-/** Paper fills are local, so the feed source carries information the identity row does not. */
-function paperSource(input: TradingVenueInput, theme: Pick<Theme, "fg" | "bold">): string | undefined {
-	return input.mode === "paper" ? theme.fg("muted", formatTradingVenue(input).source) : undefined;
+type VenueTheme = Pick<Theme, "fg" | "bold" | "inverse">;
+
+/** Paper fills are local, so the feed note carries information the identity row does not. */
+function paperFeed(input: TradingVenueInput, theme: VenueTheme): string | undefined {
+	return input.mode === "paper" ? theme.fg("muted", t(input.language, "venuePaperFeed")) : undefined;
 }
 
-function renderIdentity(input: TradingVenueInput, theme: Pick<Theme, "fg" | "bold">): string {
+function renderIdentity(input: TradingVenueInput, theme: VenueTheme): string {
 	const mode = t(input.language, input.mode === "live" ? "venueLive" : "venuePaper");
-	const separator = theme.fg("dim", "  |  ");
+	const separator = theme.fg("dim", " · ");
+	const chip = theme.inverse(theme.fg(modeColor(input), ` ${mode} `));
 	const segments = [
-		theme.bold(theme.fg(modeColor(input), `[ ${mode} ]`)),
-		theme.fg("text", exchangeLabel(input.exchangeId, input.language)),
-		theme.fg("muted", `${marketLabel(input.language, input.marketType)}  ${input.quoteCurrency}`),
+		`${chip} ${theme.bold(theme.fg("text", exchangeLabel(input.exchangeId, input.language)))}`,
+		theme.fg("muted", marketLabel(input.language, input.marketType)),
+		theme.fg("muted", input.quoteCurrency),
 	];
 	// Confirm is the default and safe; only unattended execution must stay visible.
 	if (input.mode === "live" && input.orderApproval === "unattended") {
@@ -73,21 +76,21 @@ function renderIdentity(input: TradingVenueInput, theme: Pick<Theme, "fg" | "bol
 }
 
 /** Blocking state replaces the identity row content, so it needs its own single line. */
-function renderAlert(status: TradingVenueStatus, theme: Pick<Theme, "fg" | "bold">): string {
+function renderAlert(status: TradingVenueStatus, theme: VenueTheme): string {
 	let alert = theme.fg(status.tone, `⚠ ${status.summary}`);
 	if (status.recoveryHint) alert += theme.fg("dim", `  ·  ${status.recoveryHint}`);
-	return `${alert}${theme.fg("muted", "  ·  /health")}`;
+	return `${alert}${theme.fg("muted", "  ·  /show health")}`;
 }
 
 export function renderTradingVenue(
 	input: TradingVenueInput,
-	theme: Pick<Theme, "fg" | "bold">,
+	theme: VenueTheme,
 	width: number,
 	status?: TradingVenueStatus,
 ): string[] {
 	if (width <= 0) return [];
 	const identity = renderIdentity(input, theme);
-	const source = paperSource(input, theme);
+	const source = paperFeed(input, theme);
 	const lines: string[] = [];
 	if (source) {
 		const gap = width - 2 - visibleWidth(identity) - visibleWidth(source);
@@ -106,7 +109,7 @@ export function formatTradingStatus(input: TradingVenueInput, status: TradingVen
 	const lines: string[] = [];
 	if (status.entryBlocked || status.tone === "error") {
 		const hint = status.recoveryHint ? `  ·  ${status.recoveryHint}` : "";
-		lines.push(`⚠ ${status.summary}${hint}  ·  /health`);
+		lines.push(`⚠ ${status.summary}${hint}  ·  /show health`);
 	}
 	const mode = t(input.language, input.mode === "live" ? "venueLive" : "venuePaper");
 	const segments = [
@@ -118,7 +121,7 @@ export function formatTradingStatus(input: TradingVenueInput, status: TradingVen
 		segments.push(orderApprovalLabel(input.language, input.orderApproval));
 	}
 	const identity = segments.join("  ");
-	const source = input.mode === "paper" ? formatTradingVenue(input).source : undefined;
+	const source = input.mode === "paper" ? t(input.language, "venuePaperFeed") : undefined;
 	lines.push(source ? `${identity}  ${source}` : identity);
 	return lines;
 }
