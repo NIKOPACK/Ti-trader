@@ -49,6 +49,7 @@ describe("trading venue status layout", () => {
 		bold: (text: string) => text,
 		inverse: (text: string) => text,
 	};
+	const plain = (line: string) => stripVTControlCharacters(line).trim();
 	const settled = { summary: "Entry blocks: none", tone: "muted", entryBlocked: false } as const;
 	const blocked = {
 		summary: "Entry blocks: unresolved executions",
@@ -58,7 +59,7 @@ describe("trading venue status layout", () => {
 	} as const;
 
 	it("renders a routine live venue as one identity row", () => {
-		const lines = renderTradingVenue(input, plainTheme, 140, settled).map((line) => line.trim());
+		const lines = renderTradingVenue(input, plainTheme, 140, settled).map(plain);
 		expect(lines).toEqual(["LIVE  Binance · USDⓈ-M futures · USDT"]);
 	});
 
@@ -70,17 +71,15 @@ describe("trading venue status layout", () => {
 
 	it("shows unattended approval but hides the default confirm mode", () => {
 		const unattended = renderTradingVenue({ ...input, orderApproval: "unattended" }, plainTheme, 140, settled).map(
-			(line) => line.trim(),
+			plain,
 		);
 		expect(unattended).toEqual(["LIVE  Binance · USDⓈ-M futures · USDT · Unattended"]);
-		const confirm = renderTradingVenue({ ...input, orderApproval: "confirm" }, plainTheme, 140, settled).map((line) =>
-			line.trim(),
-		);
+		const confirm = renderTradingVenue({ ...input, orderApproval: "confirm" }, plainTheme, 140, settled).map(plain);
 		expect(confirm).toEqual(["LIVE  Binance · USDⓈ-M futures · USDT"]);
 	});
 
 	it("reports entry blocks as one alert row ahead of the identity row", () => {
-		const lines = renderTradingVenue(input, plainTheme, 140, blocked).map((line) => line.trim());
+		const lines = renderTradingVenue(input, plainTheme, 140, blocked).map(plain);
 		expect(lines).toEqual([
 			"⚠ Entry blocks: unresolved executions  ·  Inspect /recovery; do not resubmit orders.  ·  /show health",
 			"LIVE  Binance · USDⓈ-M futures · USDT",
@@ -93,7 +92,7 @@ describe("trading venue status layout", () => {
 			tone: "error",
 			entryBlocked: false,
 		} as const;
-		const lines = renderTradingVenue(input, plainTheme, 140, status).map((line) => line.trim());
+		const lines = renderTradingVenue(input, plainTheme, 140, status).map(plain);
 		expect(lines).toHaveLength(2);
 		expect(lines[0]).toContain("⚠ Health unavailable");
 		expect(lines[1]).toBe("LIVE  Binance · USDⓈ-M futures · USDT");
@@ -124,10 +123,10 @@ describe("trading venue status layout", () => {
 		};
 		const wide = renderTradingVenue(paperInput, plainTheme, 100, settled);
 		expect(wide).toHaveLength(1);
-		expect(wide[0].trim().replace(/\s+/g, " ")).toBe("PAPER Binance · Spot · USDT public market data");
+		expect(plain(wide[0]).replace(/\s+/g, " ")).toBe("PAPER Binance · Spot · USDT public market data");
 		const narrow = renderTradingVenue(paperInput, plainTheme, 40, settled);
 		expect(narrow).toHaveLength(2);
-		expect(narrow.map((line) => line.trim())).toEqual(["PAPER  Binance · Spot · USDT", "public market data"]);
+		expect(narrow.map(plain)).toEqual(["PAPER  Binance · Spot · USDT", "public market data"]);
 	});
 
 	it.each(["light", "dark"])("uses semantic colors in the %s theme without overflowing", (name) => {
@@ -135,7 +134,7 @@ describe("trading venue status layout", () => {
 		if (!theme) throw new Error(`Missing theme: ${name}`);
 		const confirm = renderTradingVenue({ ...input, orderApproval: "confirm" }, theme, 140, settled).join("\n");
 		expect(confirm).toContain(theme.inverse(theme.fg("text", " LIVE ")));
-		expect(confirm).toContain(theme.bold(theme.fg("text", "Binance")));
+		expect(confirm).toContain(theme.bold(`\x1b[38;2;240;185;11mBinance\x1b[39m`));
 		expect(confirm).not.toContain(theme.fg("warning", "Unattended"));
 		const unattended = renderTradingVenue({ ...input, orderApproval: "unattended" }, theme, 140, settled).join("\n");
 		expect(unattended).toContain(theme.inverse(theme.fg("error", " LIVE ")));
@@ -174,7 +173,7 @@ describe("trading venue status layout", () => {
 
 	it("renders the blocked alert without a recovery hint when none is set", () => {
 		const status = { summary: "Entry blocks: none", tone: "warning", entryBlocked: true } as const;
-		expect(renderTradingVenue(input, plainTheme, 140, status).map((line) => line.trim())).toEqual([
+		expect(renderTradingVenue(input, plainTheme, 140, status).map(plain)).toEqual([
 			"⚠ Entry blocks: none  ·  /show health",
 			"LIVE  Binance · USDⓈ-M futures · USDT",
 		]);

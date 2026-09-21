@@ -1,7 +1,7 @@
 import type { TradingLanguage } from "./state.ts";
 
 export const SUPPORTED_EXCHANGES = [
-	{ id: "binance", zh: "Binance（币安）", en: "Binance" },
+	{ id: "binance", zh: "Binance", en: "Binance" },
 	{ id: "okx", zh: "OKX", en: "OKX" },
 	{ id: "bybit", zh: "Bybit", en: "Bybit" },
 ] as const;

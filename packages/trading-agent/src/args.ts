@@ -152,6 +152,6 @@ Plus the generic session commands (/model, /login, /new, /resume, /quit, ...).
 Config: ~/.ti-trader/agent/trading.json (language: zh-CN or en-US)
 API keys: ~/.ti-trader/agent/keys.json (or /exchange-login)
 Model auth: /login → model provider (stored in ~/.ti-trader/agent/)
-Exchange auth: /exchange-login → Binance（币安）/ OKX / Bybit
+Exchange auth: /exchange-login → Binance / OKX / Bybit
 `);
 }

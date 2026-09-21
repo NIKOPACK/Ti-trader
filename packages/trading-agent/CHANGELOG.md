@@ -4,6 +4,12 @@ All notable changes to `ti-trader` are documented in this file.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-09-21
+
+### Changed
+
+- The venue identity row renders the Binance label in the official brand yellow, and the Chinese exchange label is plain `Binance`.
+
 ## [0.4.0] - 2026-09-21
 
 ### Breaking Changes

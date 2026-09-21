@@ -54,6 +54,19 @@ function modeColor(input: TradingVenueInput): "error" | "text" | "accent" {
 
 type VenueTheme = Pick<Theme, "fg" | "bold" | "inverse">;
 
+const BINANCE_YELLOW = "\x1b[38;2;240;185;11m";
+
+function paintBinanceYellow(text: string): string {
+	return `${BINANCE_YELLOW}${text}\x1b[39m`;
+}
+
+/** Exchange names keep their official brand color in the identity row. */
+function exchangeText(input: TradingVenueInput, theme: VenueTheme): string {
+	const label = exchangeLabel(input.exchangeId, input.language);
+	if (input.exchangeId === "binance") return theme.bold(paintBinanceYellow(label));
+	return theme.bold(theme.fg("text", label));
+}
+
 /** Paper fills are local, so the feed note carries information the identity row does not. */
 function paperFeed(input: TradingVenueInput, theme: VenueTheme): string | undefined {
 	return input.mode === "paper" ? theme.fg("muted", t(input.language, "venuePaperFeed")) : undefined;
@@ -64,7 +77,7 @@ function renderIdentity(input: TradingVenueInput, theme: VenueTheme): string {
 	const separator = theme.fg("dim", " · ");
 	const chip = theme.inverse(theme.fg(modeColor(input), ` ${mode} `));
 	const segments = [
-		`${chip} ${theme.bold(theme.fg("text", exchangeLabel(input.exchangeId, input.language)))}`,
+		`${chip} ${exchangeText(input, theme)}`,
 		theme.fg("muted", marketLabel(input.language, input.marketType)),
 		theme.fg("muted", input.quoteCurrency),
 	];
